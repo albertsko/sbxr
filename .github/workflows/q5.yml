@@ -46,9 +46,9 @@ jobs:
           #include <libkrun.h>
           /* usage: krunrun fs <rootdir> <cmd...>   |   krunrun disk <img> <fstype> <cmd...> */
           int main(int argc, char **argv) {
+            krun_set_log_level(1);
             int ctx = krun_create_ctx();
             if (ctx < 0) { fprintf(stderr, "create_ctx %d\n", ctx); return 90; }
-            krun_set_log_level(ctx, 1);
             krun_set_vm_config(ctx, 1, 512);
             int i, r;
             if (strcmp(argv[1], "fs") == 0) {
