@@ -66,13 +66,15 @@ YAML
 run_pod() {
   local name=$1 rc=$2 dns=$3 image=$4
   shift 4
-  jq -n --arg name "$name" --arg rc "$rc" --argjson dns "$dns" --arg image "$image" '{
+  local cmd
+  cmd=$(printf '%s\n' "$@" | jq -R . | jq -s -c .)
+  jq -n --arg name "$name" --arg rc "$rc" --argjson dns "$dns" --arg image "$image" --argjson cmd "$cmd" '{
     apiVersion: "v1", kind: "Pod", metadata: {name: $name},
     spec: ({restartPolicy: "Never", terminationGracePeriodSeconds: 1,
-      containers: [{name: "c", image: $image, imagePullPolicy: "IfNotPresent", command: $ARGS.positional}]}
+      containers: [{name: "c", image: $image, imagePullPolicy: "IfNotPresent", command: $cmd}]}
       + (if $rc == "" then {} else {runtimeClassName: $rc} end)
       + (if $dns == null then {} else {dnsConfig: $dns} end))
-  }' --args "$@" | kubectl apply -f -
+  }' | kubectl apply -f -
 }
 
 wait_pod() {
