@@ -18,7 +18,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq uidmap erofs-utils e2fsprogs >/dev/null
+          sudo apt-get install -y -qq uidmap erofs-utils e2fsprogs libclang-dev >/dev/null
           unshare --version; mkfs.erofs --version | head -1; mke2fs -V 2>&1 | head -1
           id; grep "^$(id -un):" /etc/subuid /etc/subgid || true
           sysctl kernel.apparmor_restrict_unprivileged_userns || true
