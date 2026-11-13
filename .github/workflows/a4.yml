@@ -1,0 +1,338 @@
+name: a4-apparmor-spike
+on:
+  push:
+    branches: [spike/a4-apparmor]
+jobs:
+  a4:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+      - name: env
+        run: |
+          set -x
+          id; uname -a; cat /etc/os-release | head -3
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+          sysctl kernel.unprivileged_userns_clone || true
+          cat /etc/subuid /etc/subgid
+          ls -l /usr/bin/newuidmap /usr/bin/newgidmap
+          sudo aa-status | head -5
+          ls /etc/apparmor.d | head -80
+          cat /etc/apparmor.d/unprivileged_userns || true
+          cat /etc/apparmor.d/podman || true
+          cat /etc/apparmor.d/rootlesskit || true
+      - name: build
+        run: |
+          mkdir -p /tmp/p && cd /tmp/p
+          cat > main.go <<'EOF'
+          package main
+
+          import (
+          	"archive/tar"
+          	"bufio"
+          	"compress/gzip"
+          	"fmt"
+          	"io"
+          	"os"
+          	"os/exec"
+          	"os/user"
+          	"path/filepath"
+          	"strconv"
+          	"strings"
+          	"syscall"
+          )
+
+          func subRange(name string, file string) (string, string) {
+          	f, err := os.Open(file)
+          	if err != nil {
+          		panic(err)
+          	}
+          	defer f.Close()
+          	s := bufio.NewScanner(f)
+          	for s.Scan() {
+          		p := strings.Split(s.Text(), ":")
+          		if len(p) == 3 && p[0] == name {
+          			return p[1], p[2]
+          		}
+          	}
+          	panic("no subid range for " + name)
+          }
+
+          func run(name string, args ...string) error {
+          	c := exec.Command(name, args...)
+          	c.Stdout, c.Stderr = os.Stderr, os.Stderr
+          	return c.Run()
+          }
+
+          func parent(mode string, args []string) {
+          	exe, _ := os.Executable()
+          	fmt.Fprintf(os.Stderr, "parent: exe=%s mode=%s\n", exe, mode)
+          	if b, err := os.ReadFile("/proc/self/attr/current"); err == nil {
+          		fmt.Fprintf(os.Stderr, "parent: apparmor label=%s", b)
+          	}
+          	r, w, _ := os.Pipe()
+          	c := exec.Command("/proc/self/exe", append([]string{"child"}, args...)...)
+          	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+          	c.ExtraFiles = []*os.File{r}
+          	c.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS}
+          	if mode == "single" {
+          		c.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
+          		c.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
+          	}
+          	if err := c.Start(); err != nil {
+          		fmt.Fprintf(os.Stderr, "parent: start failed: %v\n", err)
+          		os.Exit(2)
+          	}
+          	pid := strconv.Itoa(c.Process.Pid)
+          	if mode == "subid" {
+          		u, _ := user.Current()
+          		us, uc := subRange(u.Username, "/etc/subuid")
+          		gs, gc := subRange(u.Username, "/etc/subgid")
+          		if err := run("newuidmap", pid, "0", strconv.Itoa(os.Getuid()), "1", "1", us, uc); err != nil {
+          			fmt.Fprintf(os.Stderr, "parent: newuidmap failed: %v\n", err)
+          		}
+          		if err := run("newgidmap", pid, "0", strconv.Itoa(os.Getgid()), "1", "1", gs, gc); err != nil {
+          			fmt.Fprintf(os.Stderr, "parent: newgidmap failed: %v\n", err)
+          		}
+          	}
+          	w.Close()
+          	if err := c.Wait(); err != nil {
+          		fmt.Fprintf(os.Stderr, "parent: child failed: %v\n", err)
+          		os.Exit(1)
+          	}
+          	fmt.Fprintln(os.Stderr, "parent: OK")
+          }
+
+          func extract(tgz, dest string) error {
+          	f, err := os.Open(tgz)
+          	if err != nil {
+          		return err
+          	}
+          	defer f.Close()
+          	gz, err := gzip.NewReader(f)
+          	if err != nil {
+          		return err
+          	}
+          	tr := tar.NewReader(gz)
+          	n := 0
+          	for {
+          		h, err := tr.Next()
+          		if err == io.EOF {
+          			break
+          		}
+          		if err != nil {
+          			return err
+          		}
+          		p := filepath.Join(dest, h.Name)
+          		switch h.Typeflag {
+          		case tar.TypeDir:
+          			if err := os.MkdirAll(p, os.FileMode(h.Mode)&0o7777); err != nil {
+          				return err
+          			}
+          		case tar.TypeReg:
+          			o, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(h.Mode)&0o777)
+          			if err != nil {
+          				return err
+          			}
+          			if _, err := io.Copy(o, tr); err != nil {
+          				return err
+          			}
+          			o.Close()
+          		case tar.TypeSymlink:
+          			if err := os.Symlink(h.Linkname, p); err != nil {
+          				return err
+          			}
+          		case tar.TypeLink:
+          			if err := os.Link(filepath.Join(dest, h.Linkname), p); err != nil {
+          				return err
+          			}
+          		default:
+          			continue
+          		}
+          		if err := os.Lchown(p, h.Uid, h.Gid); err != nil {
+          			return fmt.Errorf("Cannot change ownership of %s to %d:%d: %w", h.Name, h.Uid, h.Gid, err)
+          		}
+          		if h.Typeflag != tar.TypeSymlink {
+          			os.Chmod(p, os.FileMode(h.Mode)&0o7777|modeBits(h.Mode))
+          		}
+          		n++
+          	}
+          	fmt.Fprintf(os.Stderr, "child: extracted %d entries with owners\n", n)
+          	return nil
+          }
+
+          func modeBits(m int64) os.FileMode {
+          	var fm os.FileMode
+          	if m&0o4000 != 0 {
+          		fm |= os.ModeSetuid
+          	}
+          	if m&0o2000 != 0 {
+          		fm |= os.ModeSetgid
+          	}
+          	return fm
+          }
+
+          func child(args []string) {
+          	sync := os.NewFile(3, "sync")
+          	io.ReadAll(sync)
+          	um, _ := os.ReadFile("/proc/self/uid_map")
+          	lbl, _ := os.ReadFile("/proc/self/attr/current")
+          	st, _ := os.ReadFile("/proc/self/status")
+          	capEff := ""
+          	for _, l := range strings.Split(string(st), "\n") {
+          		if strings.HasPrefix(l, "CapEff") {
+          			capEff = l
+          		}
+          	}
+          	fmt.Fprintf(os.Stderr, "child: uid=%d gid=%d label=%s %s\nchild: uid_map:\n%s", os.Getuid(), os.Getgid(), strings.TrimSpace(string(lbl)), capEff, um)
+          	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
+          		fmt.Fprintf(os.Stderr, "child: mount private failed: %v\n", err)
+          	}
+          	fails := 0
+          	if err := os.WriteFile(args[0]+"/f", []byte("x"), 0o644); err == nil {
+          		if err := os.Chown(args[0]+"/f", 0, 42); err != nil {
+          			fmt.Fprintf(os.Stderr, "child: chown 0:42 failed: %v\n", err)
+          			fails++
+          		} else {
+          			fmt.Fprintln(os.Stderr, "child: chown 0:42 OK")
+          		}
+          	}
+          	if len(args) > 1 {
+          		if err := extract(args[1], args[0]+"/rootfs"); err != nil {
+          			fmt.Fprintf(os.Stderr, "child: extract failed: %v\n", err)
+          			fails++
+          		}
+          	}
+          	if fails > 0 {
+          		os.Exit(1)
+          	}
+          }
+
+          func main() {
+          	if len(os.Args) > 1 && os.Args[1] == "child" {
+          		child(os.Args[2:])
+          		return
+          	}
+          	parent(os.Args[1], os.Args[2:])
+          }
+          EOF
+          cat > go.mod <<'EOF'
+          module spike
+          go 1.22
+          EOF
+          CGO_ENABLED=0 go build -o /tmp/sbxr-bin .
+          file /tmp/sbxr-bin
+          sudo install -m 0755 /tmp/sbxr-bin /usr/local/bin/sbxr
+          cp /tmp/sbxr-bin /tmp/sbxr-copy
+          mkdir -p $HOME/go/bin && cp /tmp/sbxr-bin $HOME/go/bin/sbxr
+          ln -sf /usr/local/bin/sbxr /tmp/sbxr-link
+          curl -fsSL -o /tmp/alpine.tgz https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz
+          ls -l /tmp/alpine.tgz
+      - name: test
+        run: |
+          cat > /tmp/t.sh <<'EOF'
+          # usage: t.sh label binary mode
+          d=$(mktemp -d)
+          echo "=== CASE $1: $2 $3"
+          if "$2" "$3" "$d" /tmp/alpine.tgz; then
+            echo "RESULT $1: PASS"
+            ls -ln "$d"/rootfs/etc/shadow "$d"/rootfs/bin/busybox "$d"/f 2>/dev/null
+          else
+            echo "RESULT $1: FAIL"
+          fi
+          sudo rm -rf "$d"
+          EOF
+          chmod +x /tmp/t.sh
+          set +e
+          T=/tmp/t.sh
+          prof() {
+            echo "--- profile $1:"; echo "$2" | sudo tee /etc/apparmor.d/sbxr
+            sudo apparmor_parser -r /etc/apparmor.d/sbxr && echo loaded
+          }
+          unload() { sudo apparmor_parser -R /etc/apparmor.d/sbxr 2>/dev/null; sudo rm -f /etc/apparmor.d/sbxr; }
+
+          echo "##### no profile"
+          $T default-subid /usr/local/bin/sbxr subid
+          $T default-single /usr/local/bin/sbxr single
+          unshare -Ur id || echo "unshare -Ur failed"
+          unshare -Ur sh -c 'touch /tmp/u && chown 0:0 /tmp/u && echo chown-ok' || true
+
+          echo "##### profile A: unconfined + userns, path /usr/local/bin/sbxr"
+          prof A 'abi <abi/4.0>,
+          include <tunables/global>
+
+          profile sbxr /usr/local/bin/sbxr flags=(unconfined) {
+            userns,
+
+            include if exists <local/sbxr>
+          }'
+          $T A-subid /usr/local/bin/sbxr subid
+          $T A-single /usr/local/bin/sbxr single
+          $T A-symlink /tmp/sbxr-link subid
+          $T A-copy-other-path /tmp/sbxr-copy subid
+          $T A-gobin $HOME/go/bin/sbxr subid
+          unload
+
+          echo "##### profile A2: unconfined, no abi/include, minimal"
+          prof A2 'profile sbxr /usr/local/bin/sbxr flags=(unconfined) {
+            userns,
+          }'
+          $T A2-subid /usr/local/bin/sbxr subid
+          unload
+
+          echo "##### profile A3: unconfined WITHOUT userns rule"
+          prof A3 'abi <abi/4.0>,
+          profile sbxr /usr/local/bin/sbxr flags=(unconfined) {
+          }'
+          $T A3-subid /usr/local/bin/sbxr subid
+          unload
+
+          echo "##### profile B1: confined, only userns,"
+          prof B1 'abi <abi/4.0>,
+          include <tunables/global>
+          profile sbxr /usr/local/bin/sbxr {
+            userns,
+          }'
+          $T B1-subid /usr/local/bin/sbxr subid
+          unload
+
+          echo "##### profile B2: confined, userns + capability + file + mount"
+          prof B2 'abi <abi/4.0>,
+          include <tunables/global>
+          profile sbxr /usr/local/bin/sbxr {
+            include <abstractions/base>
+            userns,
+            capability,
+            file,
+            mount,
+            umount,
+            signal,
+            /usr/bin/newuidmap Ux,
+            /usr/bin/newgidmap Ux,
+            /usr/local/bin/sbxr ix,
+          }'
+          $T B2-subid /usr/local/bin/sbxr subid
+          unload
+
+          echo "##### profile G: glob path for go install / homebrew"
+          prof G 'abi <abi/4.0>,
+          include <tunables/global>
+          profile sbxr /{usr/local/bin,usr/bin,home/*/go/bin,home/linuxbrew/.linuxbrew/Cellar/sbxr/*/bin}/sbxr flags=(unconfined) {
+            userns,
+          }'
+          $T G-gobin $HOME/go/bin/sbxr subid
+          $T G-copy-tmp /tmp/sbxr-copy subid
+          unload
+
+          echo "##### sysctl=0 control"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          $T sysctl0-copy /tmp/sbxr-copy subid
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
+
+          echo "##### apparmor denials"
+          sudo dmesg | grep -i apparmor | grep -iE 'userns|capab|sbxr' | tail -40
+      - name: summary
+        if: always()
+        run: echo done
