@@ -358,6 +358,127 @@ jobs:
           docker exec $N crictl pods
           echo "TOTAL_SECONDS=$(( $(date -u +%s) - $(cat /tmp/t0) ))"
 
+      - name: Extra checks (DNS, ClusterIP, signals)
+        run: |
+          set +e
+          N=kind-control-plane
+          sec() { echo; echo "=================== $* ==================="; }
+          kubectl apply -f - <<'Y'
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: web2, labels: {app: web2}}
+          spec:
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'mkdir -p /www; echo hello-from-runc > /www/index.html; exec httpd -f -p 8080 -h /www']
+                readinessProbe: {tcpSocket: {port: 8080}, periodSeconds: 2}
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata: {name: web2}
+          spec:
+            selector: {app: web2}
+            ports: [{port: 80, targetPort: 8080}]
+          Y
+          kubectl wait --for=condition=Ready pod/web2 --timeout=60s
+          SVC_IP=$(kubectl get svc web2 -o jsonpath='{.spec.clusterIP}')
+          DNS_POD_IP=$(kubectl -n kube-system get pod -l k8s-app=kube-dns -o jsonpath='{.items[0].status.podIP}')
+          echo "SVC_IP=$SVC_IP DNS_POD_IP=$DNS_POD_IP"
+          for rc in sbxr runc; do
+          cat <<Y | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: net-$rc}
+          spec:
+            $( [ $rc = sbxr ] && echo 'runtimeClassName: sbxr' )
+            restartPolicy: Never
+            containers:
+              - name: c
+                image: python:3.13-alpine
+                env:
+                  - {name: SVC_IP, value: "$SVC_IP"}
+                  - {name: DNS_POD_IP, value: "$DNS_POD_IP"}
+                command: [python3, -u, -c]
+                args:
+                  - |
+                    import os, socket, struct
+                    def q(name):
+                        h = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0)
+                        b = b"".join(bytes([len(x)]) + x.encode() for x in name.split(".")) + b"\0"
+                        return h + b + struct.pack(">HH", 1, 1)
+                    def udp(ip):
+                        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+                        s.sendto(q("web2.default.svc.cluster.local"), (ip, 53)); d = s.recv(512)
+                        return "ok answers=%d ip=%s" % (struct.unpack(">H", d[6:8])[0], socket.inet_ntoa(d[-4:]))
+                    def tcp(ip):
+                        s = socket.create_connection((ip, 53), timeout=3); m = q("web2.default.svc.cluster.local")
+                        s.sendall(struct.pack(">H", len(m)) + m); d = s.recv(514)[2:]
+                        return "ok answers=%d ip=%s" % (struct.unpack(">H", d[6:8])[0], socket.inet_ntoa(d[-4:]))
+                    def http(ip, port):
+                        s = socket.create_connection((ip, port), timeout=3); s.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                        return s.recv(4096).decode(errors="replace").splitlines()[-1]
+                    def tcpconn(ip, port):
+                        socket.create_connection((ip, port), timeout=3); return "connected"
+                    def gai(n):
+                        return socket.getaddrinfo(n, 80, proto=socket.IPPROTO_TCP)[0][4]
+                    svc, dns = os.environ["SVC_IP"], os.environ["DNS_POD_IP"]
+                    tests = [("udp-dns-clusterip", udp, "10.96.0.10"), ("udp-dns-podip", udp, dns),
+                             ("tcp-dns-clusterip", tcp, "10.96.0.10"), ("tcp-dns-podip", tcp, dns),
+                             ("http-svc-clusterip", http, svc, 80), ("tcp-apiserver-clusterip", tcpconn, "10.96.0.1", 443),
+                             ("getaddrinfo-svc", gai, "web2.default.svc.cluster.local"), ("getaddrinfo-external", gai, "github.com"),
+                             ("http-external", http, "140.82.112.3", 80)]
+                    for t in tests:
+                        try:
+                            print(t[0], "->", t[1](*t[2:]))
+                        except Exception as e:
+                            print(t[0], "-> FAIL", type(e).__name__, e)
+          Y
+          done
+          for rc in sbxr runc; do
+            kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/net-$rc --timeout=120s
+            sec "NET from $rc"; kubectl logs net-$rc
+          done
+
+          sec "SIGNALS"
+          for rc in sbxr runc; do
+          cat <<Y | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: term-$rc}
+          spec:
+            $( [ $rc = sbxr ] && echo 'runtimeClassName: sbxr' )
+            terminationGracePeriodSeconds: 20
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'trap "echo got-TERM; exit 0" TERM; echo started; while true; do sleep 1; done']
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: sleep-$rc}
+          spec:
+            $( [ $rc = sbxr ] && echo 'runtimeClassName: sbxr' )
+            terminationGracePeriodSeconds: 20
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sleep, "3600"]
+          Y
+          done
+          kubectl wait --for=condition=Ready pod/term-sbxr pod/term-runc pod/sleep-sbxr pod/sleep-runc --timeout=60s
+          sleep 2
+          for p in term-sbxr term-runc sleep-sbxr sleep-runc; do
+            kubectl logs -f $p > /tmp/$p.log 2>&1 &
+            sleep 1
+            s=$(date +%s.%N); kubectl delete pod $p --wait=true; echo "delete $p took $(echo "$(date +%s.%N) - $s" | bc)s"
+            sleep 1; echo "logs of $p:"; cat /tmp/$p.log
+          done
+          sleep 2
+          sec "lingering VM processes"
+          docker exec $N sh -c 'ps -eo pid,ppid,comm,args | grep -E "VM:|krun" | grep -v grep || echo none'
+          echo "TOTAL_SECONDS=$(( $(date -u +%s) - $(cat /tmp/t0) ))"
+
       - name: Debug on failure
         if: failure()
         run: |
