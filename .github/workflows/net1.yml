@@ -59,6 +59,36 @@ jobs:
           curl -fsSL "$ALPINE_URL" | tar xz -C /tmp/root
           echo 'nameserver 1.1.1.1' > /tmp/root/etc/resolv.conf
           ls /tmp/root/usr/bin/getent /tmp/root/bin/busybox
+          mkdir -p /tmp/root/t
+          cat > /tmp/root/t/wget.sh <<'G'
+          wget -q -T 10 -O- http://1.1.1.1 | head -c 200; echo; echo "wget-pipe-done"
+          wget -S -T 10 -O /dev/null http://1.1.1.1 2>&1 | head -3
+          printf 'GET / HTTP/1.0\r\nHost: 1.1.1.1\r\n\r\n' | nc -w 5 1.1.1.1 80 | head -3
+          echo "nc-done"
+          G
+          cat > /tmp/root/t/dns.sh <<'G'
+          cat /etc/resolv.conf
+          getent hosts example.com; echo "getent-rc=$?"
+          getent ahostsv4 example.com | head -2; echo "getent4-rc=$?"
+          nslookup example.com; echo "nslookup-rc=$?"
+          G
+          cat > /tmp/root/t/novsock.sh <<'G'
+          wget -q -T 5 -O- http://1.1.1.1; echo "wget-rc=$?"
+          nc -w 3 1.1.1.1 80 </dev/null; echo "nc-rc=$?"
+          getent hosts example.com; echo "getent-rc=$?"
+          ls /dev/vsock 2>&1; grep -c . /proc/net/dev
+          G
+          cat > /tmp/root/t/serve.sh <<'G'
+          busybox nc 2>&1 | head -12
+          for p in 8080 9090; do
+            ( while true; do printf 'HTTP/1.0 200 OK\r\n\r\nhello-from-guest-%s\n' $p | nc -l -p $p; done ) &
+          done
+          sleep 1
+          netstat -ltn
+          echo "guest-listening"
+          sleep 25
+          G
+          chmod +x /tmp/root/t/*.sh
           cat > /tmp/launcher.c <<'C'
           #define _GNU_SOURCE
           #include <dlfcn.h>
@@ -148,13 +178,14 @@ jobs:
             sec "$v T1 nonexistent"; run $v /bin/nonexistent-cmd
             sec "$v T1 nonexistent via sh"; run $v /bin/sh -c 'nonexistent-cmd'
             sec "$v T2 net info"; run $v /bin/sh -c 'cat /proc/net/dev; ip addr; ip route'
-            sec "$v T2 wget 1.1.1.1"; run $v /bin/sh -c 'wget -q -T 10 -O- http://1.1.1.1 | head -c 300; echo; echo wget-rc=$?; printf "GET / HTTP/1.0\r\nHost: 1.1.1.1\r\n\r\n" | nc -w 5 1.1.1.1 80 | head -3; echo nc-done'
-            sec "$v T2 getent"; run $v /bin/sh -c 'getent hosts example.com; echo getent-rc=$?; nslookup example.com 1.1.1.1; echo nslookup-rc=$?'
-            sec "$v T3 novsock"; T_NOVSOCK=1 run $v /bin/sh -c 'wget -q -T 5 -O- http://1.1.1.1; echo wget-rc=$?; nc -w 3 1.1.1.1 80 </dev/null; echo nc-rc=$?; getent hosts example.com; echo getent-rc=$?; cat /proc/net/dev'
+            sec "$v T2 wget 1.1.1.1"; run $v /bin/sh /t/wget.sh
+            sec "$v T2 getent"; run $v /bin/sh /t/dns.sh
+            sec "$v T3 novsock"; T_NOVSOCK=1 run $v /bin/sh /t/novsock.sh
             sec "$v T4 portmap"
-            T_PORTMAP=18080:8080 LD_LIBRARY_PATH=/tmp/out/$v/lib:/tmp/out/fw timeout 40 /tmp/launcher /tmp/root /bin/sh -c 'mkdir -p /www; echo hello-$(uname -r) > /www/index.html; busybox httpd -p 8080 -h /www; busybox httpd -p 9090 -h /www; echo guest-listening; sleep 25' > /tmp/pm-$v.log 2>&1 &
+            T_PORTMAP=18080:8080 LD_LIBRARY_PATH=/tmp/out/$v/lib:/tmp/out/fw timeout 40 /tmp/launcher /tmp/root /bin/sh /t/serve.sh > /tmp/pm-$v.log 2>&1 &
             P=$!
-            for i in $(seq 1 30); do curl -s -m 1 -o /dev/null http://127.0.0.1:18080/ && break; sleep 0.5; done
+            for i in $(seq 1 30); do grep -q guest-listening /tmp/pm-$v.log && break; sleep 0.5; done
+            sleep 1
             echo "--- curl 18080 (mapped)"; curl -sS -m 5 http://127.0.0.1:18080/; echo "curl-rc=$?"
             echo "--- curl 8080 (guest port, unmapped on host)"; curl -sS -m 5 http://127.0.0.1:8080/; echo "curl-rc=$?"
             echo "--- curl 9090 (other guest port)"; curl -sS -m 5 http://127.0.0.1:9090/; echo "curl-rc=$?"
@@ -173,14 +204,25 @@ jobs:
       - name: Tap hang (NET=1)
         run: |
           set +e
-          stamp() { local s=$1; while IFS= read -r l; do printf '+%6.3fs %s\n' "$(echo "$EPOCHREALTIME - $s" | bc)" "$l"; done; }
+          stamp() { local s=$1 n; while IFS= read -r l; do n=${EPOCHREALTIME/./}; printf '+%d.%06ds %s\n' $(( (n - s) / 1000000 )) $(( (n - s) % 1000000 )) "$l"; done; }
           ip link show nonexistent0
           for lvl in "" 3 5; do
             echo; echo "=================== tap nonexistent0 T_LOG=${lvl:-unset} ==================="
-            s=$EPOCHREALTIME
             if [ -n "$lvl" ]; then export T_LOG=$lvl; else unset T_LOG; fi
-            T_TAP=nonexistent0 LD_LIBRARY_PATH=/tmp/out/net1/lib:/tmp/out/fw timeout 45 /tmp/launcher /tmp/root /bin/echo hi-from-tap-vm 2>&1 | stamp $s | head -200
-            echo "pipeline rc=${PIPESTATUS[0]} total=$(echo "$EPOCHREALTIME - $s" | bc)s"
+            s=${EPOCHREALTIME/./}
+            ( T_TAP=nonexistent0 LD_LIBRARY_PATH=/tmp/out/net1/lib:/tmp/out/fw /tmp/launcher /tmp/root /bin/echo hi-from-tap-vm 2>&1 | stamp $s > /tmp/tap-$lvl.log ) &
+            sleep 10
+            P=$(pgrep -f 'launcher /tmp/root /bin/echo hi-from-tap-vm' | head -1)
+            echo "after 10s: launcher pid=$P state=$(grep State /proc/$P/status) threads=$(ls /proc/$P/task | wc -l)"
+            ps -L -o tid,stat,wchan:30,comm -p $P | head -20
+            kill -TERM $P; sleep 2
+            if kill -0 $P 2>/dev/null; then echo "still alive after TERM, sending KILL"; kill -KILL $P; else echo "exited on TERM"; fi
+            wait
+            echo "--- first 3 lines"; head -3 /tmp/tap-$lvl.log
+            echo "--- non DEBUG/TRACE lines"; grep -vE ' (DEBUG|TRACE) ' /tmp/tap-$lvl.log | head -20
+            echo "--- lines mentioning net/tap/eth0"; grep -iE 'net|tap|eth0' /tmp/tap-$lvl.log | head -10
+            echo "--- last 3 lines (total $(wc -l < /tmp/tap-$lvl.log))"; tail -3 /tmp/tap-$lvl.log
+            grep -q hi-from-tap-vm /tmp/tap-$lvl.log && echo "guest output seen" || echo "guest output NOT seen"
           done
           unset T_LOG
           echo; echo "=================== tap on NET=0 build (expect not exported) ==================="
