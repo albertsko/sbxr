@@ -1,0 +1,62 @@
+name: Spike k8s DNS
+on:
+  push:
+    branches: [spike/k8s-dns]
+permissions:
+  contents: read
+jobs:
+  kind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      NODE_IMAGE: kindest/node:v1.37.0
+      LIBKRUN_VERSION: v1.19.8
+      LIBKRUNFW_VERSION: v5.6.4
+      CRUN_VERSION: "1.31"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Allow KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: krun-cache
+        with:
+          path: /tmp/krun-out
+          key: k8s-krun-${{ env.NODE_IMAGE }}-${{ env.LIBKRUN_VERSION }}-${{ env.LIBKRUNFW_VERSION }}-crun${{ env.CRUN_VERSION }}-v1
+      - name: Build crun with libkrun
+        if: steps.krun-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/krun-out
+          docker run --rm --entrypoint bash \
+            -e LIBKRUN_VERSION -e LIBKRUNFW_VERSION -e CRUN_VERSION \
+            -v "$PWD/spike/k8s-dns:/spike:ro" -v /tmp/krun-out:/out \
+            "$NODE_IMAGE" /spike/build.sh
+      - if: steps.krun-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/krun-out
+          key: ${{ steps.krun-cache.outputs.cache-primary-key }}
+      - name: Install kind and kubectl
+        run: |
+          curl -fsSLo /tmp/kind https://github.com/kubernetes-sigs/kind/releases/latest/download/kind-linux-amd64
+          curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${NODE_IMAGE##*:}/bin/linux/amd64/kubectl"
+          sudo install -m 0755 /tmp/kind /tmp/kubectl /usr/local/bin/
+          kind version
+          kubectl version --client
+      - name: Build images
+        run: |
+          cd spike/k8s-dns/dnsgo
+          CGO_ENABLED=0 go build -o dnsgo .
+          docker build -q -t dnsgo:1 .
+          for i in debian:bookworm-slim alpine:3.22 busybox:1.37; do docker pull -q "$i"; done
+      - name: Run checks
+        run: spike/k8s-dns/run.sh
