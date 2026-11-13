@@ -186,7 +186,7 @@ exit 7`
 		dur := time.Since(start)
 		check(fmt.Sprintf("cp-reflink-auto-%d", i), err == nil, fmt.Sprintf("time=%v %s", dur, oneLine(out)))
 	}
-	out, _ = sh(fmt.Sprintf("stat -c '%%n %%u:%%g %%a' %q/etc/shadow %q/etc/shadow", node, filepath.Join(work, "nodecopy1")))
+	out, _ = sh(fmt.Sprintf("stat -c '%%n %%u:%%g %%a' %q/etc/shadow %q/etc/shadow; du -sh %q", node, filepath.Join(work, "nodecopy1"), filepath.Join(work, "nodecopy1")))
 	fmt.Print("copy ownership: ", out)
 	mn, d, err := mountOverlay(node, filepath.Join(work, "noderun"))
 	if err == nil {

@@ -67,7 +67,7 @@ jobs:
           ls -la /tmp/alpine.tar.gz /tmp/node.tar
       - name: Run checks
         run: |
-          export LD_LIBRARY_PATH="$KRUN_PREFIX/lib64:$KRUN_PREFIX/lib:$KRUN_PREFIX/usr/lib64:$KRUN_PREFIX/usr/local/lib64"
+          export LD_LIBRARY_PATH="$KRUN_PREFIX/lib64:$KRUN_PREFIX/lib/x86_64-linux-gnu:$KRUN_PREFIX/lib:$KRUN_PREFIX/usr/lib64:$KRUN_PREFIX/usr/local/lib64"
           mkdir -p "$RUNNER_TEMP/w"
           id
           sbxr main "$RUNNER_TEMP/w" /tmp/alpine.tar.gz /tmp/node.tar
