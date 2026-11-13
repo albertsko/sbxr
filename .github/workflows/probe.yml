@@ -26,24 +26,28 @@ jobs:
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          sudo udevadm trigger --name-match=kvm || echo "udev trigger failed"
           ls -l /dev/kvm || true
+          lsmod | grep -i kvm || echo "no kvm module loaded"
+          dmesg 2>/dev/null | grep -i kvm | head || sudo dmesg | grep -i kvm | head || true
       - name: check after udev
         run: |
-          python3 -c "import os,fcntl; fd=os.open('/dev/kvm',os.O_RDWR); print('AFTER KVM_GET_API_VERSION', fcntl.ioctl(fd,0xAE00))"
+          python3 -c "import os,fcntl; fd=os.open('/dev/kvm',os.O_RDWR); print('AFTER KVM_GET_API_VERSION', fcntl.ioctl(fd,0xAE00))" || echo "AFTER: open failed"
 
   macos:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-14]
+        os: [macos-15, macos-14, macos-latest, macos-26]
     runs-on: ${{ matrix.os }}
     steps:
       - run: |
           echo "RUNNER=${{ matrix.os }}"
           uname -m; sw_vers
+          set +e
           sysctl kern.hv_support
           sysctl machdep.cpu.brand_string
+          sysctl -a | grep -iE '^kern\.hv|hv_vmm|^hw\.optional\.arm\.FEAT_(EL2|EL3)' 
           sysctl hw.ncpu hw.memsize
           sysctl kern.hv_vmm_present || true
 
@@ -88,6 +92,7 @@ jobs:
             return 104;
           }
           C
+          set +e
           gcc -o boot boot.c -I"$PREFIX/include" -L"$PREFIX/lib" -lkrun -Wl,-rpath,"$PREFIX/lib"
           s=$(date +%s%N)
           ./boot "$PWD/rootfs" /bin/echo hi; echo "EXIT echo: $?"
@@ -95,6 +100,51 @@ jobs:
           ./boot "$PWD/rootfs" /bin/sh -c 'echo in-guest; uname -a; exit 7'; echo "EXIT sh exit 7: $?"
           ./boot "$PWD/rootfs" /bin/false; echo "EXIT false: $?"
           ./boot "$PWD/rootfs" /nonexistent; echo "EXIT nonexistent: $?"
+          ./boot "$PWD/rootfs" /bin/sh -c 'kill -9 $$'; echo "EXIT sh kill -9 self: $?"
+          ldd ./boot | grep -iE 'krun|virgl|epoxy|mesa|not found'
+          ldd "$PREFIX/lib/libkrun.so" | grep -vE 'libc.so|ld-linux|linux-vdso'
+          du -sh /home/linuxbrew/.linuxbrew/Cellar
+
+  libkrun-brew-minimal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: brew install only libkrun + libkrunfw bottles
+        run: |
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          s=$(date +%s); brew install --ignore-dependencies libkrunfw libkrun; e=$(date +%s)
+          echo "TIMING brew install --ignore-dependencies: $((e-s))s"
+          P=$(brew --prefix); echo "PREFIX=$P" >> $GITHUB_ENV
+          ldd "$P/lib/libkrun.so" | grep -vE 'libc.so|ld-linux|linux-vdso'
+      - name: rootfs
+        run: |
+          f=$(curl -fsSL https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/latest-releases.yaml | grep -o 'alpine-minirootfs-[^ ]*-x86_64.tar.gz' | head -1)
+          mkdir rootfs && curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/$f" | tar -xz -C rootfs
+      - name: boot
+        run: |
+          set +e
+          cat > boot.c <<'C'
+          #include <stdio.h>
+          #include <libkrun.h>
+          int main(int argc, char **argv) {
+            int ctx = krun_create_ctx();
+            if (ctx < 0) { fprintf(stderr, "create_ctx %d\n", ctx); return 100; }
+            if (krun_set_vm_config(ctx, 1, 256)) return 101;
+            if (krun_set_root(ctx, argv[1])) return 102;
+            const char *const envp[] = { 0 };
+            if (krun_set_exec(ctx, argv[2], (const char *const *)&argv[3], envp)) return 103;
+            int r = krun_start_enter(ctx);
+            fprintf(stderr, "start_enter returned %d\n", r);
+            return 104;
+          }
+          C
+          gcc -o boot boot.c -I"$PREFIX/include" -L"$PREFIX/lib" -lkrun -Wl,-rpath,"$PREFIX/lib"; echo "gcc exit $?"
+          ./boot "$PWD/rootfs" /bin/echo hi-minimal; echo "EXIT echo: $?"
+          ./boot "$PWD/rootfs" /bin/sh -c 'exit 7'; echo "EXIT sh exit 7: $?"
 
   libkrun-source:
     runs-on: ubuntu-latest
@@ -111,11 +161,15 @@ jobs:
           e=$(date +%s); echo "TIMING libkrunfw prebuilt download: $((e-s))s"
       - name: libkrun build from source
         run: |
+          apt-cache policy libkrun-dev libkrun1 libkrunfw-dev libkrunfw5 2>&1 | head -20
+          s=$(date +%s)
+          sudo apt-get install -y -qq libclang-dev >/dev/null
+          e=$(date +%s); echo "TIMING apt libclang-dev: $((e-s))s"
           rustc --version; cargo --version
           s=$(date +%s)
           git clone -q --depth 1 --branch v1.19.8 https://github.com/containers/libkrun
           cd libkrun
-          make -j"$(nproc)" 2>&1 | tail -20
+          make -j"$(nproc)" 2>&1 | tail -5
           e=$(date +%s); echo "TIMING libkrun source build: $((e-s))s"
           ls -l target/release/ | grep -i krun
 
@@ -140,6 +194,7 @@ jobs:
                 - hostPath: /dev/kvm
                   containerPath: /dev/kvm
           Y
+          s=$(date +%s); docker pull -q kindest/node:v1.37.0 >/dev/null 2>&1 || true; echo "TIMING node image pull: $(( $(date +%s)-s ))s"
           s=$(date +%s); kind create cluster --config kind.yaml --wait 120s; e=$(date +%s)
           echo "TIMING kind create cluster: $((e-s))s"
           node=kind-control-plane
@@ -160,5 +215,14 @@ jobs:
           gcc -static -O2 -o kvmcheck kvmcheck.c
           ./kvmcheck
           docker cp kvmcheck $node:/kvmcheck
+          set +e
           docker exec $node /kvmcheck; echo "NODE kvmcheck exit: $?"
+          docker inspect $node --format 'Privileged={{.HostConfig.Privileged}} Devices={{json .HostConfig.Devices}} Binds={{json .HostConfig.Binds}} Mounts={{json .Mounts}}'
+          stat -c 'HOST %n ino=%i mode=%a dev=%t:%T' /dev/kvm
+          docker exec $node stat -c 'NODE %n ino=%i mode=%a dev=%t:%T' /dev/kvm
+          docker exec $node sh -c 'id; grep -E "Cap(Eff|Bnd)" /proc/self/status; cat /proc/self/cgroup; grep kvm /proc/self/mountinfo; cat /proc/self/attr/current 2>/dev/null; echo'
+          docker exec $node sh -c 'chmod 666 /dev/kvm; ls -l /dev/kvm; /kvmcheck; echo "NODE after chmod exit: $?"'
+          docker run --rm --device /dev/kvm -v "$PWD/kvmcheck:/kvmcheck:ro" busybox /kvmcheck; echo "PLAIN docker --device exit: $?"
+          docker run --rm -v /dev/kvm:/dev/kvm -v "$PWD/kvmcheck:/kvmcheck:ro" busybox /kvmcheck; echo "PLAIN docker -v bind (no --device) exit: $?"
+          docker run --rm --privileged -v "$PWD/kvmcheck:/kvmcheck:ro" busybox sh -c 'ls -l /dev/kvm; /kvmcheck'; echo "PLAIN docker --privileged exit: $?"
           kubectl get nodes -o wide
