@@ -1,3 +1,3 @@
-module github.com/albertsko/go-kickstart
+module github.com/albertsko/sbxr
 
 go 1.27

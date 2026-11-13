@@ -20,8 +20,8 @@ func TestRun(t *testing.T) {
 	}{
 		{name: "greeting", args: nil, wantStdout: "Less setup, more Go! 🚀\n", wantStderr: "", wantErr: nil},
 		{name: "version", args: []string{"-version"}, wantStdout: "dev\n", wantStderr: "", wantErr: nil},
-		{name: "help", args: []string{"-h"}, wantStdout: "", wantStderr: "Usage of go-kickstart", wantErr: nil},
-		{name: "unknown flag", args: []string{"-nope"}, wantStdout: "", wantStderr: "Usage of go-kickstart", wantErr: errUsage},
+		{name: "help", args: []string{"-h"}, wantStdout: "", wantStderr: "Usage of sbxr", wantErr: nil},
+		{name: "unknown flag", args: []string{"-nope"}, wantStdout: "", wantStderr: "Usage of sbxr", wantErr: errUsage},
 		{name: "extra argument", args: []string{"extra"}, wantStdout: "", wantStderr: "unexpected argument: extra", wantErr: errUsage},
 	}
 
@@ -64,7 +64,7 @@ func TestExitCode(t *testing.T) {
 		{name: "success", err: nil, want: 0, wantStderr: ""},
 		{name: "usage", err: errUsage, want: 2, wantStderr: ""},
 		{name: "wrapped usage", err: errors.Join(errUsage, errors.New("bad flag")), want: 2, wantStderr: ""},
-		{name: "failure", err: errors.New("boom"), want: 1, wantStderr: "go-kickstart: boom\n"},
+		{name: "failure", err: errors.New("boom"), want: 1, wantStderr: "sbxr: boom\n"},
 	}
 
 	for _, tt := range tests {

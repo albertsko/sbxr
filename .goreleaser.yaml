@@ -1,7 +1,7 @@
 version: 2
-project_name: go-kickstart
+project_name: sbxr
 builds:
-  - main: ./cmd/go-kickstart
+  - main: ./cmd/sbxr
     env:
       - CGO_ENABLED=0
     goos: [linux, darwin, windows]

@@ -1,4 +1,4 @@
-// Command go-kickstart is the starting point for a new Go command.
+// Command sbxr is the starting point for a new Go command.
 package main
 
 import (
@@ -28,7 +28,7 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("go-kickstart", flag.ContinueOnError)
+	fs := flag.NewFlagSet("sbxr", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	showVersion := fs.Bool("version", false, "print the version and exit")
 
@@ -77,7 +77,7 @@ func exitCode(err error, stderr io.Writer) int {
 	}
 
 	// A failed diagnostic write does not change the failure exit status.
-	_, _ = fmt.Fprintf(stderr, "go-kickstart: %v\n", err)
+	_, _ = fmt.Fprintf(stderr, "sbxr: %v\n", err)
 
 	return exitFailure
 }

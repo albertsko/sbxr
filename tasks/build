@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build bin/go-kickstart"
+#MISE description="Build bin/sbxr"
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
