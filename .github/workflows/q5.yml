@@ -31,8 +31,8 @@ jobs:
           tar tzf kfw.tgz | head -20
           sudo tar xzf kfw.tgz -C /usr/local
           git clone -q --depth 1 --branch v1.19.8 https://github.com/containers/libkrun /tmp/libkrun
-          cd /tmp/libkrun && make -j"$(nproc)" >/tmp/build.log 2>&1 || { tail -50 /tmp/build.log; exit 1; }
-          sudo make install PREFIX=/usr/local >/dev/null
+          cd /tmp/libkrun && make BLK=1 -j"$(nproc)" >/tmp/build.log 2>&1 || { tail -50 /tmp/build.log; exit 1; }
+          sudo make install BLK=1 PREFIX=/usr/local >/dev/null
           sudo ldconfig
           ls -l /usr/local/lib*/libkrun* || true
           echo "install took $(( $(date +%s) - start ))s"
