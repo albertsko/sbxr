@@ -1,0 +1,187 @@
+name: net1-parity
+on:
+  push:
+    branches: [spike/net1-parity]
+permissions:
+  contents: read
+env:
+  LIBKRUN_VERSION: v1.19.8
+  LIBKRUNFW_VERSION: v5.6.4
+  ALPINE_URL: https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.2-x86_64.tar.gz
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Host info
+        run: |
+          uname -a; head -3 /etc/os-release; nproc; free -m; rustc --version; cargo --version
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Cache builds
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/out
+          key: net1-out-v1-${{ env.LIBKRUN_VERSION }}-${{ env.LIBKRUNFW_VERSION }}
+
+      - name: Build libkrun NET=0 and NET=1
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libclang-dev
+          for v in net0 net1; do
+            git clone -q --depth 1 -b "$LIBKRUN_VERSION" https://github.com/libkrun/libkrun /tmp/src-$v
+          done
+          cd /tmp/src-net0
+          time make -j"$(nproc)"
+          make install PREFIX=/tmp/out/net0 LIBDIR_Linux=lib
+          cd /tmp/src-net1
+          time make -j"$(nproc)" NET=1
+          make install NET=1 PREFIX=/tmp/out/net1 LIBDIR_Linux=lib
+          mkdir -p /tmp/out/fw /tmp/fwx
+          curl -fsSL "https://github.com/libkrun/libkrunfw/releases/download/${LIBKRUNFW_VERSION}/libkrunfw-x86_64.tgz" | tar xz -C /tmp/fwx
+          find /tmp/fwx -name 'libkrunfw.so*' -exec cp -a {} /tmp/out/fw/ \;
+          find /tmp/out
+
+      - name: Prepare rootfs and launcher
+        run: |
+          set -euxo pipefail
+          find /tmp/out -maxdepth 3
+          mkdir -p /tmp/root
+          curl -fsSL "$ALPINE_URL" | tar xz -C /tmp/root
+          echo 'nameserver 1.1.1.1' > /tmp/root/etc/resolv.conf
+          ls /tmp/root/usr/bin/getent /tmp/root/bin/busybox
+          cat > /tmp/launcher.c <<'C'
+          #define _GNU_SOURCE
+          #include <dlfcn.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <libkrun.h>
+
+          typedef int32_t (*tap_fn)(uint32_t, const char *, const uint8_t *, uint32_t, uint32_t);
+
+          int main(int argc, char **argv) {
+              if (argc < 3) {
+                  fprintf(stderr, "usage: launcher ROOT EXEC [ARGS...]\n");
+                  return 125;
+              }
+
+              const char *lvl = getenv("T_LOG");
+              if (lvl) {
+                  fprintf(stderr, "launcher: krun_set_log_level(%s) = %d\n", lvl, krun_set_log_level(atoi(lvl)));
+              }
+
+              int ctx = krun_create_ctx();
+              if (ctx < 0) { fprintf(stderr, "launcher: create_ctx %d\n", ctx); return 125; }
+
+              int r = krun_set_vm_config(ctx, 2, 1024);
+              if (r) { fprintf(stderr, "launcher: vm_config %d\n", r); return 125; }
+
+              r = krun_set_root(ctx, argv[1]);
+              if (r) { fprintf(stderr, "launcher: set_root %d\n", r); return 125; }
+
+              if (getenv("T_NOVSOCK")) {
+                  fprintf(stderr, "launcher: krun_disable_implicit_vsock = %d\n", krun_disable_implicit_vsock(ctx));
+              }
+
+              const char *tap = getenv("T_TAP");
+              if (tap) {
+                  tap_fn f = (tap_fn)dlsym(RTLD_DEFAULT, "krun_add_net_tap");
+                  if (!f) { fprintf(stderr, "launcher: krun_add_net_tap not exported\n"); return 125; }
+                  uint8_t mac[6] = {0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee};
+                  fprintf(stderr, "launcher: krun_add_net_tap(%s) = %d\n", tap, f(ctx, tap, mac, COMPAT_NET_FEATURES, 0));
+              }
+
+              const char *pm = getenv("T_PORTMAP");
+              if (pm) {
+                  const char *const map[] = {pm, NULL};
+                  fprintf(stderr, "launcher: krun_set_port_map(%s) = %d\n", pm, krun_set_port_map(ctx, map));
+              }
+
+              const char *const envp[] = {"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root", "TERM=xterm", NULL};
+              r = krun_set_exec(ctx, argv[2], (const char *const *)&argv[3], envp);
+              if (r) { fprintf(stderr, "launcher: set_exec %d\n", r); return 125; }
+
+              r = krun_start_enter(ctx);
+              fprintf(stderr, "launcher: start_enter returned %d\n", r);
+              return 125;
+          }
+          C
+          gcc -O2 -Wall -o /tmp/launcher /tmp/launcher.c -I/tmp/out/net0/include -L/tmp/out/net0/lib -lkrun -ldl
+          ldd /tmp/launcher
+
+      - name: Symbols and deps
+        run: |
+          set +e
+          for v in net0 net1; do
+            ls -l /tmp/out/$v/lib
+            nm -D --defined-only /tmp/out/$v/lib/libkrun.so.1 | grep krun_ | awk '{print $3}' | sort > /tmp/sym-$v.txt
+            wc -l /tmp/sym-$v.txt
+            ldd /tmp/out/$v/lib/libkrun.so.1 | awk '{print $1}' | sort > /tmp/ldd-$v.txt
+          done
+          echo "=== SYMBOL DIFF net0 -> net1"; diff /tmp/sym-net0.txt /tmp/sym-net1.txt; echo "diff rc=$?"
+          echo "=== LDD DIFF net0 -> net1"; diff /tmp/ldd-net0.txt /tmp/ldd-net1.txt; echo "diff rc=$?"
+          cat /tmp/ldd-net1.txt
+
+      - name: Parity tests
+        run: |
+          set +e
+          sec() { echo; echo "=================== $* ==================="; }
+          run() { # variant cmd...
+            local v=$1; shift
+            LD_LIBRARY_PATH=/tmp/out/$v/lib:/tmp/out/fw timeout 60 /tmp/launcher /tmp/root "$@"
+            echo "[$v] rc=$?"
+          }
+          for v in net0 net1; do
+            sec "$v T1 echo hi"; run $v /bin/echo hi
+            sec "$v T1 exit 7"; run $v /bin/sh -c 'exit 7'
+            sec "$v T1 nonexistent"; run $v /bin/nonexistent-cmd
+            sec "$v T1 nonexistent via sh"; run $v /bin/sh -c 'nonexistent-cmd'
+            sec "$v T2 net info"; run $v /bin/sh -c 'cat /proc/net/dev; ip addr; ip route'
+            sec "$v T2 wget 1.1.1.1"; run $v /bin/sh -c 'wget -q -T 10 -O- http://1.1.1.1 | head -c 300; echo; echo wget-rc=$?; printf "GET / HTTP/1.0\r\nHost: 1.1.1.1\r\n\r\n" | nc -w 5 1.1.1.1 80 | head -3; echo nc-done'
+            sec "$v T2 getent"; run $v /bin/sh -c 'getent hosts example.com; echo getent-rc=$?; nslookup example.com 1.1.1.1; echo nslookup-rc=$?'
+            sec "$v T3 novsock"; T_NOVSOCK=1 run $v /bin/sh -c 'wget -q -T 5 -O- http://1.1.1.1; echo wget-rc=$?; nc -w 3 1.1.1.1 80 </dev/null; echo nc-rc=$?; getent hosts example.com; echo getent-rc=$?; cat /proc/net/dev'
+            sec "$v T4 portmap"
+            T_PORTMAP=18080:8080 LD_LIBRARY_PATH=/tmp/out/$v/lib:/tmp/out/fw timeout 40 /tmp/launcher /tmp/root /bin/sh -c 'mkdir -p /www; echo hello-$(uname -r) > /www/index.html; busybox httpd -p 8080 -h /www; busybox httpd -p 9090 -h /www; echo guest-listening; sleep 25' > /tmp/pm-$v.log 2>&1 &
+            P=$!
+            for i in $(seq 1 30); do curl -s -m 1 -o /dev/null http://127.0.0.1:18080/ && break; sleep 0.5; done
+            echo "--- curl 18080 (mapped)"; curl -sS -m 5 http://127.0.0.1:18080/; echo "curl-rc=$?"
+            echo "--- curl 8080 (guest port, unmapped on host)"; curl -sS -m 5 http://127.0.0.1:8080/; echo "curl-rc=$?"
+            echo "--- curl 9090 (other guest port)"; curl -sS -m 5 http://127.0.0.1:9090/; echo "curl-rc=$?"
+            ss -ltnp | grep -E '18080|8080|9090'
+            kill $P; wait $P; echo "vm rc=$?"; cat /tmp/pm-$v.log
+            sec "$v T5 boot time true x5"
+            for i in 1 2 3 4 5; do
+              s=$EPOCHREALTIME
+              LD_LIBRARY_PATH=/tmp/out/$v/lib:/tmp/out/fw /tmp/launcher /tmp/root /bin/true; rc=$?
+              e=$EPOCHREALTIME
+              echo "$v run$i rc=$rc $(echo "$e - $s" | bc)" | tee -a /tmp/boot-$v.txt
+            done
+            echo "$v median=$(awk '{print $4}' /tmp/boot-$v.txt | sort -n | sed -n 3p)s"
+          done
+
+      - name: Tap hang (NET=1)
+        run: |
+          set +e
+          stamp() { local s=$1; while IFS= read -r l; do printf '+%6.3fs %s\n' "$(echo "$EPOCHREALTIME - $s" | bc)" "$l"; done; }
+          ip link show nonexistent0
+          for lvl in "" 3 5; do
+            echo; echo "=================== tap nonexistent0 T_LOG=${lvl:-unset} ==================="
+            s=$EPOCHREALTIME
+            if [ -n "$lvl" ]; then export T_LOG=$lvl; else unset T_LOG; fi
+            T_TAP=nonexistent0 LD_LIBRARY_PATH=/tmp/out/net1/lib:/tmp/out/fw timeout 45 /tmp/launcher /tmp/root /bin/echo hi-from-tap-vm 2>&1 | stamp $s | head -200
+            echo "pipeline rc=${PIPESTATUS[0]} total=$(echo "$EPOCHREALTIME - $s" | bc)s"
+          done
+          unset T_LOG
+          echo; echo "=================== tap on NET=0 build (expect not exported) ==================="
+          T_TAP=nonexistent0 LD_LIBRARY_PATH=/tmp/out/net0/lib:/tmp/out/fw timeout 20 /tmp/launcher /tmp/root /bin/echo hi; echo "rc=$?"
