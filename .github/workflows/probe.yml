@@ -1,0 +1,162 @@
+name: probe
+on:
+  push:
+    branches: [spike/ci-probe]
+  workflow_dispatch:
+
+jobs:
+  kvm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: facts
+        run: |
+          echo "RUNNER=${{ matrix.os }}"
+          uname -a; uname -m; nproc; free -m; cat /etc/os-release | head -2
+          ls -l /dev/kvm || echo "NO /dev/kvm"
+          id
+          lscpu | grep -iE 'virtualization|model name|hypervisor' || true
+      - name: check before udev
+        run: python3 -c "import os,fcntl; fd=os.open('/dev/kvm',os.O_RDWR); print('BEFORE KVM_GET_API_VERSION', fcntl.ioctl(fd,0xAE00))" || echo "BEFORE: open failed"
+      - name: udev rule
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm || true
+      - name: check after udev
+        run: python3 -c "import os,fcntl; fd=os.open('/dev/kvm',os.O_RDWR); print('AFTER KVM_GET_API_VERSION', fcntl.ioctl(fd,0xAE00))"
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: |
+          echo "RUNNER=${{ matrix.os }}"
+          uname -m; sw_vers
+          sysctl kern.hv_support
+          sysctl machdep.cpu.brand_string
+          sysctl hw.ncpu hw.memsize
+          sysctl kern.hv_vmm_present || true
+
+  libkrun-brew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: brew install libkrun
+        run: |
+          ls -d /home/linuxbrew/.linuxbrew && echo "brew preinstalled" || echo "no brew dir"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew --version
+          export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          s=$(date +%s); brew install libkrun; e=$(date +%s)
+          echo "TIMING brew install libkrun: $((e-s))s"
+          brew list --versions libkrun libkrunfw
+          ls -l "$(brew --prefix)/lib" | grep -i krun
+          echo "PREFIX=$(brew --prefix)" >> $GITHUB_ENV
+      - name: rootfs
+        run: |
+          f=$(curl -fsSL https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/latest-releases.yaml | grep -o 'alpine-minirootfs-[^ ]*-x86_64.tar.gz' | head -1)
+          echo "$f"; mkdir rootfs
+          curl -fsSL "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/$f" | tar -xz -C rootfs
+      - name: build and boot
+        run: |
+          cat > boot.c <<'C'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <libkrun.h>
+          int main(int argc, char **argv) {
+            int ctx = krun_create_ctx();
+            if (ctx < 0) { fprintf(stderr, "create_ctx %d\n", ctx); return 100; }
+            int r = krun_set_vm_config(ctx, 1, 256); if (r) { fprintf(stderr, "vm_config %d\n", r); return 101; }
+            r = krun_set_root(ctx, argv[1]); if (r) { fprintf(stderr, "set_root %d\n", r); return 102; }
+            const char *const envp[] = { 0 };
+            r = krun_set_exec(ctx, argv[2], (const char *const *)&argv[3], envp); if (r) { fprintf(stderr, "set_exec %d\n", r); return 103; }
+            r = krun_start_enter(ctx);
+            fprintf(stderr, "start_enter returned %d\n", r);
+            return 104;
+          }
+          C
+          gcc -o boot boot.c -I"$PREFIX/include" -L"$PREFIX/lib" -lkrun -Wl,-rpath,"$PREFIX/lib"
+          s=$(date +%s%N)
+          ./boot "$PWD/rootfs" /bin/echo hi; echo "EXIT echo: $?"
+          e=$(date +%s%N); echo "TIMING boot echo: $(( (e-s)/1000000 ))ms"
+          ./boot "$PWD/rootfs" /bin/sh -c 'echo in-guest; uname -a; exit 7'; echo "EXIT sh exit 7: $?"
+          ./boot "$PWD/rootfs" /bin/false; echo "EXIT false: $?"
+          ./boot "$PWD/rootfs" /nonexistent; echo "EXIT nonexistent: $?"
+
+  libkrun-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: libkrunfw prebuilt
+        run: |
+          s=$(date +%s)
+          curl -fsSL -o fw.tgz https://github.com/containers/libkrunfw/releases/download/v5.6.4/libkrunfw-x86_64.tgz
+          mkdir fw && tar -xzf fw.tgz -C fw && find fw | head -20
+          e=$(date +%s); echo "TIMING libkrunfw prebuilt download: $((e-s))s"
+      - name: libkrun build from source
+        run: |
+          rustc --version; cargo --version
+          s=$(date +%s)
+          git clone -q --depth 1 --branch v1.19.8 https://github.com/containers/libkrun
+          cd libkrun
+          make -j"$(nproc)" 2>&1 | tail -20
+          e=$(date +%s); echo "TIMING libkrun source build: $((e-s))s"
+          ls -l target/release/ | grep -i krun
+
+  kind-kvm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: kvm access
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: kind
+        run: |
+          which kind && kind version || {
+            curl -fsSLo kind https://kind.sigs.k8s.io/dl/latest/kind-linux-amd64 && chmod +x kind && sudo mv kind /usr/local/bin/; kind version; }
+          cat > kind.yaml <<'Y'
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+            - role: control-plane
+              extraMounts:
+                - hostPath: /dev/kvm
+                  containerPath: /dev/kvm
+          Y
+          s=$(date +%s); kind create cluster --config kind.yaml --wait 120s; e=$(date +%s)
+          echo "TIMING kind create cluster: $((e-s))s"
+          node=kind-control-plane
+          docker exec $node ls -l /dev/kvm
+          docker exec $node sh -c 'test -r /dev/kvm && test -w /dev/kvm && echo "NODE test -r -w: ok" || echo "NODE test -r -w: FAIL"'
+          cat > kvmcheck.c <<'C'
+          #include <fcntl.h>
+          #include <stdio.h>
+          #include <sys/ioctl.h>
+          int main(void) {
+            int fd = open("/dev/kvm", O_RDWR | O_CLOEXEC);
+            if (fd < 0) { perror("open /dev/kvm"); return 1; }
+            int v = ioctl(fd, 0xAE00, 0);
+            printf("KVM_GET_API_VERSION=%d\n", v);
+            return v == 12 ? 0 : 2;
+          }
+          C
+          gcc -static -O2 -o kvmcheck kvmcheck.c
+          ./kvmcheck
+          docker cp kvmcheck $node:/kvmcheck
+          docker exec $node /kvmcheck; echo "NODE kvmcheck exit: $?"
+          kubectl get nodes -o wide
