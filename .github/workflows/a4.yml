@@ -73,7 +73,11 @@ jobs:
           		fmt.Fprintf(os.Stderr, "parent: apparmor label=%s", b)
           	}
           	r, w, _ := os.Pipe()
-          	c := exec.Command("/proc/self/exe", append([]string{"child"}, args...)...)
+          	target := exe
+          	if os.Getenv("SBXR_PROCEXE") != "" {
+          		target = "/proc/self/exe"
+          	}
+          	c := exec.Command(target, append([]string{"child"}, args...)...)
           	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
           	c.ExtraFiles = []*os.File{r}
           	c.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS}
@@ -177,6 +181,23 @@ jobs:
           func child(args []string) {
           	sync := os.NewFile(3, "sync")
           	io.ReadAll(sync)
+          	sync.Close()
+          	um0, _ := os.ReadFile("/proc/self/status")
+          	for _, l := range strings.Split(string(um0), "\n") {
+          		if strings.HasPrefix(l, "CapEff") {
+          			fmt.Fprintf(os.Stderr, "child stage1 (before re-exec): %s\n", l)
+          		}
+          	}
+          	target, _ := os.Executable()
+          	if os.Getenv("SBXR_PROCEXE") != "" {
+          		target = "/proc/self/exe"
+          	}
+          	err := syscall.Exec(target, append([]string{target, "child2"}, args...), os.Environ())
+          	fmt.Fprintf(os.Stderr, "child: re-exec %s failed: %v\n", target, err)
+          	os.Exit(3)
+          }
+
+          func child2(args []string) {
           	um, _ := os.ReadFile("/proc/self/uid_map")
           	lbl, _ := os.ReadFile("/proc/self/attr/current")
           	st, _ := os.ReadFile("/proc/self/status")
@@ -211,6 +232,10 @@ jobs:
           }
 
           func main() {
+          	if len(os.Args) > 1 && os.Args[1] == "child2" {
+          		child2(os.Args[2:])
+          		return
+          	}
           	if len(os.Args) > 1 && os.Args[1] == "child" {
           		child(os.Args[2:])
           		return
@@ -235,6 +260,7 @@ jobs:
           cat > /tmp/t.sh <<'EOF'
           # usage: t.sh label binary mode
           d=$(mktemp -d)
+          sudo dmesg -C
           echo "=== CASE $1: $2 $3"
           if "$2" "$3" "$d" /tmp/alpine.tgz; then
             echo "RESULT $1: PASS"
@@ -243,6 +269,7 @@ jobs:
             echo "RESULT $1: FAIL"
           fi
           sudo rm -rf "$d"
+          sudo dmesg | grep -E 'apparmor="(DENIED|AUDIT)"' | sed -E 's/audit\([^)]*\)//' | head -8
           EOF
           chmod +x /tmp/t.sh
           set +e
@@ -256,6 +283,7 @@ jobs:
           echo "##### no profile"
           $T default-subid /usr/local/bin/sbxr subid
           $T default-single /usr/local/bin/sbxr single
+          SBXR_PROCEXE=1 $T default-procexe /usr/local/bin/sbxr subid
           unshare -Ur id || echo "unshare -Ur failed"
           unshare -Ur sh -c 'touch /tmp/u && chown 0:0 /tmp/u && echo chown-ok' || true
 
@@ -273,6 +301,7 @@ jobs:
           $T A-symlink /tmp/sbxr-link subid
           $T A-copy-other-path /tmp/sbxr-copy subid
           $T A-gobin $HOME/go/bin/sbxr subid
+          SBXR_PROCEXE=1 $T A-procexe /usr/local/bin/sbxr subid
           unload
 
           echo "##### profile A2: unconfined, no abi/include, minimal"
@@ -316,6 +345,28 @@ jobs:
           $T B2-subid /usr/local/bin/sbxr subid
           unload
 
+          echo "##### profile B3: confined, attach_disconnected, broad rules"
+          prof B3 'abi <abi/4.0>,
+          include <tunables/global>
+          profile sbxr /usr/local/bin/sbxr flags=(attach_disconnected) {
+            include <abstractions/base>
+            userns,
+            capability,
+            file,
+            mount,
+            umount,
+            pivot_root,
+            signal,
+            ptrace,
+            unix,
+            network,
+            /usr/bin/newuidmap Ux,
+            /usr/bin/newgidmap Ux,
+            /usr/local/bin/sbxr ix,
+          }'
+          $T B3-subid /usr/local/bin/sbxr subid
+          unload
+
           echo "##### profile G: glob path for go install / homebrew"
           prof G 'abi <abi/4.0>,
           include <tunables/global>
@@ -329,6 +380,7 @@ jobs:
           echo "##### sysctl=0 control"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           $T sysctl0-copy /tmp/sbxr-copy subid
+          SBXR_PROCEXE=1 $T sysctl0-procexe /tmp/sbxr-copy subid
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
 
           echo "##### apparmor denials"
