@@ -81,6 +81,8 @@ jobs:
           #!/bin/sh
           echo "GUEST: start uid=$(id -u) kernel=$(uname -r)"
           ip link show
+          for d in /sys/bus/virtio/devices/*; do echo "GUEST virtio $(basename $d) device=$(cat $d/device)"; done
+          if grep -q 0x0013 /sys/bus/virtio/devices/*/device; then echo "RESULT NO_VSOCK FAIL"; else echo "RESULT NO_VSOCK PASS"; fi
           ip link set lo up
           ip link set eth0 up
           ip addr add 10.88.0.2/24 dev eth0
@@ -93,8 +95,7 @@ jobs:
           r=$(echo hi-udp | nc -u -w 2 10.88.0.1 8001)
           case "$r" in *echo:hi-udp*) echo "RESULT UDP_ECHO PASS got=$r" ;; *) echo "RESULT UDP_ECHO FAIL got=$r" ;; esac
           echo "GUEST: listening on tcp 9000"
-          echo hello-from-guest > /tmp/reply
-          timeout 45 nc -l -p 9000 < /tmp/reply
+          echo hello-from-guest | timeout 45 nc -l -p 9000
           echo "GUEST: listener exited rc=$?"
           sleep 2
           echo "GUEST: done"
@@ -173,7 +174,7 @@ jobs:
           if [ "$vmmuser" = root ]; then
             sudo timeout 120 ip netns exec pod $A/launcher $A/rootfs tap0 "$MAC" /a8.sh
           else
-            sudo timeout 120 ip netns exec pod sudo -u "$vmmuser" sh -c "grep -E 'Uid|CapEff' /proc/self/status; exec $A/launcher $A/rootfs tap0 $MAC /a8.sh"
+            sudo timeout 120 ip netns exec pod sudo -u "$vmmuser" A8_LOG=${A8_LOG:-2} sh -c "grep -E 'Uid|CapEff' /proc/self/status; exec $A/launcher $A/rootfs tap0 $MAC /a8.sh"
           fi
           echo "VMM exit rc=$?"
           wait $CP; cat /tmp/client_$name.txt
@@ -203,10 +204,15 @@ jobs:
           ./scenario.sh nonroot runner runner 2>&1 | tee /tmp/out_nonroot.txt
           cat /tmp/servers.txt
 
-      - name: Negative, non-root VMM, root-owned tap
+      - name: Non-root VMM, unowned tap (no user set)
         run: |
           cd "$HOME/a8"
-          ./scenario.sh negative root runner 2>&1 | tee /tmp/out_neg.txt | grep -vE '^\s*$' | tail -40
+          ./scenario.sh unowned root runner 2>&1 | tee /tmp/out_unowned.txt
+
+      - name: Negative, non-root VMM, tap owned by nobody
+        run: |
+          cd "$HOME/a8"
+          A8_LOG=3 ./scenario.sh otheruser nobody runner 2>&1 | tee /tmp/out_otheruser.txt
 
       - name: Summary
         if: always()
