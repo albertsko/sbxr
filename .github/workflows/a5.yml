@@ -41,7 +41,7 @@ jobs:
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
           cat /etc/os-release
-          ldd --version | head -1
+          ldd --version | sed -n 1p
           ls /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu > /tmp/pristine-libs.txt
           apt-get update
           apt-get install -y --no-install-recommends build-essential git curl ca-certificates libclang-dev clang pkg-config make autoconf automake libtool libcap-dev libseccomp-dev libyajl-dev python3 xz-utils file
