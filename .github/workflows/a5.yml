@@ -1,0 +1,365 @@
+name: a5-kind-krun
+on:
+  push:
+    branches: [spike/a5-kind-krun]
+permissions:
+  contents: read
+env:
+  NODE_IMAGE: kindest/node:v1.37.0
+  LIBKRUN_VERSION: v1.19.8
+  LIBKRUNFW_VERSION: v5.6.4
+  CRUN_VERSION: "1.31"
+jobs:
+  a5:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Host info
+        run: |
+          date -u +%s > /tmp/t0
+          uname -a; cat /etc/os-release | head -3; kind version; docker version --format '{{.Server.Version}}'; nproc; free -m
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Cache build outputs
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: out
+          key: a5-out-v1-${{ env.NODE_IMAGE }}-${{ env.LIBKRUN_VERSION }}-${{ env.LIBKRUNFW_VERSION }}-${{ env.CRUN_VERSION }}
+
+      - name: Build libkrun, libkrunfw, crun inside node image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p out
+          cat > /tmp/build.sh <<'SCRIPT'
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          cat /etc/os-release
+          ldd --version | head -1
+          ls /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu > /tmp/pristine-libs.txt
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential git curl ca-certificates libclang-dev clang pkg-config make autoconf automake libtool libcap-dev libseccomp-dev libyajl-dev python3 xz-utils file
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          . "$HOME/.cargo/env"
+          rustc --version
+
+          mkdir -p /out/usr/local/lib /out/usr/local/bin /tmp/fw
+          curl -fsSL "https://github.com/libkrun/libkrunfw/releases/download/${LIBKRUNFW_VERSION}/libkrunfw-x86_64.tgz" | tar xz -C /tmp/fw
+          cp -a /tmp/fw/lib/x86_64-linux-gnu/libkrunfw.so* /out/usr/local/lib/
+
+          git clone -q --depth 1 -b "${LIBKRUN_VERSION}" https://github.com/libkrun/libkrun /src/libkrun
+          cd /src/libkrun
+          time make -j"$(nproc)"
+          make install PREFIX=/usr/local LIBDIR_Linux=lib
+          make install PREFIX=/usr/local LIBDIR_Linux=lib DESTDIR=/out
+          ldconfig
+
+          mkdir -p /src/crun
+          curl -fsSL "https://github.com/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}.tar.gz" | tar xz -C /src/crun --strip-components=1
+          cd /src/crun
+          ./configure --prefix=/usr/local --with-libkrun --disable-systemd
+          make -j"$(nproc)"
+          install -m 755 crun /out/usr/local/bin/crun
+          /out/usr/local/bin/crun --version
+
+          # Copy shared libs that the pristine node image lacks.
+          for f in /out/usr/local/bin/crun /usr/local/lib/libkrun.so.1; do
+            ldd "$f" | awk '/=>/ {print $3}'
+          done | sort -u | while read -r lib; do
+            [ -n "$lib" ] || continue
+            if ! grep -qx "$(basename "$lib")" /tmp/pristine-libs.txt; then
+              echo "bundling $lib"
+              cp -L "$lib" /out/usr/local/lib/
+            fi
+          done
+          rm -rf /out/usr/local/lib/pkgconfig
+          find /out -type f -o -type l | sort
+          SCRIPT
+          docker run --rm -e LIBKRUN_VERSION -e LIBKRUNFW_VERSION -e CRUN_VERSION \
+            -v "$PWD/out:/out" -v /tmp/build.sh:/build.sh:ro \
+            --entrypoint bash "$NODE_IMAGE" /build.sh
+
+      - name: Create kind cluster
+        run: |
+          cat > /tmp/kind.yaml <<'K'
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+            - role: control-plane
+              extraMounts:
+                - hostPath: /dev/kvm
+                  containerPath: /dev/kvm
+          K
+          time kind create cluster --image "$NODE_IMAGE" --config /tmp/kind.yaml --wait 120s
+          ls -l /dev/kvm
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
+          docker exec kind-control-plane ls -l /dev/kvm
+
+      - name: Install sbxr runtime into node
+        run: |
+          N=kind-control-plane
+          docker cp out/usr/local/. $N:/usr/local/
+          docker exec $N ldconfig
+          docker exec $N ln -sf /usr/local/bin/crun /usr/local/bin/krun
+          docker exec $N /usr/local/bin/krun --version
+          docker exec $N sh -c 'ldd /usr/local/bin/crun; ldconfig -p | grep -E "krun"'
+          docker exec $N sh -c 'containerd --version; head -5 /etc/containerd/config.toml'
+          docker exec $N sh -c 'cat >> /etc/containerd/config.toml <<T
+
+          [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr]
+            runtime_type = "io.containerd.runc.v2"
+            pod_annotations = ["krun.*"]
+            [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr.options]
+              BinaryName = "/usr/local/bin/krun"
+          T'
+          docker exec $N systemctl restart containerd
+          sleep 5
+          docker exec $N systemctl is-active containerd
+          docker exec $N sh -c 'crictl info | grep -A8 "\"sbxr\"" | head -20'
+          kubectl wait --for=condition=Ready node --all --timeout=120s
+          kubectl apply -f - <<'Y'
+          apiVersion: node.k8s.io/v1
+          kind: RuntimeClass
+          metadata:
+            name: sbxr
+          handler: sbxr
+          Y
+
+      - name: Checks
+        run: |
+          set +e
+          N=kind-control-plane
+          dbg() { kubectl describe pod "$1" | tail -25; docker exec $N journalctl -u containerd --no-pager | tail -40; }
+          sec() { echo; echo "=================== $* ==================="; }
+
+          kubectl apply -f - <<'Y'
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: vm-uname}
+          spec:
+            runtimeClassName: sbxr
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'echo KERNEL=$(uname -r); nproc; free -m; head -2 /proc/meminfo; cat /proc/cmdline; cat /etc/resolv.conf; ip addr 2>&1 | head -20; sleep 3600']
+                resources: {limits: {memory: 512Mi}}
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: runc-uname}
+          spec:
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'echo KERNEL=$(uname -r); sleep 3600']
+          Y
+          T=$(date +%s.%N)
+          kubectl wait --for=condition=Ready pod/vm-uname --timeout=180s || dbg vm-uname
+          echo "vm-uname ready after $(echo "$(date +%s.%N) - $T" | bc)s (includes image pull)"
+          kubectl wait --for=condition=Ready pod/runc-uname --timeout=120s
+          sleep 3
+          sec "A5 uname vm"; kubectl logs vm-uname
+          sec "A5 uname runc"; kubectl logs runc-uname
+          sec "A5 node processes"
+          docker exec $N ps -eo pid,ppid,rss,comm,args | grep -vE 'kube-|etcd|containerd |coredns|local-path|kindnet' 
+          sec "A5 crictl"
+          docker exec $N crictl pods -o table
+          docker exec $N sh -c 'for p in $(crictl pods -q); do crictl inspectp $p | grep -E "\"runtimeHandler\"|\"name\": \"vm-|\"name\": \"runc-" | head -3; done'
+          docker exec $N sh -c 'for c in $(crictl ps -q --name c); do crictl inspect $c | grep -E "\"pid\"|runtimeType|BinaryName|runtimeHandler" | head -5; done'
+          sec "A5 pause and VMM exe and cgroup"
+          docker exec $N sh -c 'for p in $(pgrep -f "^/pause"); do echo "pause pid $p exe=$(readlink /proc/$p/exe) cg=$(cat /proc/$p/cgroup)"; done'
+          docker exec $N sh -c 'for c in $(crictl ps -q --name c); do pid=$(crictl inspect $c | grep -m1 "\"pid\"" | tr -dc 0-9); echo "ctr $c pid $pid exe=$(readlink /proc/$pid/exe) comm=$(cat /proc/$pid/comm) threads=$(ls /proc/$pid/task | wc -l) kvmfd=$(ls -l /proc/$pid/fd 2>/dev/null | grep -c kvm) rss=$(grep VmRSS /proc/$pid/status)"; cat /proc/$pid/cgroup; done'
+
+          kubectl apply -f - <<'Y'
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: vm-exit}
+          spec:
+            runtimeClassName: sbxr
+            restartPolicy: Never
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'echo to-stdout-1; echo to-stderr-1 >&2; echo to-stdout-2; sleep 1; exit 3']
+          Y
+          kubectl wait --for=jsonpath='{.status.phase}'=Failed pod/vm-exit --timeout=120s || { kubectl get pod vm-exit -o wide; dbg vm-exit; }
+          sec "A6 logs"; kubectl logs vm-exit
+          sec "A6 logs stdout only (2>/dev/null)"; kubectl logs vm-exit 2>/dev/null
+          sec "A6 CRI log file"; docker exec $N sh -c 'cat /var/log/pods/default_vm-exit_*/c/*.log'
+          sec "A6 status"; kubectl get pod vm-exit -o jsonpath='{.status.containerStatuses[0].state}'; echo
+
+          kubectl apply -f - <<'Y'
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: web, labels: {app: web}}
+          spec:
+            runtimeClassName: sbxr
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'mkdir -p /www; echo hello-from-vm-$(uname -r) > /www/index.html; exec httpd -f -v -p 8080 -h /www']
+                ports: [{containerPort: 8080}]
+                readinessProbe: {tcpSocket: {port: 8080}, periodSeconds: 2}
+                livenessProbe: {tcpSocket: {port: 8080}, periodSeconds: 5}
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: web-http}
+          spec:
+            runtimeClassName: sbxr
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'mkdir -p /www; echo ok > /www/index.html; exec httpd -f -v -p 8080 -h /www']
+                readinessProbe: {httpGet: {path: /index.html, port: 8080}, periodSeconds: 2}
+                livenessProbe: {httpGet: {path: /index.html, port: 8080}, periodSeconds: 5}
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: web-exec}
+          spec:
+            runtimeClassName: sbxr
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'mkdir -p /www; echo ok > /www/index.html; exec httpd -f -v -p 8080 -h /www']
+                readinessProbe: {exec: {command: [cat, /www/index.html]}, periodSeconds: 2}
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata: {name: web}
+          spec:
+            selector: {app: web}
+            ports: [{port: 80, targetPort: 8080}]
+          Y
+          kubectl wait --for=condition=Ready pod/web --timeout=120s || dbg web
+          kubectl wait --for=condition=Ready pod/web-http --timeout=60s || dbg web-http
+          kubectl wait --for=condition=Ready pod/web-exec --timeout=30s || dbg web-exec
+          sleep 15
+          sec "A9 pod status"; kubectl get pods -o wide
+          sec "A9 restarts"; kubectl get pods web web-http web-exec -o jsonpath='{range .items[*]}{.metadata.name} ready={.status.containerStatuses[0].ready} restarts={.status.containerStatuses[0].restartCount}{"\n"}{end}'
+          sec "A9 web-exec events"; kubectl describe pod web-exec | tail -10
+          sec "A9 web logs"; kubectl logs web | tail -5
+          sec "A9 kubectl exec"; kubectl exec web -- uname -r; echo "exit=$?"
+          sec "A9 kubectl exec -it-less cat"; kubectl exec web -- cat /www/index.html; echo "exit=$?"
+          sec "A9 port-forward"
+          kubectl port-forward pod/web 18080:8080 > /tmp/pf.log 2>&1 &
+          PF=$!; sleep 3
+          curl -sS -m 5 http://127.0.0.1:18080/; echo "curl exit=$?"
+          curl -sS -m 5 http://127.0.0.1:18080/; echo "curl exit=$?"
+          kill $PF; cat /tmp/pf.log
+          sec "A9 port-forward svc"
+          kubectl port-forward svc/web 18081:80 > /tmp/pf2.log 2>&1 &
+          PF=$!; sleep 3
+          curl -sS -m 5 http://127.0.0.1:18081/; echo "curl exit=$?"
+          kill $PF; cat /tmp/pf2.log
+          WEB_IP=$(kubectl get pod web -o jsonpath='{.status.podIP}')
+          sec "A9 node -> pod IP"; docker exec $N sh -c "curl -sS -m 5 http://$WEB_IP:8080/"; echo "exit=$?"
+          kubectl apply -f - <<Y
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: vm-client}
+          spec:
+            runtimeClassName: sbxr
+            restartPolicy: Never
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'cat /etc/resolv.conf; echo ---nslookup; nslookup web.default.svc.cluster.local; echo rc=\$?; nslookup kubernetes.io; echo rc=\$?; echo ---svc; wget -qO- -T 5 http://web; echo rc=\$?; echo ---podip; wget -qO- -T 5 http://$WEB_IP:8080; echo rc=\$?; echo ---apiserver; wget -qO- -T 5 --no-check-certificate https://kubernetes.default.svc/version; echo rc=\$?']
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: runc-client}
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: c
+                image: busybox:1.37
+                command: [sh, -c, 'wget -qO- -T 5 http://web; echo rc=\$?; wget -qO- -T 5 http://$WEB_IP:8080; echo rc=\$?']
+          Y
+          sleep 2
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/vm-client --timeout=90s
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/runc-client --timeout=60s
+          sec "A9 vm-client"; kubectl logs vm-client; kubectl get pod vm-client -o jsonpath='{.status.containerStatuses[0].state}'; echo
+          sec "A9 runc-client"; kubectl logs runc-client
+
+          sec "A9 memory: vm-uname has limit 512Mi"; kubectl logs vm-uname | grep -iE 'mem|KERNEL'
+          kubectl apply -f - <<'Y'
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: vm-oom}
+          spec:
+            runtimeClassName: sbxr
+            restartPolicy: Never
+            containers:
+              - name: c
+                image: python:3.13-alpine
+                command: [python3, -c]
+                args:
+                  - |
+                    import time
+                    print(open("/proc/meminfo").read().splitlines()[:2], flush=True)
+                    a = []
+                    for i in range(100):
+                        a.append(b"x" * (10 << 20))
+                        print("alloc", (i + 1) * 10, "MiB", flush=True)
+                        time.sleep(0.1)
+                    print("done-no-oom", flush=True)
+                resources: {limits: {memory: 256Mi}}
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: vm-oom-headroom
+            annotations: {krun.ram_mib: "200"}
+          spec:
+            runtimeClassName: sbxr
+            restartPolicy: Never
+            containers:
+              - name: c
+                image: python:3.13-alpine
+                command: [python3, -c]
+                args:
+                  - |
+                    import time
+                    print(open("/proc/meminfo").read().splitlines()[:2], flush=True)
+                    a = []
+                    for i in range(100):
+                        a.append(b"x" * (10 << 20))
+                        print("alloc", (i + 1) * 10, "MiB", flush=True)
+                        time.sleep(0.1)
+                    print("done-no-oom", flush=True)
+                resources: {limits: {memory: 320Mi}}
+          Y
+          for p in vm-oom vm-oom-headroom; do
+            for i in $(seq 1 60); do ph=$(kubectl get pod $p -o jsonpath='{.status.phase}'); [ "$ph" = Succeeded ] || [ "$ph" = Failed ] && break; sleep 3; done
+            sec "A9 $p"; kubectl logs $p | grep -vE '^alloc [0-9]*[1-9]0 MiB' | tail -25; kubectl logs $p | grep alloc | tail -2
+            kubectl get pod $p -o jsonpath='{.status.phase} {.status.containerStatuses[0].state}'; echo
+          done
+          docker exec $N sh -c 'dmesg 2>/dev/null | grep -i -E "oom|killed" | tail -10'
+          sudo dmesg | grep -i -E 'oom|killed process' | tail -10
+
+          sec "A9 deletion timing"
+          docker exec $N ps -eo pid,ppid,comm,args | grep -E 'httpd|krun|crun|pause|containerd-shim' | grep -v grep
+          for p in web web-http web-exec vm-uname; do
+            s=$(date +%s.%N); kubectl delete pod $p --wait=true; echo "delete $p took $(echo "$(date +%s.%N) - $s" | bc)s"
+          done
+          sleep 3
+          sec "A9 lingering after delete"
+          docker exec $N ps -eo pid,ppid,comm,args | grep -E 'httpd|krun|crun|pause|containerd-shim|sleep' | grep -v grep
+          docker exec $N crictl ps -a
+          docker exec $N crictl pods
+          echo "TOTAL_SECONDS=$(( $(date -u +%s) - $(cat /tmp/t0) ))"
+
+      - name: Debug on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          docker exec kind-control-plane journalctl -u containerd --no-pager | tail -80 || true
