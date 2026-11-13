@@ -6,6 +6,7 @@ on:
 
 jobs:
   kvm:
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -35,6 +36,7 @@ jobs:
           python3 -c "import os,fcntl; fd=os.open('/dev/kvm',os.O_RDWR); print('AFTER KVM_GET_API_VERSION', fcntl.ioctl(fd,0xAE00))" || echo "AFTER: open failed"
 
   macos:
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +54,7 @@ jobs:
           sysctl kern.hv_vmm_present || true
 
   libkrun-brew:
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: kvm access
@@ -116,10 +119,11 @@ jobs:
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          s=$(date +%s); sudo apt-get install -y -qq libvirglrenderer1 >/dev/null; echo "TIMING apt libvirglrenderer1: $(( $(date +%s)-s ))s"; dpkg -l libvirglrenderer1 | tail -1
           s=$(date +%s); brew install --ignore-dependencies libkrunfw libkrun; e=$(date +%s)
           echo "TIMING brew install --ignore-dependencies: $((e-s))s"
           P=$(brew --prefix); echo "PREFIX=$P" >> $GITHUB_ENV
-          ldd "$P/lib/libkrun.so" | grep -vE 'libc.so|ld-linux|linux-vdso'
+          ldd "$P/lib/libkrun.so"
       - name: rootfs
         run: |
           f=$(curl -fsSL https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/latest-releases.yaml | grep -o 'alpine-minirootfs-[^ ]*-x86_64.tar.gz' | head -1)
@@ -147,6 +151,7 @@ jobs:
           ./boot "$PWD/rootfs" /bin/sh -c 'exit 7'; echo "EXIT sh exit 7: $?"
 
   libkrun-source:
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: kvm access
@@ -195,9 +200,13 @@ jobs:
                   containerPath: /dev/kvm
           Y
           s=$(date +%s); docker pull -q kindest/node:v1.37.0 >/dev/null 2>&1 || true; echo "TIMING node image pull: $(( $(date +%s)-s ))s"
+          stat -c 'HOST before kind %a' /dev/kvm
           s=$(date +%s); kind create cluster --config kind.yaml --wait 120s; e=$(date +%s)
           echo "TIMING kind create cluster: $((e-s))s"
           node=kind-control-plane
+          set +e
+          stat -c 'HOST after kind %a %z' /dev/kvm
+          sudo journalctl --since "-3min" --no-pager | grep -i kvm | tail -20
           docker exec $node ls -l /dev/kvm
           docker exec $node sh -c 'test -r /dev/kvm && test -w /dev/kvm && echo "NODE test -r -w: ok" || echo "NODE test -r -w: FAIL"'
           cat > kvmcheck.c <<'C'
@@ -213,7 +222,8 @@ jobs:
           }
           C
           gcc -static -O2 -o kvmcheck kvmcheck.c
-          ./kvmcheck
+          ./kvmcheck; echo "HOST kvmcheck exit: $?"
+          sudo chmod 666 /dev/kvm; ./kvmcheck; echo "HOST after chmod exit: $?"
           docker cp kvmcheck $node:/kvmcheck
           set +e
           docker exec $node /kvmcheck; echo "NODE kvmcheck exit: $?"
