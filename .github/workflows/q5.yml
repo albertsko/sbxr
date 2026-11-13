@@ -1,0 +1,191 @@
+name: q5-ownership-spike
+on:
+  push:
+    branches: [spike/q5-ownership]
+permissions:
+  contents: read
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm; uname -a; cat /etc/os-release | head -3
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq uidmap erofs-utils e2fsprogs >/dev/null
+          unshare --version; mkfs.erofs --version | head -1; mke2fs -V 2>&1 | head -1
+          id; grep "^$(id -un):" /etc/subuid /etc/subgid || true
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+
+      - name: Install libkrunfw (prebuilt) and build libkrun v1.19.8
+        run: |
+          start=$(date +%s)
+          mkdir -p /tmp/kfw && cd /tmp/kfw
+          curl -fsSL -o kfw.tgz https://github.com/containers/libkrunfw/releases/download/v5.6.4/libkrunfw-x86_64.tgz
+          tar tzf kfw.tgz | head -20
+          sudo tar xzf kfw.tgz -C /usr/local
+          git clone -q --depth 1 --branch v1.19.8 https://github.com/containers/libkrun /tmp/libkrun
+          cd /tmp/libkrun && make -j"$(nproc)" >/tmp/build.log 2>&1 || { tail -50 /tmp/build.log; exit 1; }
+          sudo make install PREFIX=/usr/local >/dev/null
+          sudo ldconfig
+          ls -l /usr/local/lib*/libkrun* || true
+          echo "install took $(( $(date +%s) - start ))s"
+
+      - name: Build harness
+        run: |
+          mkdir -p /tmp/h && cat > /tmp/h/krunrun.c <<'CEOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <libkrun.h>
+          /* usage: krunrun fs <rootdir> <cmd...>   |   krunrun disk <img> <fstype> <cmd...> */
+          int main(int argc, char **argv) {
+            int ctx = krun_create_ctx();
+            if (ctx < 0) { fprintf(stderr, "create_ctx %d\n", ctx); return 90; }
+            krun_set_log_level(ctx, 1);
+            krun_set_vm_config(ctx, 1, 512);
+            int i, r;
+            if (strcmp(argv[1], "fs") == 0) {
+              r = krun_set_root(ctx, argv[2]);
+              if (r) { fprintf(stderr, "set_root %d\n", r); return 91; }
+              i = 3;
+            } else {
+              r = krun_add_disk(ctx, "vda", argv[2], 1);
+              if (r) { fprintf(stderr, "add_disk %d\n", r); return 92; }
+              r = krun_set_root_disk_remount(ctx, "/dev/vda", argv[3], NULL);
+              if (r) { fprintf(stderr, "remount %d\n", r); return 93; }
+              i = 4;
+            }
+            const char *envp[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+            r = krun_set_exec(ctx, argv[i], (const char *const *)&argv[i + 1], envp);
+            if (r) { fprintf(stderr, "set_exec %d\n", r); return 94; }
+            r = krun_start_enter(ctx);
+            fprintf(stderr, "start_enter %d\n", r);
+            return 95;
+          }
+          CEOF
+          sed -i 's/^          //' /tmp/h/krunrun.c
+          gcc -O1 -o /tmp/h/krunrun /tmp/h/krunrun.c -I/usr/local/include -L/usr/local/lib64 -L/usr/local/lib -lkrun -Wl,-rpath,/usr/local/lib64:/usr/local/lib
+          ldd /tmp/h/krunrun | grep krun
+
+      - name: Prepare tarballs
+        run: |
+          cd /tmp
+          curl -fsSL -o alpine.tar.gz https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.2-x86_64.tar.gz
+          gunzip -k alpine.tar.gz
+          # Extra layer with setuid file, uid 1000 file, hardlink, device node, OCI whiteout, all with root/1000 owners in the tar header.
+          python3 - <<'PY'
+          import tarfile, io
+          def add(t, name, data=b"", mode=0o644, uid=0, gid=0, type=tarfile.REGTYPE, link="", dev=(0,0)):
+              ti = tarfile.TarInfo(name); ti.mode=mode; ti.uid=uid; ti.gid=gid; ti.type=type; ti.linkname=link
+              ti.devmajor, ti.devminor = dev; ti.size=len(data) if type==tarfile.REGTYPE else 0
+              t.addfile(ti, io.BytesIO(data) if type==tarfile.REGTYPE else None)
+          with tarfile.open("/tmp/extra.tar", "w", format=tarfile.GNU_FORMAT) as t:
+              add(t, "q5/suid", b"#!/bin/sh\nid\n", mode=0o4755)
+              add(t, "q5/user1000", b"x", uid=1000, gid=1000)
+              add(t, "q5/hardlink", type=tarfile.LNKTYPE, link="q5/suid")
+              add(t, "q5/null", mode=0o666, type=tarfile.CHRTYPE, dev=(1,3))
+              add(t, "q5/.wh.gone")
+          PY
+          tar tvf /tmp/extra.tar
+          # Combined tarball for mkfs.erofs --tar (drop char device to keep the build non-root friendly as well as test it separately).
+          mkdir -p /tmp/cat && cp alpine.tar /tmp/combined.tar && tar --concatenate -f /tmp/combined.tar /tmp/extra.tar
+          tar tvf /tmp/combined.tar | grep -E 'etc/shadow$|bin/busybox$|q5/'
+
+      - name: Guest check script
+        run: |
+          cat > /tmp/check.sh <<'SEOF'
+          echo "GUEST: id=$(id)"
+          for f in /etc/shadow /bin/busybox /q5/suid /q5/user1000 /q5/hardlink /q5/null /q5/.wh.gone; do
+            stat -c "GUEST: %n %u:%g %A links=%h type=%F" "$f" 2>&1 | sed 's/^stat:/GUEST: stat:/'
+          done
+          touch /tmp/new && chown 1000:1000 /tmp/new && stat -c "GUEST: chown-in-guest %n %u:%g" /tmp/new || echo "GUEST: chown-in-guest FAILED"
+          touch /root/x 2>/dev/null; chown 1234:1234 /root/x && stat -c "GUEST: chown-on-root-fs %n %u:%g" /root/x || echo "GUEST: chown-on-root-fs FAILED"
+          mknod /root/dev0 c 1 3 && stat -c "GUEST: mknod %n %F %t,%T" /root/dev0 || echo "GUEST: mknod FAILED"
+          chmod u+s /root/x && stat -c "GUEST: chmod-suid %n %A" /root/x || echo "GUEST: chmod-suid FAILED"
+          exit 7
+          SEOF
+          chmod +x /tmp/check.sh
+
+      - name: "B0 control: plain non-root unpack, no userns"
+        continue-on-error: true
+        run: |
+          set +e
+          id -u
+          mkdir -p /tmp/b0 && tar -xpf /tmp/alpine.tar -C /tmp/b0 2>&1 | tail -3
+          tar -xpf /tmp/extra.tar -C /tmp/b0 2>&1 | tail -5
+          cp /tmp/check.sh /tmp/b0/check.sh
+          ls -ln /tmp/b0/etc/shadow /tmp/b0/bin/busybox /tmp/b0/q5/ 2>&1
+          timeout 120 /tmp/h/krunrun fs /tmp/b0 /bin/sh /check.sh; echo "HOST: B0 exit=$?"
+
+      - name: "B1: userns with AppArmor restriction left on (default)"
+        continue-on-error: true
+        run: |
+          set +e
+          unshare --user --map-auto --map-root-user sh -c 'id; cat /proc/self/uid_map; mkdir /tmp/b1x && tar -xpf /tmp/alpine.tar -C /tmp/b1x 2>&1 | tail -3; ls -ln /tmp/b1x/etc/shadow'
+          echo "rc=$?"
+
+      - name: Relax AppArmor userns restriction (setup step, root)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=0 || true
+
+      - name: "B: unpack and run VMM inside userns (subuid mapping)"
+        continue-on-error: true
+        run: |
+          set +e
+          start=$(date +%s)
+          cat > /tmp/b.sh <<'BEOF'
+          set -x
+          id; cat /proc/self/uid_map /proc/self/gid_map
+          mkdir -p /tmp/b && tar -xpf /tmp/alpine.tar -C /tmp/b
+          tar -xpf /tmp/extra.tar -C /tmp/b; echo "extra-tar rc=$?"
+          cp /tmp/check.sh /tmp/b/check.sh
+          ls -ln /tmp/b/etc/shadow /tmp/b/bin/busybox /tmp/b/q5/
+          timeout 120 /tmp/h/krunrun fs /tmp/b /bin/sh /check.sh; echo "HOST(in userns): B exit=$?"
+          BEOF
+          unshare --user --map-auto --map-root-user sh /tmp/b.sh 2>&1
+          echo "HOST: unshare rc=$?"
+          echo "--- host view of unpacked files (outside userns)"
+          ls -ln /tmp/b/etc/shadow /tmp/b/bin/busybox /tmp/b/q5/ /tmp/b/root
+          echo "--- B2: same tree, VMM run OUTSIDE userns"
+          timeout 120 /tmp/h/krunrun fs /tmp/b /bin/sh /check.sh 2>&1 | grep GUEST; echo "HOST: B2 exit=${PIPESTATUS[0]}"
+          echo "B took $(( $(date +%s) - start ))s"
+
+      - name: "C: erofs image from tarball, non-root"
+        continue-on-error: true
+        run: |
+          set +e
+          id -u
+          time mkfs.erofs --tar=f /tmp/c.erofs /tmp/combined.tar 2>&1 | tail -5
+          ls -l /tmp/c.erofs
+          # check.sh must be in the image: build a second tar with it
+          mkdir -p /tmp/cs && cp /tmp/check.sh /tmp/cs/check.sh
+          tar --owner=0 --group=0 -cf /tmp/chk.tar -C /tmp/cs check.sh
+          cp /tmp/combined.tar /tmp/combined2.tar && tar --concatenate -f /tmp/combined2.tar /tmp/chk.tar
+          mkfs.erofs --tar=f /tmp/c.erofs /tmp/combined2.tar 2>&1 | tail -3
+          timeout 120 /tmp/h/krunrun disk /tmp/c.erofs erofs /bin/sh /check.sh; echo "HOST: C-erofs exit=$?"
+          echo "--- C-erofs with exit 0 expected"
+          timeout 120 /tmp/h/krunrun disk /tmp/c.erofs erofs /bin/true; echo "HOST: C-erofs true exit=$?"
+          timeout 120 /tmp/h/krunrun disk /tmp/c.erofs erofs /bin/false; echo "HOST: C-erofs false exit=$?"
+
+      - name: "C: ext4 image (mke2fs -d), non-root"
+        continue-on-error: true
+        run: |
+          set +e
+          truncate -s 256M /tmp/c.ext4
+          # mke2fs -d with a tarball needs e2fsprogs >= 1.47.1; try it, then fall back to the B userns tree.
+          mke2fs -q -t ext4 -d /tmp/combined2.tar /tmp/c.ext4 2>&1 | tail -3; echo "mke2fs tar rc=${PIPESTATUS[0]}"
+          if ! debugfs -R 'stat /etc/shadow' /tmp/c.ext4 2>/dev/null | grep -q User; then
+            echo "falling back: mke2fs -d inside userns on /tmp/b"
+            cp /tmp/check.sh /tmp/b/check.sh 2>/dev/null
+            unshare --user --map-auto --map-root-user mke2fs -q -F -t ext4 -d /tmp/b /tmp/c.ext4; echo "mke2fs dir rc=$?"
+          fi
+          debugfs -R 'stat /etc/shadow' /tmp/c.ext4 2>/dev/null | grep -E 'User|Mode'
+          timeout 120 /tmp/h/krunrun disk /tmp/c.ext4 ext4 /bin/sh /check.sh; echo "HOST: C-ext4 exit=$?"
