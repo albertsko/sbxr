@@ -44,7 +44,7 @@ jobs:
           #include <stdlib.h>
           #include <string.h>
           #include <libkrun.h>
-          /* usage: krunrun fs <rootdir> <cmd...>   |   krunrun disk <img> <fstype> <cmd...> */
+          /* usage: krunrun fs <rootdir> <cmd...>   |   krunrun disk <img> <fstype> <opts|-> <ro|rw> <cmd...> */
           int main(int argc, char **argv) {
             krun_set_log_level(1);
             int ctx = krun_create_ctx();
@@ -56,11 +56,11 @@ jobs:
               if (r) { fprintf(stderr, "set_root %d\n", r); return 91; }
               i = 3;
             } else {
-              r = krun_add_disk(ctx, "vda", argv[2], 1);
+              r = krun_add_disk(ctx, "vda", argv[2], strcmp(argv[5], "ro") == 0);
               if (r) { fprintf(stderr, "add_disk %d\n", r); return 92; }
-              r = krun_set_root_disk_remount(ctx, "/dev/vda", argv[3], NULL);
+              r = krun_set_root_disk_remount(ctx, "/dev/vda", argv[3], strcmp(argv[4], "-") ? argv[4] : NULL);
               if (r) { fprintf(stderr, "remount %d\n", r); return 93; }
-              i = 4;
+              i = 6;
             }
             const char *envp[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
             r = krun_set_exec(ctx, argv[i], (const char *const *)&argv[i + 1], envp);
@@ -102,6 +102,7 @@ jobs:
         run: |
           cat > /tmp/check.sh <<'SEOF'
           echo "GUEST: id=$(id)"
+          echo "GUEST: rootmount $(grep " / " /proc/mounts | tr "\n" ";")"
           for f in /etc/shadow /bin/busybox /q5/suid /q5/user1000 /q5/hardlink /q5/null /q5/.wh.gone; do
             stat -c "GUEST: %n %u:%g %A links=%h type=%F" "$f" 2>&1 | sed 's/^stat:/GUEST: stat:/'
           done
@@ -147,6 +148,7 @@ jobs:
           mkdir -p /tmp/b && tar -xpf /tmp/alpine.tar -C /tmp/b
           tar -xpf /tmp/extra.tar -C /tmp/b; echo "extra-tar rc=$?"
           cp /tmp/check.sh /tmp/b/check.sh
+          mknod /tmp/b/whiteout c 0 0; echo "whiteout-0:0 mknod rc=$?"; ls -ln /tmp/b/whiteout
           ls -ln /tmp/b/etc/shadow /tmp/b/bin/busybox /tmp/b/q5/
           timeout 120 /tmp/h/krunrun fs /tmp/b /bin/sh /check.sh; echo "HOST(in userns): B exit=$?"
           BEOF
@@ -170,10 +172,10 @@ jobs:
           tar --owner=0 --group=0 -cf /tmp/chk.tar -C /tmp/cs check.sh
           cp /tmp/combined.tar /tmp/combined2.tar && tar --concatenate -f /tmp/combined2.tar /tmp/chk.tar
           mkfs.erofs --tar=f /tmp/c.erofs /tmp/combined2.tar 2>&1 | tail -3
-          timeout 120 /tmp/h/krunrun disk /tmp/c.erofs erofs /bin/sh /check.sh; echo "HOST: C-erofs exit=$?"
+          timeout 120 /tmp/h/krunrun disk /tmp/c.erofs erofs ro ro /bin/sh /check.sh; echo "HOST: C-erofs exit=$?"
           echo "--- C-erofs with exit 0 expected"
-          timeout 120 /tmp/h/krunrun disk /tmp/c.erofs erofs /bin/true; echo "HOST: C-erofs true exit=$?"
-          timeout 120 /tmp/h/krunrun disk /tmp/c.erofs erofs /bin/false; echo "HOST: C-erofs false exit=$?"
+          timeout 120 /tmp/h/krunrun disk /tmp/c.erofs erofs ro ro /bin/true; echo "HOST: C-erofs true exit=$?"
+          timeout 120 /tmp/h/krunrun disk /tmp/c.erofs erofs ro ro /bin/false; echo "HOST: C-erofs false exit=$?"
 
       - name: "C: ext4 image (mke2fs -d), non-root"
         continue-on-error: true
@@ -188,4 +190,7 @@ jobs:
             unshare --user --map-auto --map-root-user mke2fs -q -F -t ext4 -d /tmp/b /tmp/c.ext4; echo "mke2fs dir rc=$?"
           fi
           debugfs -R 'stat /etc/shadow' /tmp/c.ext4 2>/dev/null | grep -E 'User|Mode'
-          timeout 120 /tmp/h/krunrun disk /tmp/c.ext4 ext4 /bin/sh /check.sh; echo "HOST: C-ext4 exit=$?"
+          timeout 120 /tmp/h/krunrun disk /tmp/c.ext4 ext4 - rw /bin/sh /check.sh; echo "HOST: C-ext4 exit=$?"
+          echo "--- C-ext4 exit code checks"
+          timeout 120 /tmp/h/krunrun disk /tmp/c.ext4 ext4 - rw /bin/true; echo "HOST: C-ext4 true exit=$?"
+          timeout 120 /tmp/h/krunrun disk /tmp/c.ext4 ext4 - rw /bin/false; echo "HOST: C-ext4 false exit=$?"
