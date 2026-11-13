@@ -1,0 +1,213 @@
+name: a8-tap-spike
+on:
+  push:
+    branches: ["spike/a8-tap"]
+permissions:
+  contents: read
+jobs:
+  a8:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm /dev/net/tun
+          uname -a
+
+      - name: Build libkrun v1.19.8 with NET=1
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libclang-dev
+          git clone -q --depth 1 --branch v1.19.8 https://github.com/containers/libkrun.git "$HOME/libkrun"
+          cd "$HOME/libkrun"
+          make NET=1
+          sudo make NET=1 install
+          echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/local64.conf
+          ls -l /usr/local/lib64
+
+      - name: Install prebuilt libkrunfw v5.6.4
+        run: |
+          mkdir -p "$HOME/krunfw" && cd "$HOME/krunfw"
+          curl -fsSL -o fw.tgz https://github.com/containers/libkrunfw/releases/download/v5.6.4/libkrunfw-x86_64.tgz
+          tar tzf fw.tgz
+          tar xzf fw.tgz
+          find . -name 'libkrunfw.so*' -exec sudo cp -a {} /usr/local/lib64/ \;
+          sudo ldconfig
+          ldconfig -p | grep -E 'libkrun(fw)?\.so'
+
+      - name: Build launcher and rootfs
+        run: |
+          mkdir -p "$HOME/a8" && cd "$HOME/a8"
+          cat > launcher.c <<'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <libkrun.h>
+
+          #define CHECK(name, expr) do { int r_ = (expr); fprintf(stderr, "launcher: %s -> %d\n", name, r_); if (r_ < 0) return 1; } while (0)
+
+          int main(int argc, char **argv) {
+            if (argc != 5) { fprintf(stderr, "usage: launcher ROOTFS TAP MAC SCRIPT\n"); return 2; }
+            const char *rootfs = argv[1], *tap = argv[2], *macs = argv[3], *script = argv[4];
+            unsigned int m[6];
+            if (sscanf(macs, "%x:%x:%x:%x:%x:%x", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) != 6) return 2;
+            uint8_t mac[6];
+            for (int i = 0; i < 6; i++) mac[i] = (uint8_t)m[i];
+            const char *f = getenv("A8_FEATURES");
+            uint32_t features = f ? (uint32_t)strtoul(f, NULL, 0) : (COMPAT_NET_FEATURES);
+            fprintf(stderr, "launcher: tap=%s mac=%s features=0x%x\n", tap, macs, features);
+
+            krun_set_log_level(getenv("A8_LOG") ? atoi(getenv("A8_LOG")) : 2);
+            int ctx = krun_create_ctx();
+            CHECK("krun_create_ctx", ctx);
+            CHECK("krun_set_vm_config", krun_set_vm_config(ctx, 1, 512));
+            CHECK("krun_set_root", krun_set_root(ctx, rootfs));
+            CHECK("krun_add_net_tap", krun_add_net_tap(ctx, tap, mac, features, 0));
+            const char *args[] = { NULL };
+            const char *envp[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+            CHECK("krun_set_exec", krun_set_exec(ctx, script, args, envp));
+            CHECK("krun_start_enter", krun_start_enter(ctx));
+            return 0;
+          }
+          EOF
+          gcc -O2 -Wall -o launcher launcher.c -I/usr/local/include -L/usr/local/lib64 -lkrun
+          ldd ./launcher
+
+          mkdir rootfs
+          curl -fsSL https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz | tar xz -C rootfs
+          cat > rootfs/a8.sh <<'EOF'
+          #!/bin/sh
+          echo "GUEST: start uid=$(id -u) kernel=$(uname -r)"
+          ip link show
+          ip link set lo up
+          ip link set eth0 up
+          ip addr add 10.88.0.2/24 dev eth0
+          ip route add default via 10.88.0.1
+          ip addr show eth0
+          ip route
+          if ping -c 3 -W 2 10.88.0.1; then echo "RESULT ICMP_OUT PASS"; else echo "RESULT ICMP_OUT FAIL"; fi
+          r=$(echo hi-tcp | nc -w 3 10.88.0.1 8000)
+          case "$r" in *hello-from-host*) echo "RESULT TCP_OUT PASS got=$r" ;; *) echo "RESULT TCP_OUT FAIL got=$r" ;; esac
+          r=$(echo hi-udp | nc -u -w 2 10.88.0.1 8001)
+          case "$r" in *echo:hi-udp*) echo "RESULT UDP_ECHO PASS got=$r" ;; *) echo "RESULT UDP_ECHO FAIL got=$r" ;; esac
+          echo "GUEST: listening on tcp 9000"
+          echo hello-from-guest > /tmp/reply
+          timeout 45 nc -l -p 9000 < /tmp/reply
+          echo "GUEST: listener exited rc=$?"
+          sleep 2
+          echo "GUEST: done"
+          EOF
+          chmod +x rootfs/a8.sh
+
+          cat > host_servers.py <<'EOF'
+          import socket, threading
+          def tcp():
+              s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              s.bind(("0.0.0.0", 8000)); s.listen()
+              while True:
+                  c, a = s.accept(); d = c.recv(100); print("HOST TCP got", d, "from", a, flush=True)
+                  c.sendall(b"hello-from-host\n"); c.close()
+          def udp():
+              s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("0.0.0.0", 8001))
+              while True:
+                  d, a = s.recvfrom(100); print("HOST UDP got", d, "from", a, flush=True)
+                  s.sendto(b"echo:" + d, a)
+          threading.Thread(target=tcp, daemon=True).start()
+          udp()
+          EOF
+
+          cat > host_client.py <<'EOF'
+          import socket, time
+          deadline = time.time() + 90
+          while time.time() < deadline:
+              try:
+                  c = socket.create_connection(("10.88.0.2", 9000), timeout=2)
+                  d = c.recv(100); c.close()
+                  print("RESULT TCP_IN", "PASS" if b"hello-from-guest" in d else "FAIL", d, flush=True)
+                  break
+              except OSError:
+                  time.sleep(0.5)
+          else:
+              print("RESULT TCP_IN FAIL timeout", flush=True)
+          EOF
+
+          cat > scenario.sh <<'EOF'
+          #!/bin/bash
+          # usage: scenario.sh NAME TAP_OWNER(root|runner) VMM_USER(root|runner)
+          set -u
+          name=$1 owner=$2 vmmuser=$3
+          echo "===== SCENARIO $name tap_owner=$owner vmm_user=$vmmuser ====="
+          A=$HOME/a8
+          sudo ip netns del pod 2>/dev/null; sudo ip link del veth-host 2>/dev/null
+          sudo ip netns add pod
+          sudo ip link add veth-host type veth peer name eth0 netns pod
+          sudo ip addr add 10.88.0.1/24 dev veth-host
+          sudo ip link set veth-host up
+          sudo ip netns exec pod ip link set lo up
+          sudo ip netns exec pod ip addr add 10.88.0.2/24 dev eth0
+          sudo ip netns exec pod ip link set eth0 up
+          if [ "$owner" = root ]; then
+            sudo ip netns exec pod ip tuntap add tap0 mode tap
+          else
+            sudo ip netns exec pod ip tuntap add tap0 mode tap user "$owner"
+          fi
+          sudo ip netns exec pod ip link set tap0 up
+          sudo ip netns exec pod tc qdisc add dev eth0 ingress
+          sudo ip netns exec pod tc filter add dev eth0 parent ffff: protocol all u32 match u8 0 0 action mirred egress redirect dev tap0
+          sudo ip netns exec pod tc qdisc add dev tap0 ingress
+          sudo ip netns exec pod tc filter add dev tap0 parent ffff: protocol all u32 match u8 0 0 action mirred egress redirect dev eth0
+          sudo ip netns exec pod ip addr flush dev eth0
+          MAC=$(sudo ip netns exec pod cat /sys/class/net/eth0/address)
+          sudo ip netns exec pod ip -d link show tap0
+          sudo ip netns exec pod ip addr
+          sudo ip netns exec pod tc filter show dev eth0 ingress
+          sudo ip netns exec pod tc filter show dev tap0 ingress
+
+          ping -c 40 -i 1 -W 1 10.88.0.2 > /tmp/ping_in_$name.txt 2>&1 &
+          PP=$!
+          python3 $A/host_client.py > /tmp/client_$name.txt 2>&1 &
+          CP=$!
+
+          if [ "$vmmuser" = root ]; then
+            sudo timeout 120 ip netns exec pod $A/launcher $A/rootfs tap0 "$MAC" /a8.sh
+          else
+            sudo timeout 120 ip netns exec pod sudo -u "$vmmuser" sh -c "grep -E 'Uid|CapEff' /proc/self/status; exec $A/launcher $A/rootfs tap0 $MAC /a8.sh"
+          fi
+          echo "VMM exit rc=$?"
+          wait $CP; cat /tmp/client_$name.txt
+          kill $PP 2>/dev/null; wait $PP 2>/dev/null
+          cat /tmp/ping_in_$name.txt | tail -4
+          if grep -q ' 0 received' /tmp/ping_in_$name.txt; then echo "RESULT ICMP_IN FAIL"; else echo "RESULT ICMP_IN PASS"; fi
+          sudo ip netns exec pod ip -s link show tap0
+          sudo ip netns exec pod tc -s filter show dev eth0 ingress | grep -E 'Sent|action' || true
+          EOF
+          chmod +x scenario.sh
+
+      - name: Start host servers
+        run: |
+          cd "$HOME/a8"
+          nohup python3 host_servers.py > /tmp/servers.txt 2>&1 &
+          sleep 1; ss -lntup | grep -E ':800[01]'
+
+      - name: Scenario root VMM, root-owned tap
+        run: |
+          cd "$HOME/a8"
+          ./scenario.sh root root root 2>&1 | tee /tmp/out_root.txt
+          cat /tmp/servers.txt
+
+      - name: Scenario non-root VMM, tap pre-created with user runner
+        run: |
+          cd "$HOME/a8"
+          ./scenario.sh nonroot runner runner 2>&1 | tee /tmp/out_nonroot.txt
+          cat /tmp/servers.txt
+
+      - name: Negative, non-root VMM, root-owned tap
+        run: |
+          cd "$HOME/a8"
+          ./scenario.sh negative root runner 2>&1 | tee /tmp/out_neg.txt | grep -vE '^\s*$' | tail -40
+
+      - name: Summary
+        if: always()
+        run: grep -H -E 'RESULT|VMM exit|launcher:|rror' /tmp/out_*.txt || true
