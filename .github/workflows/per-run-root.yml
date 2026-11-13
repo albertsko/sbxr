@@ -1,0 +1,73 @@
+name: Spike per-run root
+on:
+  push:
+    branches: [spike/per-run-root]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      KRUN_PREFIX: ${{ github.workspace }}/../krun
+      LIBKRUN_VERSION: v1.19.8
+      LIBKRUNFW_VERSION: v5.6.4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Install packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q uidmap libclang-dev attr
+          uname -a
+          cat /etc/os-release | head -3
+          sysctl kernel.apparmor_restrict_unprivileged_userns || true
+          grep runner /etc/subuid /etc/subgid || true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: krun-cache
+        with:
+          path: ${{ env.KRUN_PREFIX }}
+          key: krun-${{ runner.os }}-${{ env.LIBKRUN_VERSION }}-net1-${{ env.LIBKRUNFW_VERSION }}
+      - name: Build libkrun
+        if: steps.krun-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$KRUN_PREFIX"
+          git clone -q --depth 1 --branch "$LIBKRUN_VERSION" https://github.com/containers/libkrun.git /tmp/libkrun
+          make -C /tmp/libkrun NET=1 -j"$(nproc)"
+          make -C /tmp/libkrun NET=1 PREFIX="$KRUN_PREFIX" install
+          curl -fsSL -o /tmp/libkrunfw.tgz "https://github.com/containers/libkrunfw/releases/download/$LIBKRUNFW_VERSION/libkrunfw-x86_64.tgz"
+          tar -tzf /tmp/libkrunfw.tgz
+          tar -xzf /tmp/libkrunfw.tgz -C "$KRUN_PREFIX"
+      - name: Show libkrun files
+        run: find "$KRUN_PREFIX" -name '*.so*' -exec ls -la {} +
+      - name: Allow KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -la /dev/kvm
+      - name: Build spike and install AppArmor profile
+        run: |
+          cd spike && CGO_ENABLED=0 go build -o /tmp/sbxr . && cd ..
+          sudo install -m 0755 /tmp/sbxr /usr/local/bin/sbxr
+          printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile sbxr /usr/local/bin/sbxr flags=(unconfined) {\n  userns,\n  include if exists <local/sbxr>\n}\n' | sudo tee /etc/apparmor.d/sbxr
+          sudo apparmor_parser -r /etc/apparmor.d/sbxr
+      - name: Fetch images
+        run: |
+          base=https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64
+          file=$(curl -fsSL "$base/latest-releases.yaml" | grep -o 'alpine-minirootfs-[0-9.]*-x86_64.tar.gz' | head -1)
+          echo "alpine: $file"
+          curl -fsSL -o /tmp/alpine.tar.gz "$base/$file"
+          go run github.com/google/go-containerregistry/cmd/crane@latest export --platform linux/amd64 node:22-slim /tmp/node.tar
+          ls -la /tmp/alpine.tar.gz /tmp/node.tar
+      - name: Run checks
+        run: |
+          export LD_LIBRARY_PATH="$KRUN_PREFIX/lib64:$KRUN_PREFIX/lib:$KRUN_PREFIX/usr/lib64:$KRUN_PREFIX/usr/local/lib64"
+          mkdir -p "$RUNNER_TEMP/w"
+          id
+          sbxr main "$RUNNER_TEMP/w" /tmp/alpine.tar.gz /tmp/node.tar
