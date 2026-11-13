@@ -98,17 +98,20 @@ func runChecks(args []string) error {
 	}
 	fmt.Printf("overlay mount time: %v\n", d)
 
-	script := `set -e
-stat -c 'shadow=%u:%g %a' /etc/shadow
-ls -ln /.krun_config.json 2>&1 || true
-echo guest > /etc/guest-write
-echo extra >> /etc/motd
-rm /etc/hostname
-rm -rf /etc/apk && mkdir /etc/apk && echo new > /etc/apk/only
-mkdir /newdir && touch /newdir/f && chown 1000:1000 /newdir/f
-test ! -e /etc/hostname && echo hostname-gone
-ls /etc/apk
-exit 7`
+	// libkrun passes argv on the kernel command line, so scripts must be one line without double quotes.
+	script := strings.Join([]string{
+		"set -e",
+		"stat -c 'shadow=%u:%g %a' /etc/shadow",
+		"{ ls -ln /.krun_config.json 2>&1 || true; }",
+		"echo guest > /etc/guest-write",
+		"echo extra >> /etc/motd",
+		"rm /etc/hostname",
+		"rm -rf /etc/apk && mkdir /etc/apk && echo new > /etc/apk/only",
+		"mkdir /newdir && touch /newdir/f && chown 1000:1000 /newdir/f",
+		"test ! -e /etc/hostname && echo hostname-gone",
+		"ls /etc/apk",
+		"exit 7",
+	}, "; ")
 	out, code := vm(merged1, script)
 	fmt.Print("--- run1 guest output\n", out, "---\n")
 	check("guest-ownership-shadow-0:42", strings.Contains(out, "shadow=0:42 640"), firstLine(out, "shadow="))
@@ -154,7 +157,7 @@ exit 7`
 		go func() {
 			defer wg.Done()
 			me, other := fmt.Sprintf("r%d", i+2), fmt.Sprintf("r%d", 3-i)
-			s := fmt.Sprintf(`echo %s > /etc/whoami; rm /etc/os-release; sleep 3; echo "seen=$(cat /etc/whoami)"; test -e /etc/mark-%s && echo LEAK; touch /etc/mark-%s; sleep 2; test -e /etc/mark-%s && echo LEAK; test -e /etc/os-release && echo LEAK-DELETE; exit %d`, me, other, me, other, 20+i)
+			s := fmt.Sprintf(`echo %s > /etc/whoami; rm /etc/os-release; sleep 3; printf seen=; cat /etc/whoami; test -e /etc/mark-%s && echo LEAK; touch /etc/mark-%s; sleep 2; test -e /etc/mark-%s && echo LEAK; test -e /etc/os-release && echo LEAK-DELETE; exit %d`, me, other, me, other, 20+i)
 			res[i], codes[i] = vm(m, s)
 		}()
 	}
