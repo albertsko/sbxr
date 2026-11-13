@@ -1,0 +1,91 @@
+name: gvnet-spike
+on:
+  push:
+    branches: [spike/gvnet]
+permissions:
+  contents: read
+env:
+  LIBKRUN_VERSION: v1.19.8
+  LIBKRUNFW_VERSION: v5.6.4
+  ALPINE_VERSION: 3.24.4
+jobs:
+  gvnet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: spike/gvnet/go.mod
+          cache-dependency-path: spike/gvnet/go.sum
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          uname -a; nproc; free -m
+
+      - name: Cache libkrun
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: krun
+          key: gvnet-krun-v1-${{ env.LIBKRUN_VERSION }}-net-${{ env.LIBKRUNFW_VERSION }}
+
+      - name: Build libkrun (NET=1) and fetch libkrunfw
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q libclang-dev
+          mkdir -p krun/lib /tmp/fw
+          curl -fsSL "https://github.com/libkrun/libkrunfw/releases/download/${LIBKRUNFW_VERSION}/libkrunfw-x86_64.tgz" | tar xz -C /tmp/fw
+          cp -a /tmp/fw/lib/x86_64-linux-gnu/libkrunfw.so* krun/lib/
+          git clone -q --depth 1 -b "${LIBKRUN_VERSION}" https://github.com/libkrun/libkrun /tmp/libkrun
+          make -C /tmp/libkrun NET=1 -j"$(nproc)"
+          make -C /tmp/libkrun install NET=1 PREFIX="$PWD/krun" LIBDIR_Linux=lib
+          ls -l krun/lib
+
+      - name: Alpine rootfs
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/dl rootfs
+          base=https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/x86_64
+          f=alpine-minirootfs-${ALPINE_VERSION}-x86_64.tar.gz
+          curl -fsSL -o /tmp/dl/$f "$base/$f"
+          curl -fsSL -o /tmp/dl/$f.sha256 "$base/$f.sha256"
+          (cd /tmp/dl && sha256sum -c $f.sha256)
+          tar -xzf /tmp/dl/$f -C rootfs
+
+      - name: Build spike
+        run: |
+          sudo apt-get install -y -q lsof
+          spike/gvnet/build.sh "$PWD/out"
+          ls -l out
+          cd spike/gvnet && echo "modules: $(go list -m all | wc -l)" && go version -m ../../out/gvnet | awk '$1=="dep"{print $2, $3}'
+
+      - name: Startup overhead (/bin/true, 6 runs each)
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/krun/lib
+          GVNET_LIB_DIR: ${{ github.workspace }}/krun/lib
+        run: |
+          t() { local s e; s=$(date +%s%N); "$@" >/dev/null 2>&1 || echo -n "(rc=$?) "; e=$(date +%s%N); echo -n "$(( (e - s) / 1000000 )) "; }
+          echo -n "baseline TSI ms: "; for i in 1 2 3 4 5 6; do t out/baseline "$PWD/rootfs" /bin/true; done; echo
+          for m in path fd; do echo -n "gvnet $m ms: "; for i in 1 2 3 4 5 6; do t out/gvnet host -rootfs "$PWD/rootfs" -mode $m -- /bin/true; done; echo; done
+          out/gvnet host -rootfs "$PWD/rootfs" -mode fd -- /bin/true 2>&1 | grep -E "^host:|vmm:" || true
+
+      - name: Checks
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/krun/lib
+          GVNET_LIB_DIR: ${{ github.workspace }}/krun/lib
+        run: |
+          export LAN_IP=$(hostname -I | awk '{print $1}')
+          echo "LAN_IP=$LAN_IP"
+          r=spike/gvnet/run.sh
+          $r "$PWD/out" "$PWD/rootfs" normal -mode path
+          $r "$PWD/out" "$PWD/rootfs" normal -mode fd -dhcp
+          $r "$PWD/out" "$PWD/rootfs" sigint -mode path -dhcp
+          $r "$PWD/out" "$PWD/rootfs" killchild -mode fd -filter
