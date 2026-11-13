@@ -44,7 +44,7 @@ jobs:
           ldd --version | sed -n 1p
           ls /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu > /tmp/pristine-libs.txt
           apt-get update
-          apt-get install -y --no-install-recommends build-essential git curl ca-certificates libclang-dev clang pkg-config make autoconf automake libtool libcap-dev libseccomp-dev libyajl-dev python3 xz-utils file
+          apt-get install -y --no-install-recommends build-essential git curl ca-certificates libclang-dev clang pkg-config make autoconf automake libtool libcap-dev libseccomp-dev libyajl-dev libjson-c-dev gperf python3 xz-utils file
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           . "$HOME/.cargo/env"
           rustc --version
