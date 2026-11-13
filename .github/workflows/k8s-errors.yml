@@ -1,0 +1,223 @@
+name: k8s-errors
+on:
+  push:
+    branches: [spike/k8s-errors]
+permissions:
+  contents: read
+env:
+  NODE_IMAGE: kindest/node:v1.37.0
+  LIBKRUN_VERSION: v1.19.8
+  LIBKRUNFW_VERSION: v5.6.4
+  CRUN_VERSION: "1.31"
+jobs:
+  errors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Host info
+        run: |
+          date -u +%s > /tmp/t0
+          uname -a; cat /etc/os-release | head -3; kind version; docker version --format '{{.Server.Version}}'; nproc; free -m
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Cache build outputs
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: out
+          key: a5-out-v1-${{ env.NODE_IMAGE }}-${{ env.LIBKRUN_VERSION }}-${{ env.LIBKRUNFW_VERSION }}-${{ env.CRUN_VERSION }}
+
+      - name: Build libkrun, libkrunfw, crun inside node image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p out
+          cat > /tmp/build.sh <<'SCRIPT'
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          cat /etc/os-release
+          ldd --version | sed -n 1p
+          ls /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu > /tmp/pristine-libs.txt
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential git curl ca-certificates libclang-dev clang pkg-config make autoconf automake libtool libcap-dev libseccomp-dev libyajl-dev libjson-c-dev gperf python3 xz-utils file
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          . "$HOME/.cargo/env"
+          rustc --version
+
+          mkdir -p /out/usr/local/lib /out/usr/local/bin /tmp/fw
+          curl -fsSL "https://github.com/libkrun/libkrunfw/releases/download/${LIBKRUNFW_VERSION}/libkrunfw-x86_64.tgz" | tar xz -C /tmp/fw
+          cp -a /tmp/fw/lib/x86_64-linux-gnu/libkrunfw.so* /out/usr/local/lib/
+
+          git clone -q --depth 1 -b "${LIBKRUN_VERSION}" https://github.com/libkrun/libkrun /src/libkrun
+          cd /src/libkrun
+          time make -j"$(nproc)"
+          make install PREFIX=/usr/local LIBDIR_Linux=lib
+          make install PREFIX=/usr/local LIBDIR_Linux=lib DESTDIR=/out
+          ldconfig
+
+          mkdir -p /src/crun
+          curl -fsSL "https://github.com/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}.tar.gz" | tar xz -C /src/crun --strip-components=1
+          cd /src/crun
+          ./configure --prefix=/usr/local --with-libkrun --disable-systemd
+          make -j"$(nproc)"
+          install -m 755 crun /out/usr/local/bin/crun
+          /out/usr/local/bin/crun --version
+
+          # Copy shared libs that the pristine node image lacks.
+          for f in /out/usr/local/bin/crun /usr/local/lib/libkrun.so.1; do
+            ldd "$f" | awk '/=>/ {print $3}'
+          done | sort -u | while read -r lib; do
+            [ -n "$lib" ] || continue
+            if ! grep -qx "$(basename "$lib")" /tmp/pristine-libs.txt; then
+              echo "bundling $lib"
+              cp -L "$lib" /out/usr/local/lib/
+            fi
+          done
+          rm -rf /out/usr/local/lib/pkgconfig
+          find /out -type f -o -type l | sort
+          SCRIPT
+          docker run --rm -e LIBKRUN_VERSION -e LIBKRUNFW_VERSION -e CRUN_VERSION \
+            -v "$PWD/out:/out" -v /tmp/build.sh:/build.sh:ro \
+            --entrypoint bash "$NODE_IMAGE" /build.sh
+
+      - name: Create kind cluster
+        run: |
+          cat > /tmp/kind.yaml <<'K'
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+            - role: control-plane
+              extraMounts:
+                - hostPath: /dev/kvm
+                  containerPath: /dev/kvm
+          K
+          time kind create cluster --image "$NODE_IMAGE" --config /tmp/kind.yaml --wait 120s
+          ls -l /dev/kvm
+          sudo chmod 666 /dev/kvm
+          ls -l /dev/kvm
+          docker exec kind-control-plane ls -l /dev/kvm
+
+      - name: Install sbxr runtime into node
+        run: |
+          N=kind-control-plane
+          docker cp out/usr/local/. $N:/usr/local/
+          docker exec $N ldconfig
+          docker exec $N ln -sf /usr/local/bin/crun /usr/local/bin/krun
+          docker exec $N /usr/local/bin/krun --version
+          docker exec $N sh -c 'ldd /usr/local/bin/crun; ldconfig -p | grep -E "krun"'
+          docker exec $N sh -c 'containerd --version; head -5 /etc/containerd/config.toml'
+          docker exec $N sh -c 'cat >> /etc/containerd/config.toml <<T
+
+          [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr]
+            runtime_type = "io.containerd.runc.v2"
+            pod_annotations = ["krun.*"]
+            [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr.options]
+              BinaryName = "/usr/local/bin/krun"
+          T'
+          docker exec $N systemctl restart containerd
+          sleep 5
+          docker exec $N systemctl is-active containerd
+          docker exec $N sh -c 'crictl info | grep -A8 "\"sbxr\"" | head -20'
+          kubectl wait --for=condition=Ready node --all --timeout=120s
+          kubectl apply -f - <<'Y'
+          apiVersion: node.k8s.io/v1
+          kind: RuntimeClass
+          metadata:
+            name: sbxr
+          handler: sbxr
+          Y
+
+      - name: Error cases
+        run: |
+          set +e
+          N=kind-control-plane
+          sec() { echo; echo "=================== $* ==================="; }
+          mk() {
+            # mk <runtime> <name> <image> <command-json>
+            rcl=""; [ "$1" = sbxr ] && rcl="runtimeClassName: sbxr"
+            cat <<Y
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata: {name: $1-$2}
+          spec:
+            $rcl
+            restartPolicy: Never
+            terminationGracePeriodSeconds: 3
+            containers:
+              - name: c
+                image: $3
+                command: $4
+          Y
+          }
+          B=busybox:1.37
+          for rc in sbxr runc; do
+            {
+              mk $rc c1-notfound $B '["/nonexistent"]'
+              mk $rc c2-noexec-passwd $B '["/etc/passwd"]'
+              mk $rc c2-noexec-hostname $B '["/etc/hostname"]'
+              mk $rc c2-dir $B '["/etc"]'
+              mk $rc c3-noimage docker.io/library/does-not-exist-sbxr:latest '["sh"]'
+              mk $rc c4-exit0 $B '["sh","-c","echo out; exit 0"]'
+              mk $rc c4-exit1 $B '["sh","-c","echo out; exit 1"]'
+              mk $rc c4-exit125 $B '["sh","-c","echo out; exit 125"]'
+              mk $rc c4-exit126 $B '["sh","-c","echo out; exit 126"]'
+              mk $rc c4-exit127 $B '["sh","-c","echo out; exit 127"]'
+              mk $rc c4-shell-notfound $B '["sh","-c","/nonexistent"]'
+              mk $rc c5-kill9-self $B '["sh","-c","echo pid=$$; kill -9 $$; echo still-alive rc=$?"]'
+              mk $rc c5-kill9-child $B '["sh","-c","echo pid=$$; sleep 300 & kill -9 $!; wait $!; rc=$?; echo child-rc=$rc; exit $rc"]'
+              mk $rc c5-kill9-nonpid1 $B '["sh","-c","sh -c \"echo inner-pid=\\$\\$; kill -9 \\$\\$\"; echo outer-sees=$?; exit 0"]'
+              mk $rc c5-segv $B '["sh","-c","echo pid=$$; kill -SEGV $$; echo still-alive"]'
+            } | kubectl apply -f -
+          done
+          kubectl get pods
+
+          T0=$(date +%s)
+          while :; do
+            el=$(( $(date +%s) - T0 ))
+            left=$(kubectl get pods -o json | jq -r '.items[] | select(.metadata.name | test("c3-") | not) | select(.status.phase != "Succeeded" and .status.phase != "Failed") | .metadata.name' | wc -l)
+            [ "$left" -eq 0 ] && [ "$el" -ge 60 ] && break
+            [ "$el" -ge 180 ] && break
+            sleep 5
+          done
+          sec "overview after ${el}s"; kubectl get pods -o wide
+
+          for p in $(kubectl get pods -o jsonpath='{.items[*].metadata.name}' | tr ' ' '\n' | sort -t- -k2); do
+            sec "$p"
+            kubectl get pod $p -o json | jq -c '{phase:.status.phase, reason:.status.reason, message:.status.message, state:.status.containerStatuses[0].state, lastState:.status.containerStatuses[0].lastState, started:.status.containerStatuses[0].started}'
+            echo "--- events"
+            kubectl get events --field-selector involvedObject.name=$p -o json | jq -r '.items | sort_by(.lastTimestamp) | .[] | "\(.type) \(.reason) x\(.count): \(.message)"'
+            echo "--- logs"
+            kubectl logs $p 2>&1 | head -20
+          done
+
+          sec "containerd errors (sbxr)"
+          docker exec $N journalctl -u containerd --no-pager | grep -iE 'level=error' | grep -vE 'does-not-exist' | tail -40
+
+          sec "SIGTERM delete timing (grace 3s, sleep 3600)"
+          kubectl delete pods --all --wait=true --grace-period=0 --force >/dev/null 2>&1
+          for rc in sbxr runc; do
+            mk $rc c6-sleep $B '["sleep","3600"]' | kubectl apply -f -
+            mk $rc c6-trap $B '["sh","-c","trap \"echo got-TERM; exit 0\" TERM; echo started; while true; do sleep 1; done"]' | kubectl apply -f -
+          done
+          kubectl wait --for=condition=Ready pod --all --timeout=120s
+          sleep 2
+          for p in sbxr-c6-sleep runc-c6-sleep sbxr-c6-trap runc-c6-trap; do
+            kubectl logs -f $p > /tmp/$p.log 2>&1 &
+            sleep 1
+            s=$(date +%s.%N); kubectl delete pod $p --wait=true; echo "delete $p took $(echo "$(date +%s.%N) - $s" | bc)s"
+            sleep 1; echo "logs of $p:"; cat /tmp/$p.log
+          done
+          sec "lingering VM processes"
+          docker exec $N sh -c 'ps -eo pid,ppid,comm,args | grep -E "VM:|krun|sleep 3600" | grep -v grep || echo none'
+
+      - name: Debug on failure
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide || true
+          docker exec kind-control-plane journalctl -u containerd --no-pager | tail -80 || true
