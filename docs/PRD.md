@@ -545,7 +545,7 @@ These questions stay open at handoff. Each one names who decides or what work an
      - Effect: DNS fails for busybox, the Go resolver, and glibc.
      - Seen on: macOS, and in Kubernetes through `crun`.
      - Related open issues: `libkrun/libkrunfw#132` and `libkrun/libkrun#934`.
-  4. **`\u` escapes in the guest config file are corrupted silently.** A `é` escape empties that value and every env entry after it, and the run still exits 0.
+  4. **`\u` escapes in the guest config file are corrupted silently.** A `\u00e9` escape empties that value and every env entry after it, and the run still exits 0.
   5. **A TAP open failure hangs the VM.**
      - Seen: `krun_add_net_tap` returns success for a TAP device the process cannot open. Activation then fails with a log line and a vCPU panic, and the process never exits.
      - Seen on: Linux, with a build that has network support.
