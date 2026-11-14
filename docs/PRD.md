@@ -187,7 +187,7 @@ Delivery has two phases:
 - `sbxr` opens `libkrun` by its ABI 1 file name (`libkrun.so.1`, `libkrun.1.dylib`) as an absolute path in the library directory, never by bare name and never the unversioned link. A `libkrun` 2.x install is never loaded by mistake.
 - `libkrun` has no runtime version query. `sbxr` validates `libkrun` by checking that every required symbol exists, including the network functions, and validates `libkrunfw` by its reported version. A missing symbol or an old `libkrunfw` is a preflight failure.
 - Library directory: `SBXR_LIB_DIR` when set, otherwise the first of `/opt/homebrew/lib` (macOS), `/home/linuxbrew/.linuxbrew/lib`, `/usr/local/lib`, and the system library path that contains both `libkrun` and `libkrunfw`. `libkrun` loads `libkrunfw` by name, so the VM process starts with the library search path set to that directory.
-- macOS signing: the `sbxr` binary is signed with hardened runtime and exactly two entitlements, `com.apple.security.hypervisor` and `com.apple.security.cs.disable-library-validation`. It never gets `allow-dyld-environment-variables` or `get-task-allow`. Every build, including test binaries, is signed. An unsigned binary fails the `entitlement` check instead of failing at VM start.
+- macOS signing (v1): the `sbxr` binary is signed ad hoc, without hardened runtime, with one entitlement, `com.apple.security.hypervisor`. Hardened runtime is not used, because it removes the `DYLD_*` variables that `libkrun` needs to find `libkrunfw`, and `libkrun` offers no other way to pass that path. Without hardened runtime, macOS does not enforce library validation, so no other entitlement is needed. Every build, including test binaries, is signed. An unsigned binary fails the `entitlement` check instead of failing at VM start.
 - Linux: `sbxr` runs without root. It needs read-write access to `/dev/kvm` (usually the `kvm` group), `newuidmap` and `newgidmap` (package `uidmap`), and a subordinate uid and gid range for the user. `sbxr` maps ids with those helpers, because one direct mapping cannot cover image ids such as gid 42.
 - Ubuntu 23.10 and later restrict unprivileged user namespaces with AppArmor. `sbxr` needs this profile, installed once by root:
 
@@ -333,7 +333,7 @@ Output streams:
 | `hypervisor`  | all      | `kern.hv_support` is 1 (macOS), or `/dev/kvm` opens read-write and reports API version 12 (Linux)                |
 | `libkrun`     | all      | The ABI 1 library loads from the library directory and exports every required symbol                             |
 | `libkrunfw`   | all      | The library loads and reports version 5.6.4 or later                                                             |
-| `entitlement` | macOS    | The running binary has hardened runtime and both entitlements                                                    |
+| `entitlement` | macOS    | The running binary is signed with the hypervisor entitlement                                                     |
 | `userns`      | Linux    | Inside a new user namespace with the user's subordinate ids, a chown to uid 0 gid 42 and a private mount succeed |
 | `cache`       | all      | The cache directory is writable                                                                                  |
 
@@ -477,17 +477,17 @@ CI contract:
 
 ### Distribution
 
-- macOS: a hand-written Homebrew formula in the tap `albertsko/homebrew-tap`. It depends on `libkrun`, installs the prebuilt release binary, and signs it with the two entitlements during install. The formula has no bottles, so Homebrew never re-signs the binary.
+- macOS: a hand-written Homebrew formula in the tap `albertsko/homebrew-tap`. It depends on `libkrun`, installs the prebuilt release binary, and signs it with the hypervisor entitlement during install. The formula has no bottles, so Homebrew never re-signs the binary.
 - Linux: `libkrun` from Homebrew on Linux, and the `sbxr` release binary installed to `/usr/local/bin`. The README and `sbxr doctor` print one setup block: install `uidmap`, add the user to the `kvm` group, install the binary, install the AppArmor profile.
 - Release archives and checksums come from goreleaser. No goreleaser-generated Homebrew casks.
 - `go install` works for development. `sbxr doctor` prints the signing command (macOS) and the install path rule (Linux).
-- Developer ID signing and notarization come later, when `sbxr` ships outside Homebrew on macOS.
+- Developer ID signing and notarization come later, when `sbxr` ships outside Homebrew on macOS. Notarization requires hardened runtime, so it needs one of these: the entitlements `cs.disable-library-validation` and `cs.allow-dyld-environment-variables` (tested: the VM boots), `libkrun` and `libkrunfw` signed with the project's own Team ID plus the `DYLD_*` entitlement, or a bundled guest kernel passed to `libkrun` so that `libkrunfw` is not loaded.
 
 ### Repository and tooling
 
 - Project base: `albertsko/go-kickstart` (mise tools and tasks, strict golangci-lint, goreleaser).
 - `vendor/` is gitignored. `mise run deps` runs `go mod vendor`. CI runs the same task, so local and CI builds use the same vendored sources.
-- Tasks: `test`, `test:hv`, `test:kind`, `lint`, `build`, `ci`. The same tasks run locally and in CI.
+- Tasks: `deps`, `test`, `test:hv`, `test:kind`, `lint`, `build`, `ci`. The same tasks run locally and in CI.
 - `libkrun` 1.x support: `sbxr` follows 1.19.x patch releases. It moves to `libkrun` 2.x when any of these happens: 2.0.0 ships with `libkrunfw` 6, `crun` or Fedora switch to ABI 2, 1.19.x gets no release for about 3 months, or 2.x fixes process takeover and Linux graceful shutdown. The `libkrun` binding lives behind one interface, so a 2.x binding can be added next to it.
 
 ## Out of Scope
@@ -571,7 +571,7 @@ These questions stay open at handoff. Each one names who decides or what work an
 - **Why not a block-device root.** A block-device root carries ownership without a user namespace, but the guest exit code then always reads 0, because `libkrun` returns the exit code only through a virtio-fs root.
 - **fang workaround.** fang 2.0.1 queries the terminal background color on every help and error render, which waits 4 seconds on terminals that never answer. The CLI points the process stdout at a non-terminal while fang renders and restores it before any workload runs. A test guards both the timing and the restore. The workaround goes away when fang releases a fix.
 - **Verification log (2026-11-13 to 2026-11-14).**
-  - macOS: a `purego` program with cgo off booted Alpine through `libkrun` 1.19.8. Exit codes 0, 3, 126, and 127 passed through. Ownership xattrs worked. Unsigned binaries fail at VM creation. The config file carried quotes, tabs, newlines, and non-ASCII text intact. Boot took about 0.1 s and 115 to 220 MiB host memory. `go build` failed at 256 MiB guest memory and passed at 512 MiB.
+  - macOS: a `purego` program with cgo off booted Alpine through `libkrun` 1.19.8. Exit codes 0, 3, 126, and 127 passed through. Ownership xattrs worked. Unsigned binaries fail at VM creation. With hardened runtime, `libkrun` failed to load `libkrunfw` unless the binary also had `cs.allow-dyld-environment-variables`. Without hardened runtime, the hypervisor entitlement alone was enough. The config file carried quotes, tabs, newlines, and non-ASCII text intact. Boot took about 0.1 s and 115 to 220 MiB host memory. `go build` failed at 256 MiB guest memory and passed at 512 MiB.
   - GitHub runners: `ubuntu-latest` and `ubuntu-24.04` (x86_64) expose KVM after a udev rule. `ubuntu-24.04-arm`, `macos-15`, and `macos-26` have no usable hypervisor.
   - Linux rootless: correct guest ownership, setuid bits, and exit codes inside a user namespace. The AppArmor profile makes this work with the restriction on.
   - Per-run root: APFS clone on macOS and overlay in a user namespace on Linux kept the cache unchanged, isolated concurrent runs, and kept exit codes.
