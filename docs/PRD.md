@@ -365,11 +365,14 @@ When the `userns` check fails and the AppArmor restriction is on, `sbxr doctor` 
 - `--net`: the guest gets a virtio-net device connected to a userspace network stack inside the `sbxr` parent process. The guest configures itself with DHCP and uses the stack's gateway for DNS. No helper binary and no socket file are involved.
 - `libkrun` socket forwarding (TSI) is never used for CLI networking, because it exposes every guest listener on all host interfaces and cannot be limited.
 - Egress policy, enforced by `sbxr` for every new TCP connection and UDP flow:
-  - Always blocked: `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16` (including cloud metadata), multicast, every address of the host's own interfaces, the gateway address except DNS, and all IPv6.
-  - Blocked unless `--allow-lan`: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`.
+  - Always blocked: `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16` (including cloud metadata), `224.0.0.0/4`, `240.0.0.0/4`, the gateway address except DNS and DHCP, and all non-IPv4 traffic except ARP.
+  - Blocked unless `--allow-lan`: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, and every address of the host's own interfaces (re-read while the run is active).
   - Allowed: all other IPv4 destinations.
+- Enforcement has two layers, because the network library dials any destination it is given:
+  - A frame filter between the VM and the network stack drops blocked frames before the stack sees them. Without it, guest UDP to `0.0.0.0` reached a host loopback service in testing.
+  - `sbxr` builds the network stack from the library's packages and installs its own TCP and UDP forwarders, which check the destination again at dial time and count flows.
 - `-p`: one forward per mapping, created by the network stack on the host. The default bind address is `127.0.0.1`. Only listed ports are reachable.
-- Resource limits: the network stack caps established TCP connections and UDP flows per run. A guest that reaches the cap gets connection failures. The `sbxr` process memory is bounded.
+- Resource limits: each run allows at most 1024 established TCP connections and 256 UDP flows. Past the cap, new TCP connections get a reset and new UDP flows are dropped. The library alone limits only half-open TCP connections, and in testing a guest held 2000 connections, each costing one host file descriptor.
 - The core defines a network backend interface. The userspace stack is one adapter used by the CLI. The phase 2 TAP network is another adapter. The core and the fake test VM do not depend on the userspace stack.
 
 ### Run lifecycle
@@ -513,17 +516,18 @@ CI contract:
 
 ### Assumptions
 
-| ID  | Assumption                                                                                                                            | Confidence |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| A1  | `libkrun` 1.19.x stays maintained for the next 6 to 12 months                                                                         | 85%        |
-| A2  | One phase 1 node bundle, built on an old glibc baseline with its own libraries, runs on all supported node distributions              | 70%        |
-| A3  | One scenario set with capability tags covers all targets without target-specific branches inside scenarios                            | 75%        |
-| A4  | RKE2 imports the `config-v3.toml.d` drop-in directory like k3s                                                                        | 70%        |
-| A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install                                                            | 70%        |
-| A6  | Overlay edge cases not yet tested (hardlinks across copy-up, renaming lower directories) work over virtio-fs                          | 75%        |
-| A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot | 75%        |
-| A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available on every Kubernetes version the installer supports          | 75%        |
-| A9  | The fang terminal color query problem (fang issue 104) gets fixed upstream, so the CLI's workaround can be removed                    | 50%        |
+| ID  | Assumption                                                                                                                             | Confidence |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| A1  | `libkrun` 1.19.x stays maintained for the next 6 to 12 months                                                                          | 85%        |
+| A2  | One phase 1 node bundle, built on an old glibc baseline with its own libraries, runs on all supported node distributions               | 70%        |
+| A3  | One scenario set with capability tags covers all targets without target-specific branches inside scenarios                             | 75%        |
+| A4  | RKE2 imports the `config-v3.toml.d` drop-in directory like k3s                                                                         | 70%        |
+| A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install                                                             | 70%        |
+| A6  | Overlay edge cases not yet tested (hardlinks across copy-up, renaming lower directories) work over virtio-fs                           | 75%        |
+| A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot  | 75%        |
+| A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available on every Kubernetes version the installer supports           | 75%        |
+| A9  | The fang terminal color query problem (fang issue 104) gets fixed upstream, so the CLI's workaround can be removed                     | 50%        |
+| A10 | The macOS process that could not exit after holding 2000 guest connections in testing does not recur under the per-run connection caps | 60%        |
 
 ### Open questions
 
@@ -547,7 +551,7 @@ CI contract:
   - GitHub runners: `ubuntu-latest` and `ubuntu-24.04` (x86_64) expose KVM after a udev rule. `ubuntu-24.04-arm`, `macos-15`, and `macos-26` have no usable hypervisor.
   - Linux rootless: correct guest ownership, setuid bits, and exit codes inside a user namespace. The AppArmor profile makes this work with the restriction on.
   - Per-run root: APFS clone on macOS and overlay in a user namespace on Linux kept the cache unchanged, isolated concurrent runs, and kept exit codes.
-  - Network: TSI exposed unmapped guest listeners on all host interfaces. The in-process userspace stack published only listed ports on `127.0.0.1`, blocked host loopback, and served DHCP and DNS on macOS and Linux.
+  - Network: TSI exposed unmapped guest listeners on all host interfaces. The in-process userspace stack published only listed ports on `127.0.0.1` and served DHCP and DNS on macOS and Linux. Without a guard, guest UDP to `0.0.0.0` reached a host loopback service and the host LAN address was reachable. A frame filter closed every tested path, and `--allow-lan` mode opened the LAN but never loopback.
   - Phase 2 TAP networking: the guest owned the pod address with ICMP, TCP, and UDP working, and the VM process ran without capabilities.
   - Phase 1 in kind: VMs ran with the pause container outside, logs, exit codes, probes, Services, port-forward, memory limits, and OOM behaved as listed. SIGTERM did not reach workloads. The `use-vc` mutating policy fixed Go and glibc DNS.
 - **Council review.** Four independent reviewers (architecture, VMM and security, CLI experience, tests and CI) reviewed the design in three rounds. Their decisions are recorded in this document.
