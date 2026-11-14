@@ -301,29 +301,25 @@ A step or pull request is done when:
 
 Each claim in PRD "Verification log" comes from one of these GitHub Actions runs in `albertsko/sbxr`, or from local runs on an Apple silicon Mac. The local runs left no logs in the repository.
 
-The experiment branches are deleted. The code is still reachable by commit SHA. For example:
+The experiment branches are deleted. Each experiment commit has a tag `archive/spike-<name>`, so its code stays available. For example:
 
 ```sh
-gh api 'repos/albertsko/sbxr/contents/.github/workflows/gvnet.yml?ref=f628b68e1a5e' -q .content | base64 -d
+git fetch origin tag archive/spike-gvnet
+git show archive/spike-gvnet:.github/workflows/gvnet.yml
 ```
 
-| Topic                                                | Run                                                                       | Commit         |
-| ---------------------------------------------------- | ------------------------------------------------------------------------- | -------------- |
-| KVM and kind on GitHub runners, `libkrun` CI install | [43411616835](https://github.com/albertsko/sbxr/actions/runs/43411616835) | `2bdd51d534aa` |
-| Rootless ownership in a user namespace               | [43411920655](https://github.com/albertsko/sbxr/actions/runs/43411920655) | `3dc06155afb1` |
-| AppArmor profile for user namespaces                 | [43413103721](https://github.com/albertsko/sbxr/actions/runs/43413103721) | `0f1c94fe9f2d` |
-| Phase 2 TAP networking                               | [43413531258](https://github.com/albertsko/sbxr/actions/runs/43413531258) | `9055c8c3df5c` |
-| One `NET=1` build behaves like the default build     | [43418374705](https://github.com/albertsko/sbxr/actions/runs/43418374705) | `205cb798cb50` |
-| Userspace network stack in the `sbxr` process        | [43421578807](https://github.com/albertsko/sbxr/actions/runs/43421578807) | `f628b68e1a5e` |
-| Phase 1 `crun` with `libkrun` in kind                | [43414830267](https://github.com/albertsko/sbxr/actions/runs/43414830267) | `84bfd2c0ae89` |
-| Phase 1 error reporting                              | [43423090034](https://github.com/albertsko/sbxr/actions/runs/43423090034) | `36d3661dff76` |
-| Per-run root on Linux                                | [43425445163](https://github.com/albertsko/sbxr/actions/runs/43425445163) | `70cf3bc8bdf7` |
-| Phase 1 DNS mitigation                               | [43426355714](https://github.com/albertsko/sbxr/actions/runs/43426355714) | `245119454a5f` |
-| Egress guard and connection caps                     | [43593357284](https://github.com/albertsko/sbxr/actions/runs/43593357284) | `f38c5043a4ff` |
+| Topic                                                | Run                                                                       | Tag                             |
+| ---------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------- |
+| KVM and kind on GitHub runners, `libkrun` CI install | [43411616835](https://github.com/albertsko/sbxr/actions/runs/43411616835) | `archive/spike-ci-probe`        |
+| Rootless ownership in a user namespace               | [43411920655](https://github.com/albertsko/sbxr/actions/runs/43411920655) | `archive/spike-q5-ownership`    |
+| AppArmor profile for user namespaces                 | [43413103721](https://github.com/albertsko/sbxr/actions/runs/43413103721) | `archive/spike-a4-apparmor`     |
+| Phase 2 TAP networking                               | [43413531258](https://github.com/albertsko/sbxr/actions/runs/43413531258) | `archive/spike-a8-tap`          |
+| One `NET=1` build behaves like the default build     | [43418374705](https://github.com/albertsko/sbxr/actions/runs/43418374705) | `archive/spike-net1-parity`     |
+| Userspace network stack in the `sbxr` process        | [43421578807](https://github.com/albertsko/sbxr/actions/runs/43421578807) | `archive/spike-gvnet`           |
+| Phase 1 `crun` with `libkrun` in kind                | [43414830267](https://github.com/albertsko/sbxr/actions/runs/43414830267) | `archive/spike-a5-kind-krun`    |
+| Phase 1 error reporting                              | [43423090034](https://github.com/albertsko/sbxr/actions/runs/43423090034) | `archive/spike-k8s-errors`      |
+| Per-run root on Linux                                | [43425445163](https://github.com/albertsko/sbxr/actions/runs/43425445163) | `archive/spike-per-run-root`    |
+| Phase 1 DNS mitigation                               | [43426355714](https://github.com/albertsko/sbxr/actions/runs/43426355714) | `archive/spike-k8s-dns`         |
+| Egress guard and connection caps                     | [43593357284](https://github.com/albertsko/sbxr/actions/runs/43593357284) | `archive/spike-netstack-bypass` |
 
-The evidence can disappear:
-
-- GitHub keeps Actions logs for a limited time (90 days by default).
-- GitHub can garbage-collect commits that no branch or tag references.
-
-To keep the code, the project owner can push one tag per commit (for example `archive/spike-gvnet`). Copy anything you need into the repository before it expires.
+GitHub keeps Actions logs for a limited time (90 days by default), so the run links expire. The tags keep the code. Copy any log output you need into an issue or the repository before the links expire.
