@@ -531,8 +531,32 @@ CI contract:
 
 ### Open questions
 
-- **Q1. Upstream bug reports.** Verification found five `libkrun` problems worth reporting: the port map does not limit exposure, a NULL port map crashes, connected UDP replies are dropped under TSI, `\u` escapes in the config file are corrupted, and a TAP open failure hangs the VM. Filing them is a public action for the project owner to approve.
-- **Q2. RuntimeClass overhead.** The `overhead.podFixed` value needs a measurement on a real node with the phase 1 bundle.
+These questions stay open at handoff. Each one names who decides or what work answers it.
+
+- **Q1. Upstream bug reports.** Verification found five `libkrun` problems worth reporting to `libkrun/libkrun`. Filing them is a public action, so the project owner decides whether and when to file. No issue has been filed yet. All five were seen with `libkrun` 1.19.8 and `libkrunfw` 5.6.4. `sbxr` already works around each one, so none of them blocks implementation.
+  1. **The port map does not limit exposure.**
+     - Seen: under TSI, a guest listener on a port that is not in the port map still appears on the host. A guest bound to `0.0.0.0` appears on all host interfaces.
+     - Contradicts: the header says an empty map exposes nothing.
+     - Reproduce: map `18080:8080`, start guest listeners on 8080 and 9090, then list host listeners. 9090 shows up.
+     - Seen on: macOS and Linux.
+  2. **A NULL port map crashes the process** (SIGSEGV), although the header documents NULL as valid.
+  3. **Replies on connected UDP sockets are dropped under TSI.**
+     - Cause: the host sends replies with source port 0, and the guest kernel's source check drops them.
+     - Effect: DNS fails for busybox, the Go resolver, and glibc.
+     - Seen on: macOS, and in Kubernetes through `crun`.
+     - Related open issues: `libkrun/libkrunfw#132` and `libkrun/libkrun#934`.
+  4. **`\u` escapes in the guest config file are corrupted silently.** A `é` escape empties that value and every env entry after it, and the run still exits 0.
+  5. **A TAP open failure hangs the VM.**
+     - Seen: `krun_add_net_tap` returns success for a TAP device the process cannot open. Activation then fails with a log line and a vCPU panic, and the process never exits.
+     - Seen on: Linux, with a build that has network support.
+- **Q2. RuntimeClass overhead.** The `overhead.podFixed` memory value is not set yet.
+  - Answered by: a measurement during installer work, on a real node with the phase 1 bundle.
+  - Method: run `sbxr` pods with known memory limits, then compare the container cgroup memory with the guest memory.
+  - Starting point: host memory was 115 to 220 MiB per trivial run on macOS.
+- **Q3. macOS process that cannot exit (assumption A10).**
+  - Seen: in a network test on macOS, the parent process held 2000 guest TCP connections and then got stuck while exiting, in state `?E`. It ignored `kill -9` and was still present 15 minutes later. The same test exited cleanly on Linux.
+  - Not done: no root-cause analysis, because that needed root access.
+  - Answered by: a test of the network stack under the per-run connection caps on macOS during implementation. If the hang recurs below the caps, lower the caps or move the network stack into a separate helper process.
 
 ## Further Notes
 
