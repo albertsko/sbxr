@@ -36,6 +36,7 @@ jobs:
           key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.mise.outputs.go }}-${{ github.sha }}
           restore-keys: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.mise.outputs.go }}-
       - run: mise run ci
+      - run: mise run fuzz 30s
       - if: env.SAVE_CACHE == 'true' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -64,7 +65,6 @@ jobs:
         with:
           minimum_release_age: 7d
           cache_save: ${{ env.SAVE_CACHE }}
-          install_args: go
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: go-cache
         with:
@@ -72,7 +72,7 @@ jobs:
           key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.mise.outputs.go }}-${{ github.sha }}
           restore-keys: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.mise.outputs.go }}-
       # The macos job also covers the help timing test on a terminal that never answers color queries.
-      - run: go mod vendor
+      - run: mise run deps
       - run: mise run test
       # Hosted arm64 runners have no KVM.
       - if: matrix.name == 'linux-arm64'
