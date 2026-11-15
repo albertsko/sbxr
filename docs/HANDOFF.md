@@ -1,8 +1,8 @@
 # sbxr: Handoff
 
-Status: research and design are complete, and no product code exists yet. The PRD stays a living document. Last update: 2026-11-14.
+Status: steps S1 and S2 are done. The PRD stays a living document. Last update: 2026-11-15.
 
-**Next: start step S1, together with the two spikes in "Run first, in parallel".**
+**Next: start step S3, after the A10 spike in "Run first, in parallel".**
 
 The design decisions in [PRD.md](PRD.md) are final unless a failed assumption or an open question reopens them (see "Changing a decision"). This handoff tells the next engineer or AI agent how to continue. It does not repeat the PRD. When the two disagree, the PRD wins, so fix this handoff.
 
@@ -26,10 +26,18 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 
 ## Current state
 
-- The repository comes from the template `albertsko/go-kickstart`. It has one placeholder command in `cmd/sbxr`, mise tasks in `tasks/`, strict golangci-lint, goreleaser, and one CI workflow (`.github/workflows/check.yml`).
-- `mise run ci` passes on `main`.
-- The Go module has no dependencies yet.
-- `vendor/` is gitignored. The existing `deps` task only checks tools. S1 extends it to run `go mod vendor`.
+- `sbxr run`, `sbxr doctor`, and `sbxr doctor apparmor-profile` work in the fake build (`go build -tags sbxrfake`). The fake build replaces the hypervisor with an interpreter of a small busybox subset and reads images from `SBXR_FAKE_IMAGES`.
+- The release build validates input and runs the `hypervisor` and `cache` doctor checks. Its hypervisor and image store return "not implemented yet" until S3 and S4.
+- `sbxr prune` is a stub until S4. Image `User` values with names fail until S4 adds the `/etc/passwd` lookup.
+- Packages:
+  - `internal/spec`: run input validation, no I/O.
+  - `internal/krunconfig`: the config writer.
+  - `internal/run`: the run lifecycle, the VM process, stdio, terminal, signals, and cleanup.
+  - `internal/vm`: the VM process side, with the parent lifeline. `internal/vm/fake` is the fake hypervisor, image store, and doctor checks.
+  - `internal/preflight`: doctor checks and the `doctor --json` report.
+  - `internal/cli`: cobra, fang, and output. The only package that imports them.
+  - `internal/scenario`: behavior scenarios, the `Target` interface, and the `fake` target. `hv` and `kind` tests skip with "needs run: S3" and "needs run: S7".
+- `mise run ci` passes on macOS and Ubuntu. The CI jobs `check`, `linux-arm64`, and `macos` run the fake target.
 
 ## Development environment
 
