@@ -4,7 +4,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -33,23 +32,21 @@ func main() {
 	check(unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}))
 	check(unix.Listen(fd, 8))
 
-	ln, err := net.FileListener(os.NewFile(uintptr(fd), "vsock"))
-	check(err)
 	fmt.Printf("AGENT listening on vsock %d\n", port)
 
 	for {
-		c, err := ln.Accept()
+		nfd, _, err := unix.Accept(fd)
 		if err != nil {
 			fmt.Printf("AGENT accept: %v\n", err)
 
 			continue
 		}
 
-		go serve(c)
+		go serve(os.NewFile(uintptr(nfd), "vsock-conn"))
 	}
 }
 
-func serve(c net.Conn) {
+func serve(c *os.File) {
 	defer c.Close()
 
 	sc := bufio.NewScanner(c)

@@ -22,6 +22,24 @@ for spec in "b:0:$BASE:65536" "b:$BASE:0:65536"; do
 		result "U1 overlay idmapped bind ($spec) FAIL"
 	fi
 done
+mkdir -p $W/u1/il $W/u1/iu $W/u1/iw $W/u1/m2 $W/u1/d
+echo plain >$W/u1/d/f
+chown 1000:1000 $W/u1/d/f
+if mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/d $W/u1/j; then
+	ls -ln $W/u1/j; umount $W/u1/j; result "U1 plain dir idmapped bind PASS"
+else
+	result "U1 plain dir idmapped bind FAIL"
+fi
+umount $W/u1/m
+rm -rf $W/u1/u/* $W/u1/w/*
+mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/l $W/u1/il &&
+	mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/u $W/u1/iu &&
+	mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/w $W/u1/iw &&
+	if mount -t overlay overlay -o lowerdir=$W/u1/il,upperdir=$W/u1/iu,workdir=$W/u1/iw $W/u1/m2; then
+		ls -ln $W/u1/m2; result "U1 overlay over idmapped layers PASS"
+	else
+		dmesg | tail -3; result "U1 overlay over idmapped layers FAIL"
+	fi
 echo "::endgroup::"
 
 echo "::group::guest root"
@@ -113,14 +131,12 @@ echo "::endgroup::"
 echo "::group::U4 bind after boot into the share, idmapped"
 mkdir -p $S/c1/rootfs
 chown -R $BASE:$BASE $S/c1
-for spec in "b:$BASE:0:65536" "b:0:$BASE:65536"; do
-	mount --bind -o "X-mount.idmap=$spec" $C/merged $S/c1/rootfs || continue
-	if [ "$(stat -c %u $S/c1/rootfs/bin)" = $BASE ]; then
-		echo "U4 uses X-mount.idmap=$spec"
-		break
-	fi
-	umount $S/c1/rootfs
+umount $C/merged
+for d in lower upper work; do
+	mkdir -p $C/id-$d
+	mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $C/$d $C/id-$d
 done
+mount -t overlay overlay -o lowerdir=$C/id-lower,upperdir=$C/id-upper,workdir=$C/id-work $S/c1/rootfs
 ls -ln $S/c1/rootfs/data || result "U4 idmapped bind of container overlay FAIL"
 guest 'ls -ln /mnt/shared/c1/rootfs/data' 'echo new >/mnt/shared/c1/rootfs/data/new && chown 1000:1000 /mnt/shared/c1/rootfs/data/new && ls -ln /mnt/shared/c1/rootfs/data/new' | tee $W/u4.txt
 echo "host upper:"
