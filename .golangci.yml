@@ -127,7 +127,7 @@ linters:
       # Types whose fields are optional by design.
       optional-patterns:
         - '.+/internal/run\.ImageConfig'
-        - '.+/internal/scenario\.(Scenario|Workload)'
+        - '.+/internal/scenario\.(Scenario|Workload|Volume)'
         - '.+/internal/spec\.Error'
 
     gocritic:

@@ -111,6 +111,33 @@ func All() []Scenario {
 			Needs: []Capability{DNS, EgressGuard},
 			Check: expect(Workload{Image: Busybox, Net: true, Args: []string{"nslookup", "-type=a", "localhost"}}, 0, OK, stdoutContains("127.0.0.1")),
 		},
+		{Name: "volume is readable and writable both ways", Needs: []Capability{Volumes}, Check: volumeReadWrite},
+		{Name: "read-only volume rejects writes", Needs: []Capability{Volumes}, Check: volumeReadOnly},
+		{
+			Name:  "volume keeps the image config",
+			Needs: []Capability{Volumes, ExactConfig},
+			Check: withVolume(Workload{Image: Configured}, 0, OK, stdout("image image\n1000\n1000\n/tmp\n")),
+		},
+		{
+			Name:  "volume adds nothing to the guest env",
+			Needs: []Capability{Volumes, ExactConfig},
+			Check: withVolume(Workload{Image: Busybox, Args: []string{"env"}, Env: []string{"A=1", "TERM=xterm"}}, 0, OK, envExactly("PATH=/bin", "A=1", "TERM=xterm", "HOME=/")),
+		},
+		{
+			Name:  "volume with a missing command",
+			Needs: []Capability{Volumes},
+			Check: withVolume(Workload{Image: Busybox, Args: []string{"nope"}}, 127, NotFound),
+		},
+		{
+			Name:  "volume with a relative guest path",
+			Needs: []Capability{Volumes, SpecValidation},
+			Check: invalidVolume(Volume{Guest: "work"}),
+		},
+		{
+			Name:  "volume with a missing host directory",
+			Needs: []Capability{Volumes, SpecValidation},
+			Check: invalidVolume(Volume{Host: "/nonexistent/sbxr-volume", Guest: workDir}),
+		},
 		{Name: "publish reaches a guest port on 127.0.0.1", Needs: []Capability{Publish, Stdin}, Check: publishReachesGuest},
 	}
 }

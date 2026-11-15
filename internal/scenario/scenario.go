@@ -91,6 +91,14 @@ type Workload struct {
 	Publish []uint16
 	// Published is called once per published port with its host address, while the workload runs.
 	Published func(ctx context.Context, guestPort uint16, hostAddr string)
+	// Volumes share host directories with the workload.
+	Volumes []Volume
+}
+
+// Volume is one -v flag.
+type Volume struct {
+	Host, Guest string
+	ReadOnly    bool
 }
 
 // Result is the outcome of one run.

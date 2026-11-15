@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,7 +18,15 @@ import (
 )
 
 // Build builds the sbxr binary into out with cgo off, like the release.
+// A build without the sbxrfake tag first generates the guest mount helper, which the release embeds.
 func Build(ctx context.Context, out string, tags ...string) error {
+	if !slices.Contains(tags, "sbxrfake") {
+		gen := exec.CommandContext(ctx, "go", "generate", "github.com/albertsko/sbxr/internal/guestmount")
+		if output, err := gen.CombinedOutput(); err != nil {
+			return fmt.Errorf("generate the mount helper: %w\n%s", err, output)
+		}
+	}
+
 	cmd := exec.CommandContext(ctx, "go", "build", "-tags", strings.Join(tags, ","), "-o", out, "github.com/albertsko/sbxr/cmd/sbxr") //nolint:gosec // Tests choose the arguments.
 
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
@@ -54,7 +63,7 @@ func Fake(t *testing.T, bin string, refs map[string]string) *Binary {
 		Images:   refs,
 		Flags:    nil,
 		Env:      nil,
-		Caps:     []Capability{Stdin, TTY, SplitStderr, SignalExit, SpecValidation, ExactConfig, Net, NetOff, Publish, DNS, EgressGuard},
+		Caps:     []Capability{Stdin, TTY, SplitStderr, SignalExit, SpecValidation, ExactConfig, Net, NetOff, Publish, DNS, EgressGuard, Volumes},
 	}
 }
 
@@ -127,6 +136,15 @@ func (b *Binary) args(w Workload) []string {
 
 	if w.TTY {
 		args = append(args, "-t")
+	}
+
+	for _, v := range w.Volumes {
+		flag := v.Host + ":" + v.Guest
+		if v.ReadOnly {
+			flag += ":ro"
+		}
+
+		args = append(args, "-v", flag)
 	}
 
 	if w.Net {

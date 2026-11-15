@@ -52,7 +52,7 @@ func TestHVCLITarget(t *testing.T) {
 			Env:      hvEnv(),
 			Caps: []scenario.Capability{
 				scenario.Stdin, scenario.TTY, scenario.SplitStderr, scenario.SignalExit, scenario.SpecValidation, scenario.ExactConfig,
-				scenario.Net, scenario.NetOff, scenario.Publish, scenario.DNS, scenario.EgressGuard,
+				scenario.Net, scenario.NetOff, scenario.Publish, scenario.DNS, scenario.EgressGuard, scenario.Volumes,
 			},
 		}
 	})
