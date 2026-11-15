@@ -21,6 +21,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,6 +32,7 @@ import (
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/ttrpc"
+	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -39,6 +42,9 @@ type service struct {
 	log      *slog.Logger
 	pub      *publisher
 	shutdown func()
+
+	// bootTimeout bounds the time from the VM start until the guest agent answers.
+	bootTimeout time.Duration
 
 	mu      sync.Mutex
 	sandbox *sandbox
@@ -186,15 +192,20 @@ func start(f flags, stdin io.Reader, stdout io.Writer) error {
 
 // deleteAction cleans up after a shim that died, and reports the pod as killed.
 func deleteAction(f flags, stdout io.Writer) error {
+	if f.id == "" || f.id != filepath.Base(f.id) {
+		return fmt.Errorf("sandbox id %q is not valid", f.id)
+	}
+
 	dir := filepath.Join(podsDir, f.id)
-	if data, err := os.ReadFile(filepath.Join(dir, "vm.pid")); err == nil {
-		var pid int
-		if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && pid > 1 {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+	if data, err := os.ReadFile(filepath.Join(dir, vmPidFile)); err == nil {
+		if pid, err := strconv.Atoi(string(data)); err == nil {
+			killVM(pid, dir)
 		}
 	}
 
-	cleanupPod(dir)
+	if ids, err := loadIDPool("/etc", idsDir); err == nil {
+		_ = cleanupPod(dir, ids)
+	}
 
 	data, err := proto.Marshal(&taskAPI.DeleteResponse{ExitStatus: 137, ExitedAt: timestamppb.Now()})
 	if err != nil {
@@ -204,6 +215,30 @@ func deleteAction(f flags, stdout io.Writer) error {
 	_, err = stdout.Write(data)
 
 	return err //nolint:wrapcheck // Writing to containerd's pipe.
+}
+
+// killVM kills the VM process pid of the pod directory dir. The pid may belong to another process by now,
+// so it checks the command line through a pidfd, which cannot move to a new process, before it signals.
+func killVM(pid int, dir string) {
+	fd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		return
+	}
+	defer unix.Close(fd) //nolint:errcheck // Read-only use.
+
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || !isVMCommand(cmdline, dir) {
+		return
+	}
+
+	_ = unix.PidfdSendSignal(fd, unix.SIGKILL, nil, 0)
+}
+
+// isVMCommand reports whether a /proc cmdline is the VM process of the pod directory dir.
+func isVMCommand(cmdline []byte, dir string) bool {
+	args := strings.Split(strings.TrimSuffix(string(cmdline), "\x00"), "\x00")
+
+	return len(args) == 3 && args[1] == VMArg && args[2] == dir
 }
 
 // serve is the shim daemon. containerd passes the listener as fd 3 and reads its logs from the "log" FIFO in the bundle.
@@ -230,7 +265,7 @@ func serve(f flags) error {
 
 	s := &service{
 		log: log, pub: newPublisher(os.Getenv("TTRPC_ADDRESS"), f.namespace, log),
-		shutdown: cancel, mu: sync.Mutex{}, sandbox: nil, tasks: map[string]*task{},
+		shutdown: cancel, bootTimeout: defaultBootTimeout, mu: sync.Mutex{}, sandbox: nil, tasks: map[string]*task{},
 	}
 
 	taskAPI.RegisterTTRPCTaskService(srv, s)

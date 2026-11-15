@@ -18,6 +18,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/albertsko/sbxr/internal/podvm"
+	"github.com/albertsko/sbxr/internal/subid"
 	"github.com/albertsko/sbxr/internal/vm/libkrun"
 )
 
@@ -48,35 +49,26 @@ type vmProcess struct {
 	exit error
 }
 
-// startVM starts the VM process for the pod directory dir: in the pod network namespace, as root of a new user namespace
-// that maps 0..idRange-1 to uid..uid+idRange-1, with /dev/kvm access through its group when the device needs one.
-func startVM(dir string, m machine, netnsPath string, uid int, log io.Writer) (*vmProcess, error) {
-	data, err := json.Marshal(m)
-	if err == nil {
-		err = os.WriteFile(filepath.Join(dir, machineFile), data, 0o644) //nolint:gosec // The VM process reads it as another user.
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("write VM config: %w", err)
-	}
-
+// startVM starts the VM process for the pod directory dir: in the pod network namespace and in cgroup, as root of a new
+// user namespace that maps subid.PerPod ids from uid, with /dev/kvm access through its group when the device needs one.
+func startVM(dir, netnsPath string, uid int, cgroup, log *os.File) (*vmProcess, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("find shim binary: %w", err)
 	}
 
 	cmd := exec.Command(self, VMArg, dir) //nolint:noctx // The VM lives as long as the pod, not a request.
-	cmd.Env = libkrun.Env(m.LibDir)
+	cmd.Env = libkrun.Env(libDir)
 	cmd.Stdout, cmd.Stderr = log, log
 
-	idmap := []syscall.SysProcIDMap{{ContainerID: 0, HostID: uid, Size: idRange}}
+	idmap := []syscall.SysProcIDMap{{ContainerID: 0, HostID: uid, Size: subid.PerPod}}
 	gidmap := idmap
 	cred := &syscall.Credential{Uid: 0, Gid: 0, NoSetGroups: false}
 
 	// The VM process opens /dev/kvm as an unprivileged host user, so it joins the device's group when other users have no access.
 	if gid, ok := kvmGroup(); ok {
-		gidmap = append(gidmap, syscall.SysProcIDMap{ContainerID: idRange, HostID: gid, Size: 1})
-		cred.Groups = []uint32{idRange}
+		gidmap = append(gidmap, syscall.SysProcIDMap{ContainerID: subid.PerPod, HostID: gid, Size: 1})
+		cred.Groups = []uint32{subid.PerPod}
 	}
 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -87,6 +79,9 @@ func startVM(dir string, m machine, netnsPath string, uid int, log io.Writer) (*
 		Credential:                 cred,
 		// The parent thread below lives until the VM exits, so the VM process dies with the shim.
 		Pdeathsig: syscall.SIGKILL,
+		// clone3 places the process in the pod cgroup before it runs, so no moment escapes the pod's limits.
+		UseCgroupFD: true,
+		CgroupFD:    int(cgroup.Fd()),
 	}
 
 	vm := &vmProcess{cmd: cmd, done: make(chan struct{}), exit: nil}
@@ -182,6 +177,17 @@ func runVM(args []string) error {
 		return fmt.Errorf("decode VM config: %w", err)
 	}
 
+	cfg, err := vmConfig(m)
+	if err != nil {
+		return err
+	}
+
+	return libkrun.Enter(m.LibDir, cfg) //nolint:wrapcheck // Enter names the failing call.
+}
+
+// vmConfig turns m into the libkrun config. It opens the TAP device first, because libkrun reports a TAP device it
+// cannot open only in a log line, and then the VM hangs.
+func vmConfig(m machine) (libkrun.Config, error) {
 	cfg := libkrun.Config{
 		Root:      m.GuestRoot,
 		CPUs:      m.CPUs,
@@ -195,20 +201,19 @@ func runVM(args []string) error {
 	}
 
 	if m.TAP != "" {
-		// libkrun reports a TAP device it cannot open only in a log line, and then the VM hangs. Fail first instead.
 		if err := openTAP(m.TAP); err != nil {
-			return err
+			return cfg, err
 		}
 
 		mac, err := parseMAC(m.MAC)
 		if err != nil {
-			return err
+			return cfg, err
 		}
 
 		cfg.TAP = &libkrun.TAP{Name: m.TAP, MAC: mac}
 	}
 
-	return libkrun.Enter(m.LibDir, cfg) //nolint:wrapcheck // Enter names the failing call.
+	return cfg, nil
 }
 
 // openTAP opens the TAP device like libkrun does, and closes it again.

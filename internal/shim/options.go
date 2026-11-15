@@ -23,8 +23,6 @@ type podConfig struct {
 	MemoryBytes int64
 	CPUQuota    int64
 	CPUPeriod   int64
-	// OverheadMemoryBytes is the RuntimeClass overhead, which the VM itself uses.
-	OverheadMemoryBytes int64
 }
 
 // Field numbers from k8s.io/cri-api runtime/v1 api.proto.
@@ -38,7 +36,6 @@ const (
 	fieldDNSOptions  = 3
 
 	fieldCgroupParent = 1
-	fieldOverhead     = 4
 	fieldResources    = 5
 
 	fieldCPUPeriod = 1
@@ -71,18 +68,12 @@ func parsePodConfig(b []byte) (podConfig, error) {
 		}
 
 		return eachField(v, func(num protowire.Number, v []byte, _ uint64) error {
-			var quota, period int64
-
 			if num == fieldCgroupParent {
 				c.CgroupParent = string(v)
 			}
 
 			if num == fieldResources {
 				return parseResources(v, &c.MemoryBytes, &c.CPUQuota, &c.CPUPeriod)
-			}
-
-			if num == fieldOverhead {
-				return parseResources(v, &c.OverheadMemoryBytes, &quota, &period)
 			}
 
 			return nil

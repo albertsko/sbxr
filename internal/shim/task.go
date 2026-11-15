@@ -74,23 +74,26 @@ func (t *task) processes() []*proc {
 }
 
 func (s *service) Create(ctx context.Context, req *taskAPI.CreateTaskRequest) (*taskAPI.CreateTaskResponse, error) {
-	sb, err := s.getSandbox("")
+	sb, agent, err := s.readySandbox()
 	if err != nil {
 		return nil, err
 	}
 
 	id := req.GetID()
-	share := filepath.Join(sb.share(), id)
+	if id == "" || id != filepath.Base(id) {
+		return nil, status.Errorf(codes.InvalidArgument, "container id %q is not valid", id)
+	}
+
 	guestBundle := filepath.Join(podvm.GuestShare, id)
 
-	err = prepareBundle(sb, req, share, guestBundle)
+	err = prepareBundle(sb, req, filepath.Join(shareDir, id), guestBundle)
 	if err != nil {
 		s.cleanupTask(sb, id)
 
 		return nil, err
 	}
 
-	resp, err := sb.agent.Create(ctx, &taskAPI.CreateTaskRequest{
+	resp, err := agent.Create(ctx, &taskAPI.CreateTaskRequest{
 		ID: id, Bundle: guestBundle, Terminal: req.GetTerminal(),
 		Stdin: req.GetStdin(), Stdout: req.GetStdout(), Stderr: req.GetStderr(),
 	})
@@ -100,8 +103,9 @@ func (s *service) Create(ctx context.Context, req *taskAPI.CreateTaskRequest) (*
 		return nil, err //nolint:wrapcheck // The agent's status goes to containerd unchanged.
 	}
 
-	io, err := connectIO(sb.streamSocket(), id, "", req.GetStdin(), req.GetStdout(), req.GetStderr(), req.GetTerminal())
+	io, err := connectIO(sb.dialStream, id, "", req.GetStdin(), req.GetStdout(), req.GetStderr(), req.GetTerminal())
 	if err != nil {
+		s.rollback(agent, id, "")
 		s.cleanupTask(sb, id)
 
 		return nil, err
@@ -119,8 +123,19 @@ func (s *service) Create(ctx context.Context, req *taskAPI.CreateTaskRequest) (*
 	return &taskAPI.CreateTaskResponse{Pid: resp.GetPid()}, nil
 }
 
-// prepareBundle mounts the container's root file system and volumes into the pod share and writes the guest spec.
-func prepareBundle(sb *sandbox, req *taskAPI.CreateTaskRequest, share, guestBundle string) error {
+// rollback removes a process from the guest after the host side failed. The guest kills it if it runs.
+func (s *service) rollback(agent taskAPI.TTRPCTaskService, id, execID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err := agent.Delete(ctx, &taskAPI.DeleteRequest{ID: id, ExecID: execID})
+	if err != nil {
+		s.log.Warn("remove the process from the guest", "container", id, "exec", execID, "error", err)
+	}
+}
+
+// prepareBundle mounts the container's root file system and volumes at rel in the pod directory and writes the guest spec.
+func prepareBundle(sb *sandbox, req *taskAPI.CreateTaskRequest, rel, guestBundle string) error {
 	data, err := os.ReadFile(filepath.Join(req.GetBundle(), "config.json"))
 	if err != nil {
 		return fmt.Errorf("read container spec: %w", err)
@@ -133,13 +148,13 @@ func prepareBundle(sb *sandbox, req *taskAPI.CreateTaskRequest, share, guestBund
 		return fmt.Errorf("decode container spec: %w", err)
 	}
 
-	err = mountRootfs(req.GetRootfs(), filepath.Join(share, "rootfs"), filepath.Join(sb.dir, "layers", req.GetID()), sb.usernsFD, sb.uid)
+	err = mountRootfs(req.GetRootfs(), sb.dir, filepath.Join(rel, "rootfs"), filepath.Join(layersDir, req.GetID()), sb.usernsFD, sb.uid)
 	if err != nil {
 		return err
 	}
 
 	for _, sh := range guestSpec(&spec, req.GetID(), guestBundle) {
-		err := shareFile(sh.Source, filepath.Join(share, sh.Name), sb.usernsFD, sh.ReadOnly)
+		err := shareFile(sh.Source, sb.dir, filepath.Join(rel, sh.Name), sb.usernsFD, sh.ReadOnly)
 		if err != nil {
 			return err
 		}
@@ -147,7 +162,7 @@ func prepareBundle(sb *sandbox, req *taskAPI.CreateTaskRequest, share, guestBund
 
 	data, err = json.Marshal(spec)
 	if err == nil {
-		err = os.WriteFile(filepath.Join(share, "config.json"), data, 0o644) //nolint:gosec // crun in the guest reads it.
+		err = sb.dir.writeFile(filepath.Join(rel, "config.json"), data, fileMode)
 	}
 
 	if err != nil {
@@ -159,12 +174,10 @@ func prepareBundle(sb *sandbox, req *taskAPI.CreateTaskRequest, share, guestBund
 
 // cleanupTask removes the container's mounts and files from the host.
 func (s *service) cleanupTask(sb *sandbox, id string) {
-	for _, dir := range []string{filepath.Join(sb.share(), id), filepath.Join(sb.dir, "layers", id)} {
-		if err := unmountAll(dir); err != nil {
-			s.log.Warn("unmount", "container", id, "error", err)
+	for _, rel := range []string{filepath.Join(shareDir, id), filepath.Join(layersDir, id)} {
+		if err := removeTree(sb.dir.join(rel)); err != nil {
+			s.log.Warn("container cleanup", "container", id, "error", err)
 		}
-
-		_ = os.RemoveAll(dir)
 	}
 }
 
@@ -223,8 +236,10 @@ func (s *service) Exec(ctx context.Context, req *taskAPI.ExecProcessRequest) (*e
 		return nil, err //nolint:wrapcheck // The agent's status goes to containerd unchanged.
 	}
 
-	io, err := connectIO(sb.streamSocket(), t.id, req.GetExecID(), req.GetStdin(), req.GetStdout(), req.GetStderr(), req.GetTerminal())
+	io, err := connectIO(sb.dialStream, t.id, req.GetExecID(), req.GetStdin(), req.GetStdout(), req.GetStderr(), req.GetTerminal())
 	if err != nil {
+		s.rollback(sb.agent, t.id, req.GetExecID())
+
 		return nil, err
 	}
 
@@ -382,9 +397,14 @@ func (s *service) Checkpoint(context.Context, *taskAPI.CheckpointTaskRequest) (*
 func (s *service) find(id, execID string) (*sandbox, *task, *proc, error) {
 	s.mu.Lock()
 	sb, t := s.sandbox, s.tasks[id]
+	ready := sb != nil && sb.agent != nil
 	s.mu.Unlock()
 
-	if sb == nil || sb.agent == nil || t == nil {
+	if !ready {
+		return nil, nil, nil, status.Error(codes.FailedPrecondition, "the sandbox is not started") //nolint:wrapcheck // ttrpc status.
+	}
+
+	if t == nil {
 		return nil, nil, nil, status.Errorf(codes.NotFound, "task %s not found", id)
 	}
 

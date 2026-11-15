@@ -24,9 +24,12 @@ type procIO struct {
 	outputs []*os.File
 }
 
+// dialer opens a stream to the guest with header h.
+type dialer func(h podvm.Header) (*net.UnixConn, error)
+
 // connectIO opens the FIFOs that containerd created and one stream to the guest for each.
 // FIFOs open read-write, so opening never blocks and the stdin copy ends only through CloseIO.
-func connectIO(streamSock, container, exec, stdin, stdout, stderr string, terminal bool) (*procIO, error) {
+func connectIO(dial dialer, container, exec, stdin, stdout, stderr string, terminal bool) (*procIO, error) {
 	p := &procIO{stdin: nil, copies: sync.WaitGroup{}, files: nil, outputs: nil}
 
 	if terminal {
@@ -38,7 +41,7 @@ func connectIO(streamSock, container, exec, stdin, stdout, stderr string, termin
 			continue
 		}
 
-		if err := p.connect(streamSock, podvm.Header{Kind: s.kind, Container: container, Exec: exec, Port: 0}, s.fifo); err != nil {
+		if err := p.connect(dial, podvm.Header{Kind: s.kind, Container: container, Exec: exec, Port: 0}, s.fifo); err != nil {
 			p.close()
 
 			return nil, err
@@ -48,13 +51,13 @@ func connectIO(streamSock, container, exec, stdin, stdout, stderr string, termin
 	return p, nil
 }
 
-func (p *procIO) connect(streamSock string, h podvm.Header, fifo string) error {
+func (p *procIO) connect(dial dialer, h podvm.Header, fifo string) error {
 	f, err := os.OpenFile(fifo, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", h.Kind, err)
 	}
 
-	conn, err := dialStream(streamSock, h)
+	conn, err := dial(h)
 	if err != nil {
 		_ = f.Close()
 
@@ -82,15 +85,10 @@ func (p *procIO) connect(streamSock string, h podvm.Header, fifo string) error {
 	return nil
 }
 
-// dialStream opens a stream to the guest and sends its header.
-func dialStream(streamSock string, h podvm.Header) (*net.UnixConn, error) {
-	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: streamSock, Net: "unix"})
-	if err != nil {
-		return nil, fmt.Errorf("open %s stream: %w", h.Kind, err)
-	}
-
+// sendHeader starts a stream to the guest with its header, and closes conn when that fails.
+func sendHeader(conn *net.UnixConn, h podvm.Header) (*net.UnixConn, error) {
 	w := bufio.NewWriter(conn)
-	_, err = w.WriteString(h.String() + "\n")
+	_, err := w.WriteString(h.String() + "\n")
 
 	if err = errors.Join(err, w.Flush()); err != nil {
 		_ = conn.Close()

@@ -15,102 +15,89 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// idmapBind mounts src at dst through an idmapped bind mount that maps file owners through the user namespace usernsFD.
-// The VM process, root in that namespace, then sees the files with their real owners.
-// dst must exist and match the type of src.
-func idmapBind(src, dst string, usernsFD int, readOnly bool) error {
+// bindMount mounts a clone of src on dst, an O_PATH target from podDir.target. With usernsFD >= 0 the mount maps file
+// owners through that user namespace, so the VM process, root in it, sees the files with their real owners.
+func bindMount(src string, dst *os.File, usernsFD int, readOnly bool) error {
 	tree, err := unix.OpenTree(unix.AT_FDCWD, src, unix.OPEN_TREE_CLONE|unix.OPEN_TREE_CLOEXEC)
 	if err != nil {
 		return fmt.Errorf("clone mount %s: %w", src, err)
 	}
 	defer unix.Close(tree) //nolint:errcheck // The mount moved, or it goes with the descriptor.
 
-	attr := &unix.MountAttr{Attr_set: unix.MOUNT_ATTR_IDMAP, Userns_fd: uint64(usernsFD)} //nolint:gosec // A descriptor is not negative.
+	var attr unix.MountAttr
+
+	if usernsFD >= 0 {
+		attr.Attr_set, attr.Userns_fd = unix.MOUNT_ATTR_IDMAP, uint64(usernsFD)
+	}
+
 	if readOnly {
 		attr.Attr_set |= unix.MOUNT_ATTR_RDONLY
 	}
 
-	err = unix.MountSetattr(tree, "", unix.AT_EMPTY_PATH, attr)
-	if err != nil {
-		return fmt.Errorf("idmap mount %s: %w", src, err)
+	if attr.Attr_set != 0 {
+		err = unix.MountSetattr(tree, "", unix.AT_EMPTY_PATH, &attr)
+		if err != nil {
+			return fmt.Errorf("set attributes of mount %s: %w", src, err)
+		}
 	}
 
-	err = unix.MoveMount(tree, "", unix.AT_FDCWD, dst, unix.MOVE_MOUNT_F_EMPTY_PATH)
+	err = unix.MoveMount(tree, "", int(dst.Fd()), "", unix.MOVE_MOUNT_F_EMPTY_PATH|unix.MOVE_MOUNT_T_EMPTY_PATH)
 	if err != nil {
-		return fmt.Errorf("move mount %s to %s: %w", src, dst, err)
+		return fmt.Errorf("move mount %s to %s: %w", src, dst.Name(), err)
 	}
 
 	return nil
 }
 
-// shareFile mounts src at dst like idmapBind and creates dst first with the type of src.
+// shareFile mounts the volume src at rel in the pod directory, idmapped through usernsFD.
 // A file system without idmapped mount support gets a plain bind, so the guest sees overflow owners but can still read it.
-func shareFile(src, dst string, usernsFD int, readOnly bool) error {
+func shareFile(src string, d *podDir, rel string, usernsFD int, readOnly bool) error {
 	st, err := os.Stat(src)
 	if err != nil {
 		return fmt.Errorf("share %s: %w", src, err)
 	}
 
-	err = os.MkdirAll(filepath.Dir(dst), 0o755) //nolint:gosec // The guest reads the share.
+	dst, err := d.target(rel, st.IsDir())
 	if err != nil {
-		return fmt.Errorf("share %s: %w", src, err)
-	}
-
-	if st.IsDir() {
-		err = os.Mkdir(dst, 0o755) //nolint:gosec // See above.
-	} else {
-		err = os.WriteFile(dst, nil, 0o644) //nolint:gosec // See above.
-	}
-
-	if err != nil && !errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("share %s: %w", src, err)
-	}
-
-	err = idmapBind(src, dst, usernsFD, readOnly)
-	if !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.EPERM) {
 		return err
 	}
+	defer dst.Close() //nolint:errcheck // O_PATH descriptor.
 
-	flags := uintptr(unix.MS_BIND | unix.MS_REC)
-
-	err = unix.Mount(src, dst, "", flags, "")
-	if err == nil && readOnly {
-		err = unix.Mount("", dst, "", flags|unix.MS_REMOUNT|unix.MS_RDONLY, "")
+	err = bindMount(src, dst, usernsFD, readOnly)
+	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.EPERM) {
+		err = bindMount(src, dst, -1, readOnly)
 	}
 
-	if err != nil {
-		return fmt.Errorf("bind %s: %w", src, err)
-	}
-
-	return nil
+	return err
 }
 
-// mountRootfs mounts a container's root file system from containerd's mounts at target.
+// mountRootfs mounts a container's root file system from containerd's mounts at rel in the pod directory.
 // An overlay keeps its upper layer on the host and gets idmapped lower layers under layers.
 // Overlayfs itself cannot be idmapped, but it accepts idmapped lower layers, and copy-up keeps their mapped owners.
-func mountRootfs(mounts []*types.Mount, target, layers string, usernsFD, uid int) error {
+func mountRootfs(mounts []*types.Mount, d *podDir, rel, layers string, usernsFD, uid int) error {
 	if len(mounts) != 1 {
 		return fmt.Errorf("root file system has %d mounts, want 1", len(mounts))
 	}
 
 	m := mounts[0]
 
-	err := os.MkdirAll(target, 0o755) //nolint:gosec // The guest reads the share.
+	dst, err := d.target(rel, true)
 	if err != nil {
-		return fmt.Errorf("create %s: %w", target, err)
+		return err
 	}
+	defer dst.Close() //nolint:errcheck // O_PATH descriptor.
 
 	switch m.GetType() {
 	case bindType:
-		return idmapBind(m.GetSource(), target, usernsFD, contains(m.GetOptions(), "ro"))
+		return bindMount(m.GetSource(), dst, usernsFD, slices.Contains(m.GetOptions(), "ro"))
 	case "overlay":
-		return mountOverlay(m.GetOptions(), target, layers, usernsFD, uid)
+		return mountOverlay(m.GetOptions(), dst, d, layers, usernsFD, uid)
 	}
 
 	return fmt.Errorf("root file system type %q is not supported", m.GetType())
 }
 
-func mountOverlay(options []string, target, layers string, usernsFD, uid int) error {
+func mountOverlay(options []string, dst *os.File, d *podDir, layers string, usernsFD, uid int) error {
 	out := make([]string, 0, len(options))
 
 	for _, o := range options {
@@ -121,24 +108,27 @@ func mountOverlay(options []string, target, layers string, usernsFD, uid int) er
 			var lowers []string
 
 			for i, dir := range strings.Split(value, ":") {
-				dst := filepath.Join(layers, strconv.Itoa(i))
+				rel := filepath.Join(layers, strconv.Itoa(i))
 
-				err := os.MkdirAll(dst, 0o700)
-				if err == nil {
-					err = idmapBind(dir, dst, usernsFD, true)
+				lower, err := d.target(rel, true)
+				if err != nil {
+					return err
 				}
+
+				err = bindMount(dir, lower, usernsFD, true)
+				_ = lower.Close()
 
 				if err != nil {
 					return err
 				}
 
-				lowers = append(lowers, dst)
+				lowers = append(lowers, d.join(rel))
 			}
 
 			o = "lowerdir=" + strings.Join(lowers, ":")
 		case "upperdir":
 			// New files take the owners of their lower layer, so the upper directory itself joins the pod's id range.
-			err := os.Chown(value, uid, uid)
+			err := unix.Fchownat(unix.AT_FDCWD, value, uid, uid, unix.AT_SYMLINK_NOFOLLOW)
 			if err != nil {
 				return fmt.Errorf("chown upper layer: %w", err)
 			}
@@ -147,41 +137,86 @@ func mountOverlay(options []string, target, layers string, usernsFD, uid int) er
 		out = append(out, o)
 	}
 
-	err := unix.Mount("overlay", target, "overlay", 0, strings.Join(out, ","))
+	err := unix.Mount("overlay", procPath(dst), "overlay", 0, strings.Join(out, ","))
 	if err != nil {
-		return fmt.Errorf("mount overlay at %s: %w", target, err)
+		return fmt.Errorf("mount overlay at %s: %w", dst.Name(), err)
 	}
 
 	return nil
 }
 
-// unmountAll detaches every mount at or below dir, deepest first.
+// unmountAll detaches every mount at or below dir, deepest first, and fails when any remains.
 func unmountAll(dir string) error {
 	data, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
 		return fmt.Errorf("read mountinfo: %w", err)
 	}
 
-	var targets []string
-
-	for line := range strings.Lines(string(data)) {
-		f := strings.Fields(line)
-		if len(f) > 4 && (f[4] == dir || strings.HasPrefix(f[4], dir+"/")) {
-			targets = append(targets, f[4])
+	for _, target := range slices.Backward(mountsBelow(string(data), dir)) {
+		err := unix.Unmount(target, unix.MNT_DETACH|unix.UMOUNT_NOFOLLOW)
+		if err != nil && !errors.Is(err, unix.EINVAL) {
+			return fmt.Errorf("unmount %s: %w", target, err)
 		}
 	}
 
-	var errs []error
-
-	for _, target := range slices.Backward(targets) {
-		if err := unix.Unmount(target, unix.MNT_DETACH); err != nil && !errors.Is(err, unix.EINVAL) {
-			errs = append(errs, fmt.Errorf("unmount %s: %w", target, err))
-		}
+	data, err = os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return fmt.Errorf("read mountinfo: %w", err)
 	}
 
-	return errors.Join(errs...)
+	if left := mountsBelow(string(data), dir); len(left) > 0 {
+		return fmt.Errorf("mounts remain below %s: %s", dir, strings.Join(left, ", "))
+	}
+
+	return nil
 }
 
-func contains(s []string, v string) bool {
-	return slices.Contains(s, v)
+// removeTree unmounts dir and then removes it. It removes nothing while a mount, such as a volume, remains.
+func removeTree(dir string) error {
+	err := unmountAll(dir)
+	if err == nil {
+		err = os.RemoveAll(dir)
+	}
+
+	return err //nolint:wrapcheck // Both name the path.
+}
+
+// mountsBelow returns the mount points at or below dir in a mountinfo text, in mount order.
+func mountsBelow(mountinfo, dir string) []string {
+	var targets []string
+
+	for line := range strings.Lines(mountinfo) {
+		f := strings.Fields(line)
+		if len(f) < 5 {
+			continue
+		}
+
+		target := unescapeMountinfo(f[4])
+		if target == dir || strings.HasPrefix(target, dir+"/") {
+			targets = append(targets, target)
+		}
+	}
+
+	return targets
+}
+
+// unescapeMountinfo decodes the octal escapes (\040 for a space) of a mountinfo path.
+func unescapeMountinfo(s string) string {
+	var b strings.Builder
+
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+4 <= len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+
+				i += 3
+
+				continue
+			}
+		}
+
+		b.WriteByte(s[i])
+	}
+
+	return b.String()
 }

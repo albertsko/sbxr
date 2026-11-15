@@ -5,10 +5,10 @@ package shim
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -39,54 +39,88 @@ const (
 	podsDir   = runDir + "/pods"
 )
 
-// bootTimeout bounds the time from the VM start until the guest agent answers.
-const bootTimeout = 30 * time.Second
+// Paths in a pod directory.
+const (
+	shareDir      = "share"
+	sockDir       = "sock"
+	controlSocket = sockDir + "/control"
+	streamSocket  = sockDir + "/stream"
+	layersDir     = "layers"
+	vmLog         = "vm.log"
+	vmPidFile     = "vm.pid"
+	idsFile       = "ids"
+)
+
+// defaultBootTimeout bounds the time from the VM start until the guest agent answers.
+const defaultBootTimeout = 30 * time.Second
 
 // sandbox is the pod VM. One shim process serves one sandbox and its containers.
+// The fields after uid change while the sandbox starts and stops. Read and write them under service.mu.
 type sandbox struct {
 	id     string
 	netns  string
 	config podConfig
-	dir    string // Pod directory on the host.
-	uid    int    // First host id of the VM's user namespace.
+	dir    *podDir
+	ids    idPool
+	uid    int // First host id of the VM's user namespace, also its group.
 
-	vm       *vmProcess
-	usernsFD int
-	agent    taskAPI.TTRPCTaskService
-	conn     *ttrpc.Client
-	portFwd  net.Listener
-
+	vm        *vmProcess
+	usernsFD  int
+	agent     taskAPI.TTRPCTaskService
+	conn      *ttrpc.Client
+	net       *podnet.Guest
+	portFwd   *portForward
 	createdAt time.Time
 	exitedAt  time.Time
 }
 
-func (s *sandbox) share() string         { return filepath.Join(s.dir, "share") }
-func (s *sandbox) controlSocket() string { return filepath.Join(s.dir, "sock", "control") }
-func (s *sandbox) streamSocket() string  { return filepath.Join(s.dir, "sock", "stream") }
+// dialStream opens a stream to the guest agent.
+func (sb *sandbox) dialStream(h podvm.Header) (*net.UnixConn, error) {
+	conn, err := sb.dir.dialSocket(streamSocket, sb.uid)
+	if err != nil {
+		return nil, fmt.Errorf("open %s stream: %w", h.Kind, err)
+	}
 
-// CreateSandbox records the pod. StartSandbox does the work, because containerd may retry it.
+	return sendHeader(conn, h)
+}
+
+// CreateSandbox claims the pod's ids and creates its directory. StartSandbox boots the VM.
 func (s *service) CreateSandbox(_ context.Context, req *sandboxAPI.CreateSandboxRequest) (*sandboxAPI.CreateSandboxResponse, error) {
 	cfg, err := parsePodConfig(req.GetOptions().GetValue())
 	if err != nil {
 		return nil, err
 	}
 
-	uid, err := allocateIDs(req.GetSandboxID())
+	ids, err := loadIDPool("/etc", idsDir)
 	if err != nil {
 		return nil, err
 	}
 
-	sb := &sandbox{id: req.GetSandboxID(), netns: req.GetNetnsPath(), config: cfg, dir: filepath.Join(podsDir, req.GetSandboxID()), uid: uid, usernsFD: -1, vm: nil, agent: nil, conn: nil, portFwd: nil, createdAt: time.Time{}, exitedAt: time.Time{}}
+	uid, err := ids.allocate(req.GetSandboxID())
+	if err != nil {
+		return nil, err
+	}
 
-	err = makeTraversable(sb.dir)
+	err = makeTraversable(podsDir)
+
+	var dir *podDir
 	if err == nil {
-		err = os.WriteFile(filepath.Join(sb.dir, "ids"), []byte(strconv.Itoa(uid)), 0o600)
+		dir, err = openPodDir(filepath.Join(podsDir, req.GetSandboxID()), uid)
+	}
+
+	if err == nil {
+		err = dir.writeFile(idsFile, []byte(strconv.Itoa(uid)), 0o600)
 	}
 
 	if err != nil {
-		releaseIDs(uid)
+		ids.release(uid)
 
 		return nil, fmt.Errorf("create pod directory: %w", err)
+	}
+
+	sb := &sandbox{
+		id: req.GetSandboxID(), netns: req.GetNetnsPath(), config: cfg, dir: dir, ids: ids, uid: uid,
+		vm: nil, usernsFD: -1, agent: nil, conn: nil, net: nil, portFwd: nil, createdAt: time.Time{}, exitedAt: time.Time{},
 	}
 
 	s.mu.Lock()
@@ -108,31 +142,35 @@ func (s *service) StartSandbox(ctx context.Context, req *sandboxAPI.StartSandbox
 	if err != nil {
 		s.log.Error("sandbox start failed", "id", sb.id, "error", err)
 		s.stopVM(sb, 0)
+		s.teardown(sb)
 
 		return nil, err
 	}
 
+	s.mu.Lock()
 	sb.createdAt = time.Now()
+	vm, createdAt := sb.vm, sb.createdAt
+	s.mu.Unlock()
 
-	go s.watchVM(sb)
+	go s.watchVM(sb, vm)
 
-	return &sandboxAPI.StartSandboxResponse{Pid: uint32(sb.vm.cmd.Process.Pid), CreatedAt: timestamppb.New(sb.createdAt)}, nil //nolint:gosec // Pids fit.
+	return &sandboxAPI.StartSandboxResponse{Pid: uint32(vm.cmd.Process.Pid), CreatedAt: timestamppb.New(createdAt)}, nil //nolint:gosec // Pids fit.
 }
 
 // boot prepares the pod directory and network, starts the VM, and waits for the agent.
+// It records each step in sb, so that teardown can undo it after a failure.
 func (s *service) boot(ctx context.Context, sb *sandbox) error {
-	for _, d := range []string{sb.share(), filepath.Dir(sb.controlSocket())} {
-		err := os.MkdirAll(d, 0o755) //nolint:gosec // The VM process reads it as another user.
-		if err == nil {
-			err = os.Chown(d, sb.uid, sb.uid)
-		}
-
-		if err != nil {
-			return fmt.Errorf("create %s: %w", d, err)
-		}
+	// The share is read-only to the VM process, so the guest cannot replace what the shim creates there.
+	// The VM process creates its sockets in its own directory.
+	err := sb.dir.mkdir(shareDir)
+	if err == nil {
+		err = sb.dir.mkdirFor(sockDir, sb.uid, 0o700)
 	}
 
-	err := writePodFiles(sb)
+	if err == nil {
+		err = writePodFiles(sb)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -142,66 +180,112 @@ func (s *service) boot(ctx context.Context, sb *sandbox) error {
 		return fmt.Errorf("pod network: %w", err)
 	}
 
-	err = podvm.WritePod(sb.share(), podvm.Pod{Hostname: sb.config.Hostname, Addresses: guest.Addresses, Routes: guest.Routes, MTU: guest.MTU})
-	if err != nil {
-		return err //nolint:wrapcheck // WritePod names the file.
+	s.mu.Lock()
+	sb.net = &guest
+	s.mu.Unlock()
+
+	pod, err := json.Marshal(podvm.Pod{Hostname: sb.config.Hostname, Addresses: guest.Addresses, Routes: guest.Routes, MTU: guest.MTU})
+	if err == nil {
+		err = sb.dir.writeFile(filepath.Join(shareDir, podvm.PodFile), pod, fileMode)
 	}
 
-	sb.portFwd, err = s.listenPortForward(sb)
+	if err != nil {
+		return fmt.Errorf("write pod config: %w", err)
+	}
+
+	pf, err := s.listenPortForward(sb)
 	if err != nil {
 		s.log.Warn("kubectl port-forward will not work", "error", err)
 	}
 
-	log, err := os.OpenFile(filepath.Join(sb.dir, "vm.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return fmt.Errorf("open VM log: %w", err)
-	}
-	defer log.Close() //nolint:errcheck // The VM process has its own copy.
+	s.mu.Lock()
+	sb.portFwd = pf
+	s.mu.Unlock()
 
-	m := machine{
-		LibDir: libDir, GuestRoot: guestRoot, Share: sb.share(),
-		ControlSocket: sb.controlSocket(), StreamSocket: sb.streamSocket(),
-		TAP: podnet.TAP, MAC: guest.MAC.String(),
-		CPUs: vmCPUs(sb.config), MemoryMiB: vmMemoryMiB(sb.config), LogLevel: 0,
-	}
-
-	sb.vm, err = startVM(sb.dir, m, sb.netns, sb.uid, log)
+	vm, err := s.startPodVM(sb, guest)
 	if err != nil {
 		return err
 	}
 
-	pid := sb.vm.cmd.Process.Pid
-	joinCgroup(sb.config.CgroupParent, pid, s.log)
+	s.mu.Lock()
+	sb.vm = vm
+	s.mu.Unlock()
+
+	pid := vm.cmd.Process.Pid
 
 	// The delete action kills the VM by this pid when the shim died.
-	_ = os.WriteFile(filepath.Join(sb.dir, "vm.pid"), []byte(strconv.Itoa(pid)), 0o600)
+	_ = sb.dir.writeFile(vmPidFile, []byte(strconv.Itoa(pid)), 0o600)
 
-	sb.usernsFD, err = unix.Open(fmt.Sprintf("/proc/%d/ns/user", pid), unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	usernsFD, err := unix.Open(fmt.Sprintf("/proc/%d/ns/user", pid), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		// The VM process may have failed already. Its log says why.
 		select {
-		case <-sb.vm.done:
-			return fmt.Errorf("the VM stopped at once (%v); %s", vmExit(sb.vm), tail(filepath.Join(sb.dir, "vm.log")))
+		case <-vm.done:
+			return fmt.Errorf("the VM stopped at once (%v); %s", vmExit(vm), tail(sb.dir.join(vmLog)))
 		case <-time.After(time.Second):
 			return fmt.Errorf("open VM user namespace: %w", err)
 		}
 	}
 
-	return s.connectAgent(ctx, sb)
+	s.mu.Lock()
+	sb.usernsFD = usernsFD
+	s.mu.Unlock()
+
+	agent, conn, err := s.connectAgent(ctx, sb, vm)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	sb.agent, sb.conn = agent, conn
+	s.mu.Unlock()
+
+	s.log.Info("guest agent connected", "id", sb.id)
+
+	return nil
+}
+
+// startPodVM writes the VM config and starts the VM process in the pod cgroup.
+func (s *service) startPodVM(sb *sandbox, guest podnet.Guest) (*vmProcess, error) {
+	m := machine{
+		LibDir: libDir, GuestRoot: guestRoot, Share: sb.dir.join(shareDir),
+		ControlSocket: sb.dir.join(controlSocket), StreamSocket: sb.dir.join(streamSocket),
+		TAP: podnet.TAP, MAC: guest.MAC.String(),
+		CPUs: vmCPUs(sb.config), MemoryMiB: vmMemoryMiB(sb.config), LogLevel: 0,
+	}
+
+	data, err := json.Marshal(m)
+	if err == nil {
+		err = sb.dir.writeFile(machineFile, data, fileMode)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("write VM config: %w", err)
+	}
+
+	logFD, err := sb.dir.open(vmLog, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+
+	log := os.NewFile(uintptr(logFD), sb.dir.join(vmLog))
+	defer log.Close() //nolint:errcheck // The VM process has its own copy.
+
+	cgroup, err := openVMCgroup(sb.config.CgroupParent)
+	if err != nil {
+		return nil, err
+	}
+	defer cgroup.Close() //nolint:errcheck // Only needed to start the VM process.
+
+	return startVM(sb.dir.path, sb.netns, sb.uid, cgroup, log)
 }
 
 // connectAgent waits until the guest agent answers, or the boot timeout passes, or the VM exits.
-func (s *service) connectAgent(ctx context.Context, sb *sandbox) error {
-	deadline := time.Now().Add(bootTimeout)
+func (s *service) connectAgent(ctx context.Context, sb *sandbox, vm *vmProcess) (taskAPI.TTRPCTaskService, *ttrpc.Client, error) {
+	deadline := time.Now().Add(s.bootTimeout)
 
 	for {
-		var d net.Dialer
-
-		dctx, dcancel := context.WithTimeout(ctx, time.Second)
-		conn, err := d.DialContext(dctx, "unix", sb.controlSocket())
-
-		dcancel()
-
+		conn, err := sb.dir.dialSocket(controlSocket, sb.uid)
 		if err == nil {
 			client := ttrpc.NewClient(conn)
 			agent := taskAPI.NewTTRPCTaskClient(client)
@@ -212,35 +296,33 @@ func (s *service) connectAgent(ctx context.Context, sb *sandbox) error {
 			cancel()
 
 			if err == nil {
-				sb.agent, sb.conn = agent, client
-				s.log.Info("guest agent connected", "id", sb.id)
-
-				return nil
+				return agent, client, nil
 			}
 
 			_ = client.Close()
 		}
 
 		select {
-		case <-sb.vm.done:
-			return fmt.Errorf("the VM stopped before the guest agent started (%v); %s", vmExit(sb.vm), tail(filepath.Join(sb.dir, "vm.log")))
+		case <-vm.done:
+			return nil, nil, fmt.Errorf("the VM stopped before the guest agent started (%v); %s", vmExit(vm), tail(sb.dir.join(vmLog)))
 		case <-ctx.Done():
-			return ctx.Err() //nolint:wrapcheck // containerd gave up.
+			return nil, nil, ctx.Err() //nolint:wrapcheck // containerd gave up.
 		case <-time.After(200 * time.Millisecond):
 		}
 
 		if time.Now().After(deadline) {
-			return fmt.Errorf("the guest agent did not start within %s; %s", bootTimeout, tail(filepath.Join(sb.dir, "vm.log")))
+			return nil, nil, fmt.Errorf("the guest agent did not start within %s; %s", s.bootTimeout, tail(sb.dir.join(vmLog)))
 		}
 	}
 }
 
 // watchVM ends every task when the VM exits.
-func (s *service) watchVM(sb *sandbox) {
-	<-sb.vm.done
+func (s *service) watchVM(sb *sandbox, vm *vmProcess) {
+	<-vm.done
 
 	s.mu.Lock()
 	sb.exitedAt = time.Now()
+	exitedAt := sb.exitedAt
 	tasks := make([]*task, 0, len(s.tasks))
 
 	for _, t := range s.tasks {
@@ -248,11 +330,11 @@ func (s *service) watchVM(sb *sandbox) {
 	}
 	s.mu.Unlock()
 
-	s.log.Info("VM exited", "id", sb.id, "status", sb.vm.exit)
+	s.log.Info("VM exited", "id", sb.id, "status", vmExit(vm))
 
 	for _, t := range tasks {
 		for _, p := range t.processes() {
-			s.exited(p, 137, sb.exitedAt)
+			s.exited(p, 137, exitedAt)
 		}
 	}
 }
@@ -275,22 +357,50 @@ func (s *service) StopSandbox(_ context.Context, req *sandboxAPI.StopSandboxRequ
 
 // stopVM asks the agent to power off, then kills the VM process after timeout.
 func (s *service) stopVM(sb *sandbox, timeout time.Duration) {
-	if sb.vm == nil {
+	s.mu.Lock()
+	vm, agent := sb.vm, sb.agent
+	s.mu.Unlock()
+
+	if vm == nil {
 		return
 	}
 
-	if sb.agent != nil && timeout > 0 {
+	if agent != nil && timeout > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_, _ = sb.agent.Shutdown(ctx, &taskAPI.ShutdownRequest{})
+		_, _ = agent.Shutdown(ctx, &taskAPI.ShutdownRequest{})
 
 		cancel()
 	}
 
 	select {
-	case <-sb.vm.done:
+	case <-vm.done:
 	case <-time.After(timeout):
-		_ = sb.vm.cmd.Process.Kill()
-		<-sb.vm.done
+		_ = vm.cmd.Process.Kill()
+		<-vm.done
+	}
+}
+
+// teardown undoes what boot did on the host besides the VM itself: the port-forward rule and the pod network.
+func (s *service) teardown(sb *sandbox) {
+	s.mu.Lock()
+	pf, guest, conn := sb.portFwd, sb.net, sb.conn
+	sb.portFwd, sb.net = nil, nil
+	s.mu.Unlock()
+
+	if conn != nil {
+		_ = conn.Close()
+	}
+
+	if pf != nil {
+		if err := pf.close(); err != nil {
+			s.log.Warn("port-forward cleanup", "id", sb.id, "error", err)
+		}
+	}
+
+	if guest != nil {
+		if err := podnet.Teardown(sb.netns, *guest); err != nil {
+			s.log.Warn("pod network cleanup", "id", sb.id, "error", err)
+		}
 	}
 }
 
@@ -300,23 +410,31 @@ func (s *service) WaitSandbox(ctx context.Context, req *sandboxAPI.WaitSandboxRe
 		return nil, err
 	}
 
-	if sb.vm == nil {
+	s.mu.Lock()
+	vm := sb.vm
+	s.mu.Unlock()
+
+	if vm == nil {
 		return nil, status.Error(codes.FailedPrecondition, "sandbox is not started") //nolint:wrapcheck // ttrpc status.
 	}
 
 	select {
-	case <-sb.vm.done:
+	case <-vm.done:
 	case <-ctx.Done():
 		return nil, ctx.Err() //nolint:wrapcheck // containerd gave up.
 	}
 
 	code := uint32(0)
 
-	if exitErr, ok := errors.AsType[*exec.ExitError](sb.vm.exit); ok {
+	if exitErr, ok := errors.AsType[*exec.ExitError](vm.exit); ok {
 		code = uint32(exitErr.ExitCode()) //nolint:gosec // Exit codes fit.
 	}
 
-	return &sandboxAPI.WaitSandboxResponse{ExitStatus: code, ExitedAt: timestamppb.New(sb.exitedAt)}, nil
+	s.mu.Lock()
+	exitedAt := sb.exitedAt
+	s.mu.Unlock()
+
+	return &sandboxAPI.WaitSandboxResponse{ExitStatus: code, ExitedAt: timestamppb.New(exitedAt)}, nil
 }
 
 func (s *service) SandboxStatus(_ context.Context, req *sandboxAPI.SandboxStatusRequest) (*sandboxAPI.SandboxStatusResponse, error) {
@@ -325,14 +443,18 @@ func (s *service) SandboxStatus(_ context.Context, req *sandboxAPI.SandboxStatus
 		return nil, err
 	}
 
-	resp := &sandboxAPI.SandboxStatusResponse{SandboxID: sb.id, State: "SANDBOX_NOTREADY", CreatedAt: timestamppb.New(sb.createdAt)}
+	s.mu.Lock()
+	vm, createdAt, exitedAt := sb.vm, sb.createdAt, sb.exitedAt
+	s.mu.Unlock()
 
-	if sb.vm != nil {
-		resp.Pid = uint32(sb.vm.cmd.Process.Pid) //nolint:gosec // Pids fit.
+	resp := &sandboxAPI.SandboxStatusResponse{SandboxID: sb.id, State: "SANDBOX_NOTREADY", CreatedAt: timestamppb.New(createdAt)}
+
+	if vm != nil {
+		resp.Pid = uint32(vm.cmd.Process.Pid) //nolint:gosec // Pids fit.
 
 		select {
-		case <-sb.vm.done:
-			resp.ExitedAt = timestamppb.New(sb.exitedAt)
+		case <-vm.done:
+			resp.ExitedAt = timestamppb.New(exitedAt)
 		default:
 			resp.State = "SANDBOX_READY"
 		}
@@ -353,10 +475,12 @@ func (s *service) ShutdownSandbox(_ context.Context, req *sandboxAPI.ShutdownSan
 	}
 
 	s.stopVM(sb, time.Second)
-	cleanupPod(sb.dir)
+	s.teardown(sb)
 
-	if sb.portFwd != nil {
-		_ = sb.portFwd.Close()
+	sb.dir.close()
+
+	if err := cleanupPod(sb.dir.path, sb.ids); err != nil {
+		s.log.Warn("pod directory cleanup", "id", sb.id, "error", err)
 	}
 
 	s.log.Info("sandbox shut down", "id", sb.id)
@@ -376,16 +500,15 @@ func vmExit(vm *vmProcess) string {
 	return vm.exit.Error()
 }
 
-// makeTraversable creates dir and lets every user pass through it and its parents up to /run/sbxr.
-// The VM process runs as another user and must reach its pod directory.
+// makeTraversable creates dir and lets every user pass through it and its parents up to /run/sbxr, without listing them.
 func makeTraversable(dir string) error {
-	err := os.MkdirAll(dir, 0o711) //nolint:gosec // See above.
+	err := os.MkdirAll(dir, 0o711) //nolint:gosec // Only traversal, no listing.
 	if err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 
 	for d := dir; d != filepath.Dir(runDir); d = filepath.Dir(d) {
-		err = os.Chmod(d, 0o711) //nolint:gosec // Only traversal, no listing.
+		err = os.Chmod(d, 0o711) //nolint:gosec // See above.
 		if err != nil {
 			return fmt.Errorf("make %s traversable: %w", d, err)
 		}
@@ -395,15 +518,20 @@ func makeTraversable(dir string) error {
 }
 
 // cleanupPod unmounts and removes a pod directory and releases its id range.
-func cleanupPod(dir string) {
-	if data, err := os.ReadFile(filepath.Join(dir, "ids")); err == nil {
-		if uid, err := strconv.Atoi(string(data)); err == nil {
-			releaseIDs(uid)
-		}
+// It keeps the directory and the ids while any mount remains, so that it never removes files of a volume.
+func cleanupPod(dir string, ids idPool) error {
+	data, readErr := os.ReadFile(filepath.Join(dir, idsFile))
+
+	err := removeTree(dir)
+	if err != nil {
+		return err
 	}
 
-	_ = unmountAll(dir)
-	_ = os.RemoveAll(dir)
+	if uid, err := strconv.Atoi(string(data)); readErr == nil && err == nil {
+		ids.release(uid)
+	}
+
+	return nil
 }
 
 func (s *service) Platform(context.Context, *sandboxAPI.PlatformRequest) (*sandboxAPI.PlatformResponse, error) {
@@ -414,6 +542,7 @@ func (s *service) SandboxMetrics(context.Context, *sandboxAPI.SandboxMetricsRequ
 	return nil, status.Error(codes.Unimplemented, "sandbox metrics are not supported") //nolint:wrapcheck // ttrpc status.
 }
 
+// getSandbox returns the sandbox in any state.
 func (s *service) getSandbox(id string) (*sandbox, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -425,7 +554,23 @@ func (s *service) getSandbox(id string) (*sandbox, error) {
 	return s.sandbox, nil
 }
 
-// writePodFiles writes the resolv.conf and hostname that the containers mount.
+// readySandbox returns the sandbox and its agent once the guest agent answered.
+func (s *service) readySandbox() (*sandbox, taskAPI.TTRPCTaskService, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.sandbox == nil {
+		return nil, nil, status.Error(codes.NotFound, "no sandbox") //nolint:wrapcheck // ttrpc status.
+	}
+
+	if s.sandbox.agent == nil {
+		return nil, nil, status.Error(codes.FailedPrecondition, "the sandbox is not started") //nolint:wrapcheck // ttrpc status.
+	}
+
+	return s.sandbox, s.sandbox.agent, nil
+}
+
+// writePodFiles writes the resolv.conf and hostname that the containers mount. Every container user may read them.
 func writePodFiles(sb *sandbox) error {
 	resolv := sb.config.resolvConf()
 	if resolv == nil {
@@ -442,9 +587,9 @@ func writePodFiles(sb *sandbox) error {
 		hostname, _ = os.Hostname()
 	}
 
-	err := os.WriteFile(filepath.Join(sb.share(), "resolv.conf"), resolv, 0o644) //nolint:gosec // Containers read it.
+	err := sb.dir.writeFile(filepath.Join(shareDir, "resolv.conf"), resolv, 0o644)
 	if err == nil {
-		err = os.WriteFile(filepath.Join(sb.share(), "hostname"), []byte(hostname+"\n"), 0o644) //nolint:gosec // See above.
+		err = sb.dir.writeFile(filepath.Join(shareDir, "hostname"), []byte(hostname+"\n"), 0o644)
 	}
 
 	if err != nil {
@@ -473,22 +618,26 @@ func vmCPUs(c podConfig) uint8 {
 	return uint8(min(max(n, 1), 255))
 }
 
-// joinCgroup moves pid into a child cgroup of the pod cgroup, so the pod's limits and accounting cover the VM.
-func joinCgroup(parent string, pid int, log *slog.Logger) {
+// openVMCgroup creates the VM's cgroup below the pod cgroup and opens it, so the VM process starts in it.
+// The pod's limits and accounting then cover the VM from its first instruction.
+func openVMCgroup(parent string) (*os.File, error) {
 	if parent == "" {
-		return
+		return nil, errors.New("the pod has no cgroup parent")
 	}
 
 	dir := filepath.Clean("/sys/fs/cgroup/" + cgroupPath(parent) + "/sbxr-vm")
 
-	err := os.MkdirAll(dir, 0o755) //nolint:gosec // cgroup directories are world-readable.
-	if err == nil {
-		err = os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0o644) //nolint:gosec // cgroup file.
+	err := os.Mkdir(dir, 0o755) //nolint:gosec // cgroup directories are world-readable.
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		return nil, fmt.Errorf("create VM cgroup: %w", err)
 	}
 
+	f, err := os.OpenFile(dir, os.O_RDONLY|unix.O_DIRECTORY, 0)
 	if err != nil {
-		log.Warn("VM process stays outside the pod cgroup", "cgroup", dir, "error", err)
+		return nil, fmt.Errorf("open VM cgroup: %w", err)
 	}
+
+	return f, nil
 }
 
 // cgroupPath turns a systemd slice name, such as kubepods-burstable-pod1.slice, into its cgroup path.

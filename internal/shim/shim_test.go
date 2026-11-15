@@ -90,7 +90,7 @@ func TestParsePodConfig(t *testing.T) {
 
 	resources := varint(varint(varint(nil, fieldMemory, 512<<20), fieldCPUQuota, 150000), fieldCPUPeriod, 100000)
 	overhead := varint(nil, fieldMemory, 64<<20)
-	linux := field(field(field(nil, fieldCgroupParent, []byte("kubepods-pod1.slice")), fieldResources, resources), fieldOverhead, overhead)
+	linux := field(field(field(nil, fieldCgroupParent, []byte("kubepods-pod1.slice")), fieldResources, resources), 4, overhead)
 	dns := field(field(field(nil, fieldDNSServers, []byte("10.96.0.10")), fieldDNSSearches, []byte("default.svc.cluster.local")), fieldDNSOptions, []byte("ndots:5"))
 	msg := field(field(field(varint(nil, 1, 7), fieldHostname, []byte("web")), fieldDNS, dns), fieldLinux, linux)
 
@@ -99,7 +99,7 @@ func TestParsePodConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if c.Hostname != "web" || c.CgroupParent != "kubepods-pod1.slice" || c.MemoryBytes != 512<<20 || c.OverheadMemoryBytes != 64<<20 {
+	if c.Hostname != "web" || c.CgroupParent != "kubepods-pod1.slice" || c.MemoryBytes != 512<<20 {
 		t.Errorf("config %+v", c)
 	}
 

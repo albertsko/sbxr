@@ -18,12 +18,18 @@ import (
 	"github.com/albertsko/sbxr/internal/podvm"
 )
 
-// listenPortForward makes kubectl port-forward reach the guest.
+// portForward makes kubectl port-forward reach the guest.
 //
 // containerd forwards a port by dialing localhost in the pod network namespace, where nothing listens now that the guest owns the pod address.
 // An iptables rule there redirects every local TCP connection to one listener of the shim, which reads the original port
 // and opens a port-forward stream to the agent.
-func (s *service) listenPortForward(sb *sandbox) (net.Listener, error) {
+type portForward struct {
+	l     net.Listener
+	netns string
+	port  string
+}
+
+func (s *service) listenPortForward(sb *sandbox) (*portForward, error) {
 	var l net.Listener
 
 	err := podnet.Do(sb.netns, func() error {
@@ -40,20 +46,35 @@ func (s *service) listenPortForward(sb *sandbox) (net.Listener, error) {
 	}
 
 	addr, _ := l.Addr().(*net.TCPAddr)
-	port := strconv.Itoa(addr.Port)
+	pf := &portForward{l: l, netns: sb.netns, port: strconv.Itoa(addr.Port)}
 
-	//nolint:gosec // Fixed command with the pod's namespace path and a port number.
-	out, err := exec.CommandContext(context.Background(), "nsenter", "--net="+sb.netns, "iptables", "-w", "-t", "nat", "-A", "OUTPUT",
-		"-o", "lo", "-p", "tcp", "!", "--dport", port, "-j", "REDIRECT", "--to-ports", port).CombinedOutput()
+	err = pf.iptables("-A")
 	if err != nil {
 		_ = l.Close()
 
-		return nil, fmt.Errorf("iptables redirect: %w: %s", err, out)
+		return nil, err
 	}
 
 	go s.servePortForward(sb, l)
 
-	return l, nil
+	return pf, nil
+}
+
+// iptables adds (-A) or deletes (-D) the redirect rule.
+func (pf *portForward) iptables(op string) error {
+	//nolint:gosec // Fixed command with the pod's namespace path and a port number.
+	out, err := exec.CommandContext(context.Background(), "nsenter", "--net="+pf.netns, "iptables", "-w", "-t", "nat", op, "OUTPUT",
+		"-o", "lo", "-p", "tcp", "!", "--dport", pf.port, "-j", "REDIRECT", "--to-ports", pf.port).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("iptables redirect %s: %w: %s", op, err, out)
+	}
+
+	return nil
+}
+
+// close stops the listener and removes the rule.
+func (pf *portForward) close() error {
+	return errors.Join(pf.l.Close(), pf.iptables("-D"))
 }
 
 func (s *service) servePortForward(sb *sandbox, l net.Listener) {
@@ -77,7 +98,7 @@ func (s *service) servePortForward(sb *sandbox, l net.Listener) {
 				return
 			}
 
-			guest, err := dialStream(sb.streamSocket(), podvm.Header{Kind: podvm.PortForward, Container: "", Exec: "", Port: port})
+			guest, err := sb.dialStream(podvm.Header{Kind: podvm.PortForward, Container: "", Exec: "", Port: port})
 			if err != nil {
 				s.log.Warn("port-forward", "error", err)
 
