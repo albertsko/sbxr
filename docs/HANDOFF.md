@@ -32,6 +32,7 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - The fake build (`-tags sbxrfake`) replaces only the hypervisor and the doctor checks. It pulls images like the release build and keeps ownership in xattrs on every platform, so it needs no user namespace.
 - `--net`, `--allow-lan`, and `-p` work. The `sbxr run` process hosts the userspace network stack (`internal/netstack`) and passes the VM end of a datagram socket pair to the VM process, which adds it with `krun_add_net_unixgram` in fd mode without `NET_FLAG_VFKIT`. The A10 spike passed: at the caps (1024 TCP, 256 UDP), the stack closes in milliseconds on macOS.
 - The fake VM runs `internal/netstack/guestsim`, a small gvisor guest stack with DHCP, so the network scenarios run without a hypervisor. Its busybox has `wget`, `nc`, and `nslookup`.
+- The connection caps have no scenario, because the fake busybox has no loops or background jobs. The netstack tests cover them: `TestTCPCap`, `TestUDPCap`, and `TestCloseAtCaps` (guest connections past the cap fail, and the stack keeps working and closes at once).
 - Not built yet: `-v`.
 - Distribution (S6): goreleaser builds the release archives on `v*` tags. The formula `albertsko/homebrew-tap/Formula/sbxr.rb` installs `sbxr_darwin_arm64` and signs it, and has a placeholder version until the first release. The Linux setup block lives in `internal/preflight/setup.go` and the README, and a test keeps them equal. The `install` workflow installs a goreleaser snapshot on fresh `ubuntu-latest` and `macos-15` runners (PRD "CI contract").
 - Packages:
@@ -151,7 +152,7 @@ go test -tags hv -exec "$PWD/scripts/gotest-exec.sh" -count=1 ./internal/vm/libk
 
 These two spikes can change the design. Run them before the step that depends on them. They need none of the product code.
 
-- **A10, before S3: macOS exit hang.** Write a standalone stress test of the userspace network stack. Hold the per-run connection cap (1024 TCP connections) on macOS, then exit. The process must exit. If it hangs, lower the caps or move the userspace network stack into a separate helper process, which changes the PRD process model.
+- **A10, before S3: macOS exit hang (done, passed; see "Evidence").** Write a standalone stress test of the userspace network stack. Hold the per-run connection cap (1024 TCP connections) on macOS, then exit. The process must exit. If it hangs, lower the caps or move the userspace network stack into a separate helper process, which changes the PRD process model.
 - **A2, A4, A8, before S7: phase 1 node bundle.** Done. See the assumption rows in the PRD.
 
 ## Build plan
@@ -359,5 +360,7 @@ git show archive/spike-gvnet:.github/workflows/gvnet.yml
 | Egress guard and connection caps                                                        | [43593357284](https://github.com/albertsko/sbxr/actions/runs/43593357284) | `archive/spike-netstack-bypass` |
 | Phase 1 node bundle, drop-in directories, MutatingAdmissionPolicy versions (A2, A4, A8) | [43704817204](https://github.com/albertsko/sbxr/actions/runs/43704817204) | `archive/spike-node-bundle`     |
 | Fresh install on Ubuntu and macOS, tap trust (A5)                                       | [43722622849](https://github.com/albertsko/sbxr/actions/runs/43722622849) | none                            |
+
+- **A10, macOS exit with held connections** (local, M4 Pro, `libkrun` 1.19.8, 2026-11-15, no tag): a stress build of the network stack with its own forwarders held guest connections in a real VM, then the VM exited, was killed, or the parent got SIGINT. 5 runs per case at the caps (1024 TCP, 256 UDP), above them (1100 TCP, 300 UDP), and with 2000 TCP connections. The parent exited within 0.1 s every time, and no process stayed stuck.
 
 GitHub keeps Actions logs for a limited time (90 days by default), so the run links expire. The tags keep the code. Copy any log output you need into an issue or the repository before the links expire.
