@@ -19,10 +19,7 @@ import (
 
 // Node is the part of a Kubernetes Node object that the installer reads.
 type Node struct {
-	RuntimeVersion  string // For example "containerd://2.2.1".
-	RuntimeHandlers []string
-	// Heartbeat is when the kubelet last posted the node status, from the Ready condition.
-	Heartbeat time.Time
+	RuntimeVersion string // For example "containerd://2.2.1".
 	// MaxPods is the node's pod capacity, the kubelet's maxPods.
 	MaxPods int
 }
@@ -67,16 +64,9 @@ func InCluster(name string) (API, error) {
 func (c *client) Node(ctx context.Context) (Node, error) {
 	var obj struct {
 		Status struct {
-			Conditions []struct {
-				Type              string    `json:"type"`
-				LastHeartbeatTime time.Time `json:"lastHeartbeatTime"`
-			} `json:"conditions"`
 			NodeInfo struct {
 				ContainerRuntimeVersion string `json:"containerRuntimeVersion"`
 			} `json:"nodeInfo"`
-			RuntimeHandlers []struct {
-				Name string `json:"name"`
-			} `json:"runtimeHandlers"`
 			Capacity struct {
 				Pods string `json:"pods"`
 			} `json:"capacity"`
@@ -98,18 +88,7 @@ func (c *client) Node(ctx context.Context) (Node, error) {
 		return Node{}, fmt.Errorf("decode node pod capacity %q: %w", obj.Status.Capacity.Pods, err)
 	}
 
-	n := Node{RuntimeVersion: obj.Status.NodeInfo.ContainerRuntimeVersion, RuntimeHandlers: nil, Heartbeat: time.Time{}, MaxPods: maxPods}
-	for _, h := range obj.Status.RuntimeHandlers {
-		n.RuntimeHandlers = append(n.RuntimeHandlers, h.Name)
-	}
-
-	for _, c := range obj.Status.Conditions {
-		if c.Type == "Ready" {
-			n.Heartbeat = c.LastHeartbeatTime
-		}
-	}
-
-	return n, nil
+	return Node{RuntimeVersion: obj.Status.NodeInfo.ContainerRuntimeVersion, MaxPods: maxPods}, nil
 }
 
 func (c *client) Patch(ctx context.Context, labels, annotations map[string]*string) error {

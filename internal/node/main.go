@@ -39,9 +39,10 @@ func Main(ctx context.Context, args []string, log *slog.Logger) int {
 		HostRoot: "/host",
 		Bundle:   "/bundle",
 		Phase:    phase,
+		CRI:      criHandlers,
 		Poll:     2 * time.Second,
-		// With node leases, the kubelet posts an unchanged node status only every 5 minutes.
-		Timeout:        6 * time.Minute,
+		// containerd serves the CRI within seconds of a restart.
+		Timeout:        time.Minute,
 		Log:            log,
 		Proc:           "/proc",
 		afterSubidRead: nil,

@@ -56,8 +56,7 @@ func (in *Installer) Uninstall(ctx context.Context) error {
 		return in.fail(ctx, fmt.Errorf("process %d still uses the bundle %s; delete the sbxr pods on this node", pid, legacyStaged))
 	}
 
-	// Keep verifyAfter: the kubelet may still post the handler of the removed drop-in, and a reinstall must not trust it.
-	err = errors.Join(os.RemoveAll(in.HostRoot+RetiredRoot),
+	err = errors.Join(os.RemoveAll(in.HostRoot+RetiredRoot), os.RemoveAll(in.HostRoot+legacyVerifyAfter),
 		os.RemoveAll(in.HostRoot+Prefix),
 		os.RemoveAll(in.HostRoot+filepath.Dir(RuntimeRoot)), unlinkShim(in.HostRoot+ShimLink), in.releaseIDs(),
 	)
@@ -116,7 +115,7 @@ func (in *Installer) removeDropIns(ctx context.Context) error {
 		}
 	}
 
-	return in.restart(ctx, unit, false)
+	return in.restart(ctx, unit)
 }
 
 // containers lists the phase 2 pods under PodsRoot, and the containers that crun still has state for under RuntimeRoot/<namespace>/<id>.

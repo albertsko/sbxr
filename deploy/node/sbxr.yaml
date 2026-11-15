@@ -83,8 +83,8 @@ spec:
       priorityClassName: system-node-critical
       tolerations:
         - operator: Exists
-      # Longer than the worst case of one install: the 6 minute verification plus two containerd restarts.
-      terminationGracePeriodSeconds: 480
+      # Longer than the worst case of one install: the 1 minute verification plus two containerd restarts.
+      terminationGracePeriodSeconds: 240
       containers:
         - name: sbxr-node
           image: "@IMAGE@"
