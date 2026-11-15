@@ -6,9 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/krunconfig"
-	"github.com/albertsko/sbxr/internal/run"
-	"github.com/albertsko/sbxr/internal/spec"
 	"github.com/albertsko/sbxr/internal/vm/fake"
 )
 
@@ -40,7 +39,7 @@ func TestBoot(t *testing.T) {
 		{name: "relative path from working directory", cfg: withWorkdir(config("./echo", "hi"), "/bin"), wantStdout: "hi\n"},
 		{name: "id", cfg: krunconfig.Config{UID: 1000, GID: 42, WorkingDir: "/", Env: []string{testPath}, Args: []string{"id"}}, wantStdout: "uid=1000 gid=42\n"},
 		{name: "id -u", cfg: krunconfig.Config{UID: 1000, GID: 42, WorkingDir: "/", Env: []string{testPath}, Args: []string{"id", "-u"}}, wantStdout: "1000\n"},
-		{name: "cat file", cfg: config("cat", "/etc/passwd"), wantStdout: "root:x:0:0:root:/root:/bin/sh\n"},
+		{name: "cat file", cfg: config("cat", "/etc/passwd"), wantStdout: "root:x:0:0:root:/root:/bin/sh\nnobody:x:65534:65534:nobody:/home:/bin/false\n"},
 		{name: "cat stdin", cfg: config("cat"), stdin: "in\n", wantStdout: "in\n"},
 		{name: "shell sequence and status", cfg: config("sh", "-c", "false; echo $?; true\necho $A ${A}x"), wantStdout: "1\n1 1x\n"},
 		{name: "shell quoting", cfg: config("sh", "-c", `echo 'a  "$A"' "b  \"$A\"" c\ d`), wantStdout: "a  \"$A\" b  \"1\" c d\n"},
@@ -74,56 +73,6 @@ func TestBoot(t *testing.T) {
 	}
 }
 
-func TestImagesPullMissingImage(t *testing.T) {
-	t.Parallel()
-
-	_, err := fake.Images{Dir: t.TempDir()}.Pull(t.Context(), "nope", spec.PullMissing)
-	if err != fake.ErrImageNotFound { //nolint:errorlint // Pull returns the sentinel itself.
-		t.Errorf("Pull() error = %v, want %v", err, fake.ErrImageNotFound)
-	}
-}
-
-func TestImagesNewRootIsPrivate(t *testing.T) {
-	t.Parallel()
-
-	images := fake.Images{Dir: t.TempDir()}
-	want := run.ImageConfig{Cmd: []string{"/bin/sh"}, Env: []string{testPath}}
-
-	err := fake.WriteImage(images.Dir, "alpine:3", want)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	img, err := images.Pull(t.Context(), "alpine:3", spec.PullMissing)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if img.Config.Cmd[0] != "/bin/sh" || img.Config.Env[0] != testPath {
-		t.Errorf("Pull() config = %+v, want %+v", img.Config, want)
-	}
-
-	first, err := images.NewRoot(t.Context(), img, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = os.WriteFile(first+"/etc/passwd", []byte("changed"), 0o644)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	second, err := images.NewRoot(t.Context(), img, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(second + "/etc/passwd")
-	if err != nil || string(data) == "changed" {
-		t.Errorf("second root /etc/passwd = %q, %v, want the image content", data, err)
-	}
-}
-
 func config(args ...string) krunconfig.Config {
 	return krunconfig.Config{UID: 0, GID: 0, WorkingDir: "/", Env: []string{testPath, "A=1"}, Args: args}
 }
@@ -137,24 +86,19 @@ func withWorkdir(c krunconfig.Config, dir string) krunconfig.Config {
 func newRoot(t *testing.T, cfg krunconfig.Config) *os.Root {
 	t.Helper()
 
-	images := fake.Images{Dir: t.TempDir()}
-
-	err := fake.WriteImage(images.Dir, "img", run.ImageConfig{})
+	img, err := fake.Image()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	img, err := images.Pull(t.Context(), "img", spec.PullMissing)
+	dir := t.TempDir()
+
+	err = image.Unpacker{Ownership: image.OwnershipXattr}.Unpack(img, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	path, err := images.NewRoot(t.Context(), img, t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	root, err := os.OpenRoot(path)
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

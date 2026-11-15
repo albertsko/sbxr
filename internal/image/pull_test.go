@@ -58,10 +58,6 @@ func TestPullMissingImage(t *testing.T) {
 		t.Fatalf("Pull error = %v, want ErrNotFound", err)
 	}
 
-	if !strings.Contains(err.Error(), ref) {
-		t.Errorf("error %q does not name %s", err, ref)
-	}
-
 	assertNoCacheEntry(t, dir)
 }
 

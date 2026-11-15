@@ -106,3 +106,33 @@ func copyOverrideStat(src, dst string) error {
 
 	return unix.Lsetxattr(dst, OverrideStatXattr, buf[:n], 0) //nolint:wrapcheck // CloneRoot wraps the error.
 }
+
+// MountRoot mounts an overlay at root with the image root as the lower layer and new upper and work directories in dir.
+// The caller needs mount privileges, for example inside a user namespace. release unmounts the overlay.
+func (img *Image) MountRoot(dir, root string) (release func() error, err error) {
+	noop := func() error { return nil }
+
+	upper, work := filepath.Join(dir, "upper"), filepath.Join(dir, "work")
+	for _, d := range []string{upper, work, root} {
+		err := os.Mkdir(d, 0o755) //nolint:gosec // The upper directory becomes the guest /, which is world-readable.
+		if err != nil {
+			return noop, fmt.Errorf("create overlay directory: %w", err)
+		}
+	}
+
+	opts := "lowerdir=" + img.Root + ",upperdir=" + upper + ",workdir=" + work + ",userxattr"
+
+	err = unix.Mount("overlay", root, "overlay", 0, opts)
+	if err != nil {
+		return noop, fmt.Errorf("mount overlay %s: %w", opts, err)
+	}
+
+	return func() error {
+		err := unix.Unmount(root, unix.MNT_DETACH)
+		if err != nil {
+			return fmt.Errorf("unmount %s: %w", root, err)
+		}
+
+		return nil
+	}, nil
+}

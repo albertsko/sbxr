@@ -5,6 +5,7 @@ import (
 	"os"
 	"runtime"
 
+	charmlog "charm.land/log/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/albertsko/sbxr/internal/run"
@@ -111,15 +112,38 @@ func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string) (int, er
 	defer a.stdout.hide()
 
 	r := &run.Runner{
-		Images:  a.backend.Images(dir),
-		Checks:  a.backend.Checks(dir),
-		Exe:     exe,
-		RunsDir: run.RunsDir(dir),
-		Log:     a.log,
-		Stdin:   os.Stdin,
-		Stdout:  os.Stdout,
-		Stderr:  os.Stderr,
+		Images:     nil,
+		Checks:     a.backend.Checks(dir),
+		Isolate:    nil,
+		Exe:        exe,
+		VMEnv:      a.backend.VMEnv,
+		VMLogLevel: vmLogLevel(a.level),
+		RunsDir:    run.RunsDir(dir),
+		Log:        a.log,
+		Stdin:      os.Stdin,
+		Stdout:     os.Stdout,
+		Stderr:     os.Stderr,
+	}
+
+	if a.backend.Isolate != nil {
+		r.Isolate = func(stdin, stdout, stderr *os.File) (int, error) {
+			return a.backend.Isolate(a.args, stdin, stdout, stderr)
+		}
+	} else {
+		r.Images, err = a.backend.Images(dir)
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	return r.Run(cmd.Context(), s) //nolint:wrapcheck // Runner errors are complete user messages.
+}
+
+// vmLogLevel shows libkrun info logs only at the debug level, so that a normal run prints nothing of its own.
+func vmLogLevel(level charmlog.Level) uint32 {
+	if level <= charmlog.DebugLevel {
+		return 3
+	}
+
+	return 0
 }

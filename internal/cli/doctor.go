@@ -88,30 +88,13 @@ func writeReport(w io.Writer, report preflight.Report) error {
 		printf("%s  %-11s  %s\n      fix: %s\n", fail, res.ID, res.Detail, res.Fix)
 	}
 
-	if failed := report.Failures(); len(failed) > 1 {
+	if len(report.Failures()) > 1 {
 		printf("\nFix all:\n")
 
-		for _, res := range failed {
-			printf("%s\n", res.Fix)
+		for _, fix := range report.Fixes() {
+			printf("%s\n", fix)
 		}
 	}
 
 	return errors.Join(errs...)
-}
-
-func (a *app) pruneCommand() *cobra.Command {
-	var force bool
-
-	cmd := &cobra.Command{
-		Use:   "prune",
-		Short: "Remove cached images",
-		Args:  noArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return failure(cmd, errors.New("prune: not implemented yet"))
-		},
-	}
-
-	cmd.Flags().BoolVar(&force, "force", false, "Do not ask for confirmation")
-
-	return cmd
 }

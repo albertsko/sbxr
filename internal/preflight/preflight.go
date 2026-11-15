@@ -6,6 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+
+	"github.com/albertsko/sbxr/internal/hv"
+	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/vm/libkrun"
 )
 
 // SchemaVersion is the version of the `sbxr doctor --json` output.
@@ -51,6 +56,29 @@ func Run(ctx context.Context, checks []Check) Report {
 	return r
 }
 
+// Err returns the first failed check as a user error, or nil when every check passed.
+func (r Report) Err() error {
+	failed := r.Failures()
+	if len(failed) == 0 {
+		return nil
+	}
+
+	return &spec.Error{Source: "preflight", Value: failed[0].ID, Problem: failed[0].Detail, Fix: failed[0].Fix}
+}
+
+// Fixes returns the fix of each failed check, without repeats.
+func (r Report) Fixes() []string {
+	var fixes []string
+
+	for _, res := range r.Failures() {
+		if !slices.Contains(fixes, res.Fix) {
+			fixes = append(fixes, res.Fix)
+		}
+	}
+
+	return fixes
+}
+
 // Failures returns the failed checks.
 func (r Report) Failures() []Result {
 	var failed []Result
@@ -72,6 +100,80 @@ func Passed(id, detail string) Result {
 // Failed returns a failing result with a fix command or hint.
 func Failed(id, detail, fix string) Result {
 	return Result{ID: id, Status: Fail, Detail: detail, Fix: fix}
+}
+
+// Checks returns the doctor checks of this platform in the PRD order.
+// libDir is the SBXR_LIB_DIR value, empty for the default library directories.
+func Checks(cacheDir, libDir string) []Check {
+	checks := []Check{Hypervisor, Libkrun(libDir), Libkrunfw(libDir)}
+	checks = append(checks, platformChecks...)
+
+	return append(checks, Cache(cacheDir))
+}
+
+// Hypervisor checks that the machine supports hardware virtualization.
+func Hypervisor(context.Context) Result {
+	const id = "hypervisor"
+
+	err := hv.Check()
+	if err != nil {
+		return Failed(id, err.Error(), hypervisorFix(err))
+	}
+
+	return Passed(id, hypervisorDetail)
+}
+
+// Libkrun checks that libkrun loads from the library directory and exports every required symbol.
+func Libkrun(libDir string) Check {
+	return func(context.Context) Result {
+		const id = "libkrun"
+
+		dir, err := libkrun.LibDir(libDir)
+		if err == nil {
+			err = libkrun.CheckLibkrun(dir)
+		}
+
+		if err != nil {
+			return Failed(id, err.Error(), libFix(libDir))
+		}
+
+		return Passed(id, "libkrun loads from "+dir)
+	}
+}
+
+// Libkrunfw checks that libkrunfw loads from the library directory and is new enough.
+func Libkrunfw(libDir string) Check {
+	return func(context.Context) Result {
+		const id = "libkrunfw"
+
+		dir, err := libkrun.LibDir(libDir)
+		if err != nil {
+			return Failed(id, err.Error(), libFix(libDir))
+		}
+
+		version, err := libkrun.CheckLibkrunfw(dir)
+		if err != nil {
+			return Failed(id, err.Error(), krunfwFix(libDir))
+		}
+
+		return Passed(id, "libkrunfw "+version+" loads from "+dir)
+	}
+}
+
+func libFix(libDir string) string {
+	if libDir != "" {
+		return "set SBXR_LIB_DIR to the directory that holds libkrun and libkrunfw"
+	}
+
+	return libkrunInstall
+}
+
+func krunfwFix(libDir string) string {
+	if libDir != "" {
+		return "install libkrunfw 5.6.4 or later into SBXR_LIB_DIR"
+	}
+
+	return krunfwInstall
 }
 
 // Cache checks that dir is writable.

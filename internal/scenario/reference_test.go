@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/krunconfig"
 	"github.com/albertsko/sbxr/internal/run"
 	"github.com/albertsko/sbxr/internal/scenario"
@@ -18,24 +19,24 @@ import (
 )
 
 // reference is an in-process target that checks the scenarios themselves without the sbxr binary.
-// It validates with spec.Parse and runs the fake guest init directly.
+// It validates with spec.Parse, prepares the root with the image store, and runs the fake guest init directly.
 type reference struct {
-	images   fake.Images
+	images   image.Store
+	refs     map[string]string
 	cacheDir string
 }
 
-func newReference(t *testing.T) *reference {
+func newReference(t *testing.T, refs map[string]string) *reference {
 	t.Helper()
 
-	dir := t.TempDir()
-	r := &reference{images: fake.Images{Dir: filepath.Join(dir, "images")}, cacheDir: filepath.Join(dir, "cache")}
+	cacheDir := filepath.Join(t.TempDir(), "cache")
 
-	err := scenario.WriteFakeImages(r.images.Dir)
+	cache, err := image.Open(cacheDir, image.OwnershipXattr)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	return r
+	return &reference{images: image.Store{Cache: cache, Overlay: false}, refs: refs, cacheDir: cacheDir}
 }
 
 func (r *reference) Capabilities() []scenario.Capability {
@@ -47,7 +48,7 @@ func (r *reference) CheckClean() error {
 }
 
 func (r *reference) Run(ctx context.Context, w scenario.Workload) (scenario.Result, error) {
-	s, err := spec.Parse(spec.Input{Image: w.Image, Args: w.Args, Env: w.Env, Workdir: w.Workdir, User: w.User}, 2)
+	s, err := spec.Parse(spec.Input{Image: r.refs[w.Image], Args: w.Args, Env: w.Env, Workdir: w.Workdir, User: w.User}, 2)
 	if err != nil {
 		return scenario.Result{ExitCode: 125, Class: scenario.InvalidSpec}, nil
 	}
@@ -57,12 +58,17 @@ func (r *reference) Run(ctx context.Context, w scenario.Workload) (scenario.Resu
 		return scenario.Result{ExitCode: 125, Class: scenario.Image}, nil
 	}
 
-	cfg, _, err := run.Workload(s, img.Config)
+	cfg, _, err := run.Workload(s, img.Config, func(user string) (uint32, uint32, error) {
+		return r.images.ResolveUser(img, user)
+	})
 	if err != nil {
-		return scenario.Result{ExitCode: 125, Class: scenario.InvalidSpec}, nil
+		return scenario.Result{ExitCode: 125, Class: scenario.Image}, nil
 	}
 
-	dir := filepath.Join(r.cacheDir, "runs", "ref")
+	dir, err := os.MkdirTemp(r.images.Cache.RunsDir(), "")
+	if err != nil {
+		return scenario.Result{}, fmt.Errorf("create run directory: %w", err)
+	}
 	defer os.RemoveAll(dir)
 
 	root, err := r.newRoot(ctx, img, dir, cfg)
@@ -93,12 +99,7 @@ func (r *reference) Run(ctx context.Context, w scenario.Workload) (scenario.Resu
 }
 
 func (r *reference) newRoot(ctx context.Context, img run.Image, dir string, cfg krunconfig.Config) (*os.Root, error) {
-	err := os.MkdirAll(dir, 0o700)
-	if err != nil {
-		return nil, fmt.Errorf("create run directory: %w", err)
-	}
-
-	path, err := r.images.NewRoot(ctx, img, dir)
+	path, _, err := r.images.NewRoot(ctx, img, dir)
 	if err != nil {
 		return nil, fmt.Errorf("create root: %w", err)
 	}
@@ -121,10 +122,12 @@ func (r *reference) newRoot(ctx context.Context, img run.Image, dir string, cfg 
 func TestReferenceTarget(t *testing.T) {
 	t.Parallel()
 
+	refs := scenario.FakeImages(t)
+
 	scenario.RunAll(t, func(t *testing.T) scenario.Target {
 		t.Helper()
 
-		return newReference(t)
+		return newReference(t, refs)
 	})
 }
 
@@ -167,16 +170,17 @@ func (l leftover) Run(ctx context.Context, wl scenario.Workload) (scenario.Resul
 func TestScenariosCatchBrokenTargets(t *testing.T) {
 	t.Parallel()
 
+	refs := scenario.FakeImages(t)
 	targets := map[string]func(t *testing.T) scenario.Target{
 		"wrong exit code": func(t *testing.T) scenario.Target {
 			t.Helper()
 
-			return wrongExit{newReference(t)}
+			return wrongExit{newReference(t, refs)}
 		},
 		"leftover process": func(t *testing.T) scenario.Target {
 			t.Helper()
 
-			return leftover{newReference(t), t}
+			return leftover{newReference(t, refs), t}
 		},
 	}
 

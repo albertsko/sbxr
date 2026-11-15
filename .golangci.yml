@@ -117,6 +117,8 @@ linters:
       ignore-patterns:
         - '.+/cobra\.Command'
         - 'charm\.land/log/v2\.Options'
+        - 'archive/tar\.Header'
+        - '.+/go-containerregistry/pkg/v1\.(Config|ConfigFile)'
       # Types whose fields are optional by design.
       optional-patterns:
         - '.+/internal/run\.ImageConfig'

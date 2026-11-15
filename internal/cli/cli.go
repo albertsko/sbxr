@@ -17,6 +17,7 @@ import (
 	charmlog "charm.land/log/v2"
 	"github.com/spf13/cobra"
 
+	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/preflight"
 	"github.com/albertsko/sbxr/internal/run"
 	"github.com/albertsko/sbxr/internal/spec"
@@ -44,10 +45,15 @@ Examples:
 Run 'sbxr --help' for all commands and flags.
 `
 
-// Backend provides the parts of sbxr that differ between the real and the fake build.
+// Backend provides the parts of sbxr that differ between builds and platforms.
 type Backend struct {
 	Checks func(cacheDir string) []preflight.Check
-	Images func(cacheDir string) run.Images
+	Images func(cacheDir string) (image.Store, error)
+	// Isolate, when set, runs sbxr with args in an isolated process and returns its exit code.
+	// The run and prune commands then do their work through it.
+	Isolate func(args []string, stdin, stdout, stderr *os.File) (int, error)
+	// VMEnv is added to the environment of the VM process.
+	VMEnv []string
 }
 
 // exitError ends the command with code. A nil err prints nothing.
@@ -68,8 +74,10 @@ func (e *exitError) Unwrap() error { return e.err }
 
 type app struct {
 	backend Backend
+	args    []string
 	stdout  *stdoutGuard
 	log     *slog.Logger
+	level   charmlog.Level
 	debug   bool
 }
 
@@ -85,7 +93,7 @@ func Main(args []string, version string, b Backend) int {
 	}
 	defer stdout.restore()
 
-	a := &app{backend: b, stdout: stdout, log: slog.New(slog.DiscardHandler), debug: false}
+	a := &app{backend: b, args: args, stdout: stdout, log: slog.New(slog.DiscardHandler), level: charmlog.WarnLevel, debug: false}
 	root := a.root()
 	root.SetArgs(args)
 	root.SetOut(colorFile{stdout.real})
@@ -162,6 +170,7 @@ func (a *app) setup(cmd *cobra.Command) error {
 		return failure(cmd, &spec.Error{Source: "SBXR_LOG_LEVEL", Value: raw, Problem: "unknown level", Fix: "use debug, info, warn, or error"})
 	}
 
+	a.level = level
 	logger := charmlog.NewWithOptions(cmd.ErrOrStderr(), charmlog.Options{Level: level, Prefix: "sbxr"})
 	a.log = slog.New(logger)
 

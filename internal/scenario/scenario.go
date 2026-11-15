@@ -48,7 +48,7 @@ const (
 	Interrupted   ErrorClass = "interrupted"
 )
 
-// Images that every target provides.
+// Images that every target provides. Each one also has the files of the test layer (see ServeImages).
 const (
 	// Busybox has busybox applets in /bin, PATH=/bin, no entrypoint, and Cmd sh.
 	// /etc/passwd is a file without execute permission.
@@ -56,6 +56,8 @@ const (
 	// Configured is Busybox with Entrypoint [sh -c], Cmd ["echo $A $B; id -u; id -g; pwd"],
 	// Env A=image and B=image, WorkingDir /tmp, and User 1000:1000.
 	Configured = "configured"
+	// NamedUser is Busybox with User nobody.
+	NamedUser = "named-user"
 	// MissingImage never exists.
 	MissingImage = "missing"
 )
@@ -72,6 +74,8 @@ type Workload struct {
 	TTY         bool
 	// InterruptAfter makes the target interrupt the run once stdout contains this text.
 	InterruptAfter string
+	// Terminate makes the interrupt a termination (SIGTERM) instead of Ctrl-C (SIGINT).
+	Terminate bool
 }
 
 // Result is the outcome of one run.

@@ -1,7 +1,11 @@
 package run
 
 import (
+	"cmp"
+	"errors"
 	"reflect"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/albertsko/sbxr/internal/krunconfig"
@@ -57,7 +61,7 @@ func TestWorkload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, warnings, err := Workload(tt.spec, tt.image)
+			got, warnings, err := Workload(tt.spec, tt.image, numericUser)
 			if err != nil {
 				t.Fatalf("Workload() error = %v", err)
 			}
@@ -78,13 +82,43 @@ func TestWorkload(t *testing.T) {
 	}
 }
 
-func TestWorkloadRejectsImageUserName(t *testing.T) {
+func TestWorkloadResolvesImageUserOnlyWithoutUserFlag(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := Workload(spec.Spec{}, ImageConfig{User: "nobody", Cmd: []string{"sh"}})
+	resolver := func(user string) (uint32, uint32, error) {
+		if user != "app" {
+			return 0, 0, errors.New("unknown user")
+		}
 
-	want := `image user "nobody": user names are not supported yet; pass -u UID[:GID]`
-	if err == nil || err.Error() != want {
-		t.Errorf("Workload() error = %v, want %q", err, want)
+		return 7, 8, nil
 	}
+
+	got, _, err := Workload(spec.Spec{}, ImageConfig{User: "app", Cmd: []string{"sh"}}, resolver)
+	if err != nil || got.UID != 7 || got.GID != 8 {
+		t.Errorf("Workload() = %+v, %v; want uid 7 and gid 8", got, err)
+	}
+
+	_, _, err = Workload(spec.Spec{}, ImageConfig{User: "nobody", Cmd: []string{"sh"}}, resolver)
+	if err == nil {
+		t.Error("Workload() with an unknown image user succeeded, want an error")
+	}
+
+	got, _, err = Workload(spec.Spec{User: &spec.User{UID: 1}}, ImageConfig{User: "nobody", Cmd: []string{"sh"}}, resolver)
+	if err != nil || got.UID != 1 {
+		t.Errorf("Workload() with -u = %+v, %v; want uid 1 without resolving the image user", got, err)
+	}
+}
+
+// numericUser resolves uid[:gid] values like an image without /etc/passwd.
+func numericUser(user string) (uint32, uint32, error) {
+	if user == "" {
+		return 0, 0, nil
+	}
+
+	uidRaw, gidRaw, _ := strings.Cut(user, ":")
+
+	uid, err1 := strconv.ParseUint(uidRaw, 10, 32)
+	gid, err2 := strconv.ParseUint(cmp.Or(gidRaw, "0"), 10, 32)
+
+	return uint32(uid), uint32(gid), errors.Join(err1, err2)
 }

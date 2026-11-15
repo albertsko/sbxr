@@ -4,15 +4,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
+
+	"github.com/albertsko/sbxr/internal/image"
 )
 
 // Applets lists the commands of the fake busybox.
-var Applets = []string{"cat", "echo", "env", "false", "id", "pwd", "sh", "sleep", "stty", "true"}
+var Applets = []string{"cat", "echo", "env", "false", "id", "pwd", "rm", "sh", "sleep", "stat", "stty", "true"}
 
 // run runs one applet and returns its exit code.
 func (g *guest) run(applet string, args []string, stdio Stdio) int {
@@ -33,10 +38,14 @@ func (g *guest) run(applet string, args []string, stdio Stdio) int {
 		return g.id(args, stdio)
 	case "pwd":
 		return lines(stdio, g.cwd)
+	case "rm":
+		return g.rm(args, stdio)
 	case "sh":
 		return g.sh(args, stdio)
 	case "sleep":
 		return sleep(args, stdio)
+	case "stat":
+		return g.stat(args, stdio)
 	case "stty":
 		return stty(args, stdio)
 	case "true":
@@ -148,4 +157,70 @@ func stty(args []string, stdio Stdio) int {
 	}
 
 	return lines(stdio, fmt.Sprintf("%d %d", rows, cols))
+}
+
+func (g *guest) rm(args []string, stdio Stdio) int {
+	status := 0
+
+	for _, name := range args {
+		err := g.root.Remove(rel(g.abs(name)))
+		if err != nil {
+			sayf(stdio.Err, "rm: can't remove '%s': %v\n", name, err)
+
+			status = 1
+		}
+	}
+
+	return status
+}
+
+// stat supports only `stat -c FORMAT FILE` with %u, %g, %a, and %h.
+// Owner, group, and mode come from the ownership xattr that the image cache writes.
+func (g *guest) stat(args []string, stdio Stdio) int {
+	if len(args) != 3 || args[0] != "-c" {
+		sayln(stdio.Err, "stat: only 'stat -c FORMAT FILE' is supported")
+
+		return 1
+	}
+
+	file := rel(g.abs(args[2]))
+
+	info, err := g.root.Stat(file)
+	if err != nil {
+		sayf(stdio.Err, "stat: can't stat '%s': %v\n", args[2], err)
+
+		return 1
+	}
+
+	buf := make([]byte, 64)
+
+	n, err := unix.Getxattr(filepath.Join(g.root.Name(), file), image.OverrideStatXattr, buf)
+	if err != nil {
+		sayf(stdio.Err, "stat: can't read the owner of '%s': %v\n", args[2], err)
+
+		return 1
+	}
+
+	var uid, gid, mode uint64
+
+	_, err = fmt.Sscanf(string(buf[:n]), "%d:%d:%o", &uid, &gid, &mode)
+	if err != nil {
+		sayf(stdio.Err, "stat: bad owner of '%s': %v\n", args[2], err)
+
+		return 1
+	}
+
+	var nlink uint64
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		nlink = uint64(st.Nlink)
+	}
+
+	out := strings.NewReplacer(
+		"%u", strconv.FormatUint(uid, 10),
+		"%g", strconv.FormatUint(gid, 10),
+		"%a", strconv.FormatUint(mode&0o7777, 8),
+		"%h", strconv.FormatUint(nlink, 10),
+	).Replace(args[1])
+
+	return lines(stdio, out)
 }

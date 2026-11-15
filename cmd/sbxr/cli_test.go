@@ -21,9 +21,14 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/albertsko/sbxr/internal/scenario"
+	"github.com/albertsko/sbxr/internal/vm/fake"
 )
 
-var bin string
+var (
+	bin string
+	// busybox is the reference of the scenario busybox image in a registry in this process.
+	busybox string
+)
 
 func TestMain(m *testing.M) {
 	os.Exit(buildAndRun(m))
@@ -47,24 +52,33 @@ func buildAndRun(m *testing.M) int {
 		return 1
 	}
 
+	base, err := fake.Image()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+
+	refs, stop, err := scenario.ServeImages(context.Background(), base)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+	defer stop()
+
+	busybox = refs[scenario.Busybox]
+
 	return m.Run()
 }
 
-// env returns a minimal environment with private fake images and cache, plus extra.
+// env returns a minimal environment with a private cache, plus extra.
 func env(t *testing.T, extra ...string) []string {
 	t.Helper()
 
-	dir := t.TempDir()
-
-	err := scenario.WriteFakeImages(filepath.Join(dir, "images"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	return append([]string{
 		"PATH=" + os.Getenv("PATH"),
-		"SBXR_FAKE_IMAGES=" + filepath.Join(dir, "images"),
-		"SBXR_CACHE_DIR=" + filepath.Join(dir, "cache"),
+		"SBXR_CACHE_DIR=" + filepath.Join(t.TempDir(), "cache"),
 	}, extra...)
 }
 
@@ -187,7 +201,7 @@ func TestHelpAndErrorsDoNotWaitForTerminalQueries(t *testing.T) {
 		{name: "unknown command", args: []string{"nope"}, wantCode: 2, want: `sbxr: unknown command "nope"`},
 		{name: "bad flag", args: []string{"run", "--nope"}, wantCode: 125, want: "sbxr: unknown flag: --nope"},
 		{name: "bad doctor flag", args: []string{"doctor", "--nope"}, wantCode: 2, want: "sbxr: unknown flag: --nope"},
-		{name: "failed preflight", args: []string{"run", scenario.Busybox}, extraEnv: []string{"SBXR_FAKE_PREFLIGHT_FAIL=hypervisor"}, wantCode: 125, want: `sbxr: preflight "hypervisor"`},
+		{name: "failed preflight", args: []string{"run", busybox}, extraEnv: []string{"SBXR_FAKE_PREFLIGHT_FAIL=hypervisor"}, wantCode: 125, want: `sbxr: preflight "hypervisor"`},
 	}
 
 	for _, tt := range tests {
@@ -209,7 +223,7 @@ func TestHelpAndErrorsDoNotWaitForTerminalQueries(t *testing.T) {
 func TestWorkloadOutputReachesTerminalStdout(t *testing.T) {
 	t.Parallel()
 
-	out, code, elapsed := sbxrOnTerminal(t, env(t), "run", scenario.Busybox, "echo", "hi")
+	out, code, elapsed := sbxrOnTerminal(t, env(t), "run", busybox, "echo", "hi")
 	if code != 0 || out != "hi\r\n" {
 		t.Errorf("sbxr run = %d, %q; want 0, %q", code, out, "hi\r\n")
 	}
@@ -223,7 +237,7 @@ func TestTTYGetsTerminalSize(t *testing.T) {
 	t.Parallel()
 
 	// Both the guest terminal and the test terminal turn a newline into CR LF.
-	out, code, _ := sbxrOnTerminal(t, env(t), "run", "-t", scenario.Busybox, "stty", "size")
+	out, code, _ := sbxrOnTerminal(t, env(t), "run", "-t", busybox, "stty", "size")
 	if code != 0 || out != "30 100\r\r\n" {
 		t.Errorf("sbxr run -t stty size = %d, %q; want 0, %q", code, out, "30 100\r\r\n")
 	}
@@ -232,7 +246,7 @@ func TestTTYGetsTerminalSize(t *testing.T) {
 func TestColorsOnlyOnTerminalWithoutNoColor(t *testing.T) {
 	t.Parallel()
 
-	runError := []string{"run", "-w", "app", scenario.Busybox}
+	runError := []string{"run", "-w", "app", busybox}
 
 	tests := []struct {
 		name     string
@@ -264,7 +278,7 @@ func TestColorsOnlyOnTerminalWithoutNoColor(t *testing.T) {
 func TestErrorIsOneLine(t *testing.T) {
 	t.Parallel()
 
-	out, code, _ := sbxrOnTerminal(t, env(t, "NO_COLOR=1"), "run", "-w", "app", scenario.Busybox)
+	out, code, _ := sbxrOnTerminal(t, env(t, "NO_COLOR=1"), "run", "-w", "app", busybox)
 
 	want := "sbxr: -w \"app\": must be absolute; for example /app\r\n"
 	if code != 125 || out != want {
@@ -284,13 +298,13 @@ func TestPipedOutput(t *testing.T) {
 		wantStderr string
 	}{
 		{name: "no arguments print usage", args: nil, wantStdout: "sbxr run --net "},
-		{name: "workload exit code prints nothing", args: []string{"run", scenario.Busybox, "sh", "-c", "exit 3"}, wantCode: 3},
-		{name: "flags after the image belong to the workload", args: []string{"run", scenario.Busybox, "echo", "--debug", "-e", "x"}, wantStdout: "--debug -e x\n"},
-		{name: "separator after the image", args: []string{"run", scenario.Busybox, "--", "echo", "hi"}, wantStdout: "hi\n"},
-		{name: "control character in argument", args: []string{"run", scenario.Busybox, "echo", "a\x1bb"}, wantCode: 125, wantStderr: `sbxr: argument 2 "a\x1bb": control character U+001B; only tab and newline are allowed` + "\n"},
-		{name: "reserved env", args: []string{"run", "-e", "KRUN_INIT=/x", scenario.Busybox}, wantCode: 125, wantStderr: `sbxr: -e "KRUN_INIT=/x": KRUN_* names are reserved by the VM init; rename the variable` + "\n"},
-		{name: "publish without net", args: []string{"run", "-p", "8080:80", scenario.Busybox}, wantCode: 125, wantStderr: `sbxr: -p "8080:80": requires --net` + "\n"},
-		{name: "failed preflight", args: []string{"run", scenario.Busybox, "true"}, extraEnv: []string{"SBXR_FAKE_PREFLIGHT_FAIL=libkrun"}, wantCode: 125, wantStderr: `sbxr: preflight "libkrun": fake libkrun failure; fake fix for libkrun` + "\n"},
+		{name: "workload exit code prints nothing", args: []string{"run", busybox, "sh", "-c", "exit 3"}, wantCode: 3},
+		{name: "flags after the image belong to the workload", args: []string{"run", busybox, "echo", "--debug", "-e", "x"}, wantStdout: "--debug -e x\n"},
+		{name: "separator after the image", args: []string{"run", busybox, "--", "echo", "hi"}, wantStdout: "hi\n"},
+		{name: "control character in argument", args: []string{"run", busybox, "echo", "a\x1bb"}, wantCode: 125, wantStderr: `sbxr: argument 2 "a\x1bb": control character U+001B; only tab and newline are allowed` + "\n"},
+		{name: "reserved env", args: []string{"run", "-e", "KRUN_INIT=/x", busybox}, wantCode: 125, wantStderr: `sbxr: -e "KRUN_INIT=/x": KRUN_* names are reserved by the VM init; rename the variable` + "\n"},
+		{name: "publish without net", args: []string{"run", "-p", "8080:80", busybox}, wantCode: 125, wantStderr: `sbxr: -p "8080:80": requires --net` + "\n"},
+		{name: "failed preflight", args: []string{"run", busybox, "true"}, extraEnv: []string{"SBXR_FAKE_PREFLIGHT_FAIL=libkrun"}, wantCode: 125, wantStderr: `sbxr: preflight "libkrun": fake libkrun failure; fake fix for libkrun` + "\n"},
 		{name: "bad log level", args: []string{"doctor"}, extraEnv: []string{"SBXR_LOG_LEVEL=loud"}, wantCode: 1, wantStderr: `sbxr: SBXR_LOG_LEVEL "loud": unknown level; use debug, info, warn, or error` + "\n"},
 		{name: "doctor extra argument", args: []string{"doctor", "x"}, wantCode: 2, wantStderr: `sbxr: unexpected argument "x"; see 'sbxr doctor --help'` + "\n"},
 		{name: "apparmor profile", args: []string{"doctor", "apparmor-profile"}, wantStdout: "profile sbxr /{usr/bin,usr/local/bin}/sbxr flags=(unconfined) {"},
@@ -365,9 +379,9 @@ func TestSignals(t *testing.T) {
 			t.Parallel()
 
 			environ := env(t)
-			cacheDir := strings.TrimPrefix(environ[2], "SBXR_CACHE_DIR=")
+			cacheDir := strings.TrimPrefix(environ[1], "SBXR_CACHE_DIR=")
 
-			cmd := exec.CommandContext(t.Context(), bin, "run", scenario.Busybox, "sh", "-c", "echo ready; sleep 30")
+			cmd := exec.CommandContext(t.Context(), bin, "run", busybox, "sh", "-c", "echo ready; sleep 30")
 			cmd.Env = environ
 
 			stdout, err := cmd.StdoutPipe()

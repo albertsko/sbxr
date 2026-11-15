@@ -1,6 +1,7 @@
 package image
 
 import (
+	"errors"
 	"fmt"
 
 	"golang.org/x/sys/unix"
@@ -15,4 +16,9 @@ func (img *Image) CloneRoot(dst string) error {
 	}
 
 	return img.relink(dst)
+}
+
+// MountRoot is not available on macOS, which uses CloneRoot.
+func (img *Image) MountRoot(string, string) (func() error, error) {
+	return func() error { return nil }, errors.New("overlay roots need Linux")
 }

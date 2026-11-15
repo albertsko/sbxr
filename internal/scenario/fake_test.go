@@ -40,9 +40,11 @@ func buildAndRun(m *testing.M) int {
 func TestFakeTarget(t *testing.T) {
 	t.Parallel()
 
+	refs := scenario.FakeImages(t)
+
 	scenario.RunAll(t, func(t *testing.T) scenario.Target {
 		t.Helper()
 
-		return scenario.Fake(t, fakeBin)
+		return scenario.Fake(t, fakeBin, refs)
 	})
 }

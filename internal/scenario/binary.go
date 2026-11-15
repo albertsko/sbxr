@@ -12,9 +12,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-
-	"github.com/albertsko/sbxr/internal/run"
-	"github.com/albertsko/sbxr/internal/vm/fake"
 )
 
 // Build builds the sbxr binary into out with cgo off, like the release.
@@ -36,52 +33,27 @@ type Binary struct {
 	Path string
 	// CacheDir is the private SBXR_CACHE_DIR of this target.
 	CacheDir string
+	// Images maps scenario image names to references.
+	Images map[string]string
+	// Flags go after `run` in every run.
+	Flags []string
 	// Env is added to the environment of the sbxr process.
 	Env  []string
 	Caps []Capability
 }
 
-// Fake returns a target that runs the fake build of sbxr at bin with the scenario images.
-func Fake(t *testing.T, bin string) *Binary {
+// Fake returns a target that runs the fake build of sbxr at bin with the scenario images in refs.
+func Fake(t *testing.T, bin string, refs map[string]string) *Binary {
 	t.Helper()
-
-	dir := t.TempDir()
-	images := filepath.Join(dir, "images")
-
-	err := WriteFakeImages(images)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	return &Binary{
 		Path:     bin,
-		CacheDir: filepath.Join(dir, "cache"),
-		Env:      []string{"SBXR_FAKE_IMAGES=" + images},
+		CacheDir: filepath.Join(t.TempDir(), "cache"),
+		Images:   refs,
+		Flags:    nil,
+		Env:      nil,
 		Caps:     []Capability{Stdin, TTY, SplitStderr, SignalExit},
 	}
-}
-
-// WriteFakeImages writes the scenario images for the fake build into dir.
-func WriteFakeImages(dir string) error {
-	images := map[string]run.ImageConfig{
-		Busybox: {Cmd: []string{"sh"}, Env: []string{"PATH=/bin"}},
-		Configured: {
-			Entrypoint: []string{"sh", "-c"},
-			Cmd:        []string{"echo $A $B; id -u; id -g; pwd"},
-			Env:        []string{"PATH=/bin", "A=image", "B=image"},
-			WorkingDir: "/tmp",
-			User:       "1000:1000",
-		},
-	}
-
-	for ref, cfg := range images {
-		err := fake.WriteImage(dir, ref, cfg)
-		if err != nil {
-			return fmt.Errorf("write image %s: %w", ref, err)
-		}
-	}
-
-	return nil
 }
 
 // Capabilities returns the capabilities set for this target.
@@ -107,10 +79,15 @@ func (b *Binary) Run(ctx context.Context, w Workload) (Result, error) {
 	}
 
 	if w.InterruptAfter != "" {
+		sig := syscall.SIGINT
+		if w.Terminate {
+			sig = syscall.SIGTERM
+		}
+
 		go func() {
 			select {
 			case <-stdout.seen:
-				_ = cmd.Process.Signal(syscall.SIGINT) // The exit code shows whether the signal arrived.
+				_ = cmd.Process.Signal(sig) // The exit code shows whether the signal arrived.
 			case <-ctx.Done():
 			}
 		}()
@@ -129,7 +106,7 @@ func (b *Binary) Run(ctx context.Context, w Workload) (Result, error) {
 }
 
 func (b *Binary) args(w Workload) []string {
-	args := []string{"run"}
+	args := append([]string{"run"}, b.Flags...)
 
 	for _, kv := range w.Env {
 		args = append(args, "-e", kv)
@@ -151,7 +128,12 @@ func (b *Binary) args(w Workload) []string {
 		args = append(args, "-t")
 	}
 
-	return append(append(args, w.Image), w.Args...)
+	image := w.Image
+	if ref, ok := b.Images[image]; ok {
+		image = ref
+	}
+
+	return append(append(args, image), w.Args...)
 }
 
 // classify maps the CLI exit code and stderr to an error class.

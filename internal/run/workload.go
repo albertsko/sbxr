@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/albertsko/sbxr/internal/krunconfig"
@@ -15,11 +14,20 @@ import (
 const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // Workload merges the run request with the image config into the guest init config.
+// The -u flag wins over the image User, which resolveUser resolves only when needed.
 // It returns warnings for image env entries that it drops.
-func Workload(s spec.Spec, img ImageConfig) (krunconfig.Config, []string, error) {
-	uid, gid, err := user(s.User, img.User)
-	if err != nil {
-		return krunconfig.Config{}, nil, err
+func Workload(s spec.Spec, img ImageConfig, resolveUser UserResolver) (krunconfig.Config, []string, error) {
+	var uid, gid uint32
+
+	if s.User != nil {
+		uid, gid = s.User.UID, s.User.GID
+	} else {
+		var err error
+
+		uid, gid, err = resolveUser(img.User)
+		if err != nil {
+			return krunconfig.Config{}, nil, err
+		}
 	}
 
 	env, warnings := mergeEnv(img.Env, s.Env)
@@ -106,31 +114,5 @@ func mergeEnv(image, user []string) ([]string, []string) {
 	return env, warnings
 }
 
-// user resolves the guest uid and gid. Without a group, the gid is 0.
-func user(flag *spec.User, image string) (uint32, uint32, error) {
-	if flag != nil {
-		return flag.UID, flag.GID, nil
-	}
-
-	if image == "" {
-		return 0, 0, nil
-	}
-
-	uidRaw, gidRaw, _ := strings.Cut(image, ":")
-
-	uid, err := strconv.ParseUint(uidRaw, 10, 32)
-	if err != nil {
-		return 0, 0, &spec.Error{Source: "image user", Value: image, Problem: "user names are not supported yet", Fix: "pass -u UID[:GID]"}
-	}
-
-	if gidRaw == "" {
-		return uint32(uid), 0, nil
-	}
-
-	gid, err := strconv.ParseUint(gidRaw, 10, 32)
-	if err != nil {
-		return 0, 0, &spec.Error{Source: "image user", Value: image, Problem: "group names are not supported yet", Fix: "pass -u UID:GID"}
-	}
-
-	return uint32(uid), uint32(gid), nil
-}
+// UserResolver returns the uid and gid for an image User value, such as "app" or "1000:staff".
+type UserResolver func(user string) (uid, gid uint32, err error)

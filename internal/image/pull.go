@@ -24,9 +24,9 @@ import (
 
 var (
 	// ErrNotFound means that the registry does not have the image or the cache does not have it under PullNever.
-	ErrNotFound = errors.New("image not found")
+	ErrNotFound = errors.New("not found")
 	// ErrNoPlatform means that the image has no variant for the host architecture.
-	ErrNoPlatform = errors.New("image has no variant for the host platform")
+	ErrNoPlatform = errors.New("no variant for the host platform")
 )
 
 // PullPolicy decides when Pull contacts the registry.
@@ -64,12 +64,12 @@ type Config struct {
 const hostPlatform = "linux/" + runtime.GOARCH
 
 // Pull returns the cached image for ref, and downloads and unpacks it first when policy requires.
-// Concurrent pulls of one reference download it once.
+// Concurrent pulls of one reference download it once. Errors do not repeat ref, so callers name it.
 // The caller holds Hold while it pulls and uses the image.
 func (c *Cache) Pull(ctx context.Context, ref string, policy PullPolicy) (*Image, error) {
 	r, err := name.ParseReference(ref)
 	if err != nil {
-		return nil, fmt.Errorf("image %q: %w", ref, err)
+		return nil, fmt.Errorf("invalid reference: %w", err)
 	}
 
 	sum := sha256.Sum256([]byte(r.Name() + "\n" + hostPlatform))
@@ -82,7 +82,7 @@ func (c *Cache) Pull(ctx context.Context, ref string, policy PullPolicy) (*Image
 		}
 
 		if policy == PullNever {
-			return nil, fmt.Errorf("image %q: %w in the cache and the pull policy is never", ref, ErrNotFound)
+			return nil, fmt.Errorf("%w in the cache, and the pull policy is never", ErrNotFound)
 		}
 	}
 
@@ -101,15 +101,10 @@ func (c *Cache) Pull(ctx context.Context, ref string, policy PullPolicy) (*Image
 
 	img, err := c.fetch(ctx, r)
 	if err != nil {
-		return nil, fmt.Errorf("pull image %q: %w", ref, err)
+		return nil, err
 	}
 
-	cached, err := c.store(key, img)
-	if err != nil {
-		return nil, fmt.Errorf("pull image %q: %w", ref, err)
-	}
-
-	return cached, nil
+	return c.store(key, img)
 }
 
 // lookup returns the cached image for a reference key, or nil when the cache does not have it.
@@ -353,5 +348,5 @@ func platformError(available []string) error {
 		list = "none"
 	}
 
-	return fmt.Errorf("%w %s, available platforms: %s", ErrNoPlatform, hostPlatform, list)
+	return fmt.Errorf("%w (%s), available platforms: %s", ErrNoPlatform, hostPlatform, list)
 }

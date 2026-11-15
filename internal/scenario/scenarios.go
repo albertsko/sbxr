@@ -48,6 +48,19 @@ func All() []Scenario {
 			Name:  "user flag wins over arguments that look like config keys",
 			Check: expect(Workload{Image: Busybox, User: "1000", Args: []string{"sh", "-c", "id -u", "uid", "0"}}, 0, OK, stdout("1000\n")),
 		},
+		{
+			Name:  "image user name resolves in the image",
+			Check: expect(Workload{Image: NamedUser, Args: []string{"sh", "-c", "id -u; id -g"}}, 0, OK, stdout("65534\n65534\n")),
+		},
+		{
+			Name:  "files keep owner, mode, and hardlinks from the image",
+			Check: expect(Workload{Image: Busybox, Args: []string{"stat", "-c", "%u:%g %a %h", SetuidFile}}, 0, OK, stdout("0:42 4755 2\n")),
+		},
+		{
+			Name:  "image config file does not change what runs",
+			Check: expect(Workload{Image: Busybox, Args: []string{"echo", "ok"}}, 0, OK, stdout("ok\n")),
+		},
+		{Name: "changes do not reach the next run", Check: changesDoNotPersist},
 		{Name: "workdir flag", Check: expect(Workload{Image: Busybox, Workdir: "/tmp", Args: []string{"pwd"}}, 0, OK, stdout("/tmp\n"))},
 		{
 			Name:  "stdin with interactive",
@@ -70,12 +83,32 @@ func All() []Scenario {
 			Check: expect(Workload{Image: Busybox, Args: []string{"sh", "-c", "echo ready; sleep 30"}, InterruptAfter: "ready"}, 130, Interrupted),
 		},
 		{
+			Name:  "terminate",
+			Needs: []Capability{SignalExit},
+			Check: expect(Workload{Image: Busybox, Args: []string{"sh", "-c", "echo ready; sleep 30"}, InterruptAfter: "ready", Terminate: true}, 143, Interrupted),
+		},
+		{
 			Name:    "no network without --net",
 			Needs:   []Capability{NetOff},
 			Pending: "needs run: S5",
 			Check:   expect(Workload{Image: Busybox, Args: []string{"wget", "-T", "2", "-qO-", "http://1.1.1.1"}}, 1, OK),
 		},
 	}
+}
+
+// changesDoNotPersist removes a file in one run and expects it in the next run.
+func changesDoNotPersist(ctx context.Context, t Target) error {
+	err := expect(Workload{Image: Busybox, Args: []string{"rm", "/etc/passwd", HijackFile}}, 0, OK)(ctx, t)
+	if err != nil {
+		return fmt.Errorf("first run: %w", err)
+	}
+
+	err = expect(Workload{Image: Busybox, Args: []string{"cat", "/etc/passwd", HijackFile}}, 0, OK, stdoutContains("root:"), stdoutContains("hijacked"))(ctx, t)
+	if err != nil {
+		return fmt.Errorf("second run: %w", err)
+	}
+
+	return nil
 }
 
 type resultCheck func(Result) error

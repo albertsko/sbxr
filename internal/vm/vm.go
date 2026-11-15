@@ -26,6 +26,8 @@ type Machine struct {
 	Root      string `json:"root"`
 	CPUs      int    `json:"cpus"`
 	MemoryMiB uint32 `json:"memoryMiB"`
+	// LogLevel is the hypervisor log level, from 0 (off) to 5 (trace).
+	LogLevel uint32 `json:"logLevel"`
 }
 
 // Hypervisor starts a VM in the calling process.

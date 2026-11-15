@@ -4,4 +4,6 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
-exec go test -tags hv -count=1 -run '^TestHV' ./internal/scenario "$@"
+# The libkrun tests boot their own guest. The scenario tests run the sbxr binary, SBXR_BIN when set.
+exec go test -tags hv -count=1 -timeout 10m -parallel 4 -exec "$PWD/scripts/gotest-exec.sh" \
+	-run '^Test(HV|VM)' ./internal/scenario ./internal/vm/libkrun "$@"

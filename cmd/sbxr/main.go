@@ -3,6 +3,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"runtime/debug"
 
 	"github.com/albertsko/sbxr/internal/cli"
@@ -12,7 +13,18 @@ import (
 // version is set by goreleaser through -ldflags.
 var version = "dev"
 
+func init() {
+	// The VM process keeps the hypervisor on the main thread.
+	if len(os.Args) > 1 && os.Args[1] == vm.ChildArg {
+		runtime.LockOSThread()
+	}
+}
+
 func main() {
+	if code, done := platformMain(os.Args[1:]); done {
+		os.Exit(code)
+	}
+
 	// The VM process is a hidden mode of the same binary, dispatched before the CLI.
 	if len(os.Args) > 1 && os.Args[1] == vm.ChildArg {
 		os.Exit(vm.Child(os.Args[2:], hypervisor(), os.Stderr))

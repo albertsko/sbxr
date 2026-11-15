@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -33,25 +34,37 @@ type ImageConfig struct {
 
 // Image is a pulled image.
 type Image struct {
-	// ID identifies the image for its store, for example its manifest digest.
+	// ID identifies the image for its store, for example its cached root directory.
 	ID     string
 	Config ImageConfig
 }
 
 // Images is the image store.
 type Images interface {
+	// Hold keeps the store from removing images until the closer is closed.
+	Hold(ctx context.Context) (io.Closer, error)
 	// Pull returns the image for ref, downloading it when policy allows.
 	Pull(ctx context.Context, ref string, policy spec.Pull) (Image, error)
+	// ResolveUser resolves an image User value inside the image.
+	ResolveUser(img Image, user string) (uid, gid uint32, err error)
 	// NewRoot creates a private root file system for one run inside dir and returns its path.
-	NewRoot(ctx context.Context, img Image, dir string) (string, error)
+	// release undoes what a removal of dir cannot, such as a mount.
+	NewRoot(ctx context.Context, img Image, dir string) (root string, release func() error, err error)
 }
 
 // Runner runs workloads.
 type Runner struct {
 	Images Images
 	Checks []preflight.Check
+	// Isolate, when set, runs the rest of the run in another process and returns its exit code.
+	// On Linux, it runs the same command again inside a user namespace.
+	Isolate func(stdin, stdout, stderr *os.File) (int, error)
 	// Exe is the binary that runs the VM child mode, usually the running sbxr binary.
 	Exe string
+	// VMEnv is added to the environment of the VM process.
+	VMEnv []string
+	// VMLogLevel is the hypervisor log level, from 0 (off) to 5 (trace).
+	VMLogLevel uint32
 	// RunsDir holds one directory per active run.
 	RunsDir string
 	Log     *slog.Logger
@@ -86,11 +99,21 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 		return ExitSetup, err
 	}
 
+	if r.Isolate != nil {
+		return r.Isolate(r.Stdin, r.Stdout, r.Stderr)
+	}
+
+	hold, err := r.Images.Hold(ctx)
+	if err != nil {
+		return ExitSetup, fmt.Errorf("hold image cache: %w", err)
+	}
+	defer hold.Close() //nolint:errcheck // Closing a lock file releases the lock even on error.
+
 	r.Log.Debug("run state", "state", "pulling", "image", s.Image)
 
 	img, err := r.Images.Pull(ctx, s.Image, s.Pull)
 	if err != nil {
-		return ExitSetup, &spec.Error{Source: "image", Value: s.Image, Problem: err.Error()}
+		return ExitSetup, imageError(s, err)
 	}
 
 	r.Log.Debug("run state", "state", "preparing")
@@ -105,9 +128,10 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 		return ExitSetup, fmt.Errorf("create run directory: %w", err)
 	}
 
-	defer r.cleanup(dir)
+	release := func() error { return nil }
+	defer func() { r.cleanup(dir, release) }()
 
-	err = r.prepare(ctx, s, img, dir)
+	release, err = r.prepare(ctx, s, img, dir)
 	if err != nil {
 		return ExitSetup, err
 	}
@@ -122,9 +146,9 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 }
 
 func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
-	report := preflight.Run(ctx, r.Checks)
-	if failed := report.Failures(); len(failed) > 0 {
-		return &spec.Error{Source: "preflight", Value: failed[0].ID, Problem: failed[0].Detail, Fix: failed[0].Fix}
+	err := preflight.Run(ctx, r.Checks).Err()
+	if err != nil {
+		return err //nolint:wrapcheck // The preflight error is a complete user message.
 	}
 
 	if len(s.Volumes) > 0 {
@@ -138,13 +162,28 @@ func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
 	return nil
 }
 
-func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, dir string) error {
-	rootPath, err := r.Images.NewRoot(ctx, img, dir)
+// prepare creates the run root and writes the workload config and the machine into the run directory.
+// It returns the release function of the root, also on error.
+func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, dir string) (func() error, error) {
+	rootPath, release, err := r.Images.NewRoot(ctx, img, dir)
 	if err != nil {
-		return &spec.Error{Source: "image", Value: s.Image, Problem: err.Error()}
+		return func() error { return nil }, imageError(s, err)
 	}
 
-	cfg, warnings, err := Workload(s, img.Config)
+	return release, r.configure(s, img, dir, rootPath)
+}
+
+func (r *Runner) configure(s spec.Spec, img Image, dir, rootPath string) error {
+	resolveUser := func(user string) (uint32, uint32, error) {
+		uid, gid, err := r.Images.ResolveUser(img, user)
+		if err != nil {
+			return 0, 0, imageError(s, err)
+		}
+
+		return uid, gid, nil
+	}
+
+	cfg, warnings, err := Workload(s, img.Config, resolveUser)
 	if err != nil {
 		return err
 	}
@@ -169,7 +208,7 @@ func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, dir string
 		return fmt.Errorf("write workload config: %w", err)
 	}
 
-	err = vm.WriteMachine(dir, vm.Machine{Root: rootPath, CPUs: s.CPUs, MemoryMiB: s.MemoryMiB})
+	err = vm.WriteMachine(dir, vm.Machine{Root: rootPath, CPUs: s.CPUs, MemoryMiB: s.MemoryMiB, LogLevel: r.VMLogLevel})
 	if err != nil {
 		return fmt.Errorf("prepare vm: %w", err)
 	}
@@ -177,8 +216,13 @@ func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, dir string
 	return nil
 }
 
-func (r *Runner) cleanup(dir string) {
-	err := os.RemoveAll(dir)
+func (r *Runner) cleanup(dir string, release func() error) {
+	err := release()
+	if err != nil {
+		r.Log.Error("release run root", "dir", dir, "err", err)
+	}
+
+	err = os.RemoveAll(dir)
 	if err != nil {
 		r.Log.Error("remove run directory", "dir", dir, "err", err)
 
@@ -186,6 +230,11 @@ func (r *Runner) cleanup(dir string) {
 	}
 
 	r.Log.Debug("run state", "state", "cleaned")
+}
+
+// imageError names the image in an image store error.
+func imageError(s spec.Spec, err error) error {
+	return &spec.Error{Source: "image", Value: s.Image, Problem: err.Error()}
 }
 
 // signalError is the context cause when a signal stops the run.

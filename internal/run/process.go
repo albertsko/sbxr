@@ -50,6 +50,7 @@ func withSignals(ctx context.Context) (context.Context, func()) {
 // The context kills the VM process at once.
 func (r *Runner) start(ctx context.Context, s spec.Spec, dir string) (int, error) {
 	cmd := exec.CommandContext(ctx, r.Exe, vm.ChildArg, dir) //nolint:gosec // Exe is the sbxr binary itself.
+	cmd.Env = append(os.Environ(), r.VMEnv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{}
 
 	release, err := vm.AttachLifeline(cmd)
