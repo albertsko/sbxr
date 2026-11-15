@@ -26,5 +26,7 @@ func backend() cli.Backend {
 		},
 		Isolate: nil,
 		VMEnv:   nil,
+		// The fake guest init plays the helper itself.
+		MountHelper: func() error { return nil },
 	}
 }

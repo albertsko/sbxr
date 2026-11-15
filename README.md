@@ -4,7 +4,7 @@
 
 ## Status
 
-Early development. `sbxr run`, `sbxr doctor`, and `sbxr prune` work with real VMs on macOS arm64 and on Linux with KVM, without root, and with images pulled from registries. The Kubernetes RuntimeClass works in phase 1 ([docs/kubernetes.md](docs/kubernetes.md)). Networking (`--net`, `-p`) and volumes (`-v`) come next. See [docs/PRD.md](docs/PRD.md) for the requirements and [docs/HANDOFF.md](docs/HANDOFF.md) for the build plan.
+Early development. `sbxr run`, `sbxr doctor`, and `sbxr prune` work with real VMs on macOS arm64 and on Linux with KVM, without root, and with images pulled from registries. The Kubernetes RuntimeClass works in phase 1 ([docs/kubernetes.md](docs/kubernetes.md)). `--net`, `--allow-lan`, and `-p` give the VM a guarded userspace network, and `-v` shares host directories. See [docs/PRD.md](docs/PRD.md) for the requirements and [docs/HANDOFF.md](docs/HANDOFF.md) for the build plan.
 
 ## Install
 

@@ -14,12 +14,17 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+
+	"github.com/albertsko/sbxr/internal/guestmount"
 	"golang.org/x/term"
 )
 
 // Values from libkrun 1.19.8 include/libkrun.h.
 const (
 	maxLogLevel = 5
+
+	// rootTag is KRUN_FS_ROOT_TAG, the virtio-fs tag of the root share.
+	rootTag = "/dev/root"
 
 	netFlagDHCPClient = 1 << 1
 
@@ -44,8 +49,19 @@ type Config struct {
 	MemoryMiB uint32
 	// Net adds a virtio-net device. Without it the guest has no network.
 	Net *Net
+	// Volumes adds one virtio-fs device per host directory.
+	Volumes []Volume
+	// MountHelper is the guest mount helper, which libkrun serves at guestmount.Path when there are volumes.
+	MountHelper []byte
 	// LogLevel is the libkrun log level, from 0 (off) to 5 (trace).
 	LogLevel uint32
+}
+
+// Volume is a virtio-fs device for a host directory. ReadOnly makes libkrun reject guest writes.
+type Volume struct {
+	Tag      string
+	Host     string
+	ReadOnly bool
 }
 
 // Net is a virtio-net device backed by a connected unixgram socket that the VM process inherited.
@@ -62,6 +78,8 @@ type api struct {
 	setRoot              func(ctx uint32, path string) int32
 	setEnv               func(ctx uint32, envp unsafe.Pointer) int32
 	addNetUnixgram       func(ctx uint32, path unsafe.Pointer, fd int32, mac *byte, features, flags uint32) int32
+	addVirtiofs4         func(ctx uint32, tag, path string, shmSize uint64, readOnly bool, semantics uint32) int32
+	addOverlayFile       func(ctx uint32, tag, path string, data *byte, size uintptr, mode uint32, oneShot bool) int32
 	disableImplicitVsock func(ctx uint32) int32
 	addVsock             func(ctx uint32, tsiFeatures uint32) int32
 	setKernelConsole     func(ctx uint32, id string) int32
@@ -89,6 +107,8 @@ func load(dir string) (*api, error) {
 		{"krun_set_root", &a.setRoot},
 		{"krun_set_env", &a.setEnv},
 		{"krun_add_net_unixgram", &a.addNetUnixgram},
+		{"krun_add_virtiofs4", &a.addVirtiofs4},
+		{"krun_fs_add_overlay_file", &a.addOverlayFile},
 		{"krun_disable_implicit_vsock", &a.disableImplicitVsock},
 		{"krun_add_vsock", &a.addVsock},
 		{"krun_set_kernel_console", &a.setKernelConsole},
@@ -157,6 +177,10 @@ func Enter(dir string, cfg Config) error {
 		}
 	}
 
+	if err := addVolumes(krun, ctx, cfg); err != nil {
+		return err
+	}
+
 	// The implicit vsock device would forward guest sockets to the host (TSI).
 	// Disabling it leaves a guest without a network device with no network at all.
 	if err := check("krun_disable_implicit_vsock", krun.disableImplicitVsock(ctx)); err != nil {
@@ -190,6 +214,10 @@ func (cfg Config) validate() error {
 		return errors.New("VM needs at least 1 MiB of memory")
 	case cfg.Net != nil && (cfg.Net.FD < 0 || cfg.Net.FD > math.MaxInt32):
 		return fmt.Errorf("VM network fd %d is not valid", cfg.Net.FD)
+	case slices.ContainsFunc(cfg.Volumes, func(v Volume) bool { return v.Tag == "" || !filepath.IsAbs(v.Host) }):
+		return errors.New("VM volume needs a tag and an absolute host path")
+	case len(cfg.Volumes) > 0 && len(cfg.MountHelper) == 0:
+		return errors.New("VM volumes need the mount helper")
 	case cfg.LogLevel > maxLogLevel:
 		return fmt.Errorf("libkrun log level %d is above %d", cfg.LogLevel, maxLogLevel)
 	}
@@ -217,4 +245,27 @@ func useQuietConsole(krun *api, ctx uint32) error {
 
 func anyTerminal() bool {
 	return slices.ContainsFunc([]int{0, 1, 2}, term.IsTerminal)
+}
+
+// mountHelper keeps the helper bytes alive for the VM, because libkrun serves them without a copy.
+var mountHelper []byte
+
+// addVolumes adds one virtio-fs device per volume and serves the mount helper in the root share.
+func addVolumes(krun *api, ctx uint32, cfg Config) error {
+	if len(cfg.Volumes) == 0 {
+		return nil
+	}
+
+	// A zero DAX window size keeps the libkrun default.
+	for _, v := range cfg.Volumes {
+		if err := check("krun_add_virtiofs4", krun.addVirtiofs4(ctx, v.Tag, v.Host, 0, v.ReadOnly, volumeSemantics)); err != nil {
+			return err
+		}
+	}
+
+	mountHelper = cfg.MountHelper
+	name := strings.TrimPrefix(guestmount.Path, "/")
+
+	// One-shot: the init looks the helper up once to run it, and the workload never sees it.
+	return check("krun_fs_add_overlay_file", krun.addOverlayFile(ctx, rootTag, name, &mountHelper[0], uintptr(len(mountHelper)), 0o100755, true))
 }

@@ -185,7 +185,7 @@ Delivery has two phases:
 - VMM: `libkrun` 1.x, minimum 1.19.8, and its `libkrunfw` kernel bundle, minimum 5.6.4. On Linux, `libkrun` must be built with network support (`NET=1`). One such build serves every Linux use; it behaves the same as a build without network support when no network device is added.
 - `sbxr` loads `libkrun` at runtime with `purego`. The binary builds with cgo off.
 - `sbxr` opens `libkrun` by its ABI 1 file name (`libkrun.so.1`, `libkrun.1.dylib`) as an absolute path in the library directory, never by bare name and never the unversioned link. A `libkrun` 2.x install is never loaded by mistake.
-- `libkrun` has no runtime version query. `sbxr` validates `libkrun` by checking that every required symbol exists, including the network functions, and validates `libkrunfw` by its version. `krunfw_get_version` reports only the ABI version (5), so `sbxr` reads the full version from the resolved library path: `libkrunfw.so.5.6.4` on Linux, `Cellar/libkrunfw/5.6.4/` from Homebrew. A missing symbol or an old `libkrunfw` is a preflight failure.
+- `libkrun` has no runtime version query. `sbxr` validates `libkrun` by checking that every required symbol exists, including the network, virtio-fs, and root-share overlay functions, and validates `libkrunfw` by its version. `krunfw_get_version` reports only the ABI version (5), so `sbxr` reads the full version from the resolved library path: `libkrunfw.so.5.6.4` on Linux, `Cellar/libkrunfw/5.6.4/` from Homebrew. A missing symbol or an old `libkrunfw` is a preflight failure.
 - Library directory: `SBXR_LIB_DIR` when set, otherwise the first of `/opt/homebrew/lib` (macOS), `/home/linuxbrew/.linuxbrew/lib`, `/usr/local/lib`, and the system library path that contains both `libkrun` and `libkrunfw`. `libkrun` loads `libkrunfw` by name, so the VM process starts with the library search path set to that directory.
 - macOS signing (v1): the `sbxr` binary is signed ad hoc, without hardened runtime, with one entitlement, `com.apple.security.hypervisor`. Hardened runtime is not used, because it removes the `DYLD_*` variables that `libkrun` needs to find `libkrunfw`, and `libkrun` offers no other way to pass that path. Without hardened runtime, macOS does not enforce library validation, so no other entitlement is needed. Every build, including test binaries, is signed. An unsigned binary fails the `entitlement` check instead of failing at VM start.
 - Linux: `sbxr` runs without root. It needs read-write access to `/dev/kvm` (usually the `kvm` group), `newuidmap` and `newgidmap` (package `uidmap`), and a subordinate uid and gid range for the user. `sbxr` maps ids with those helpers, because one direct mapping cannot cover image ids such as gid 42.
@@ -234,7 +234,7 @@ Delivery has two phases:
 ### Workload config
 
 - The workload command, env, working directory, uid, and gid reach the guest through a config file, `/.krun_config.json`, that `sbxr` writes into the per-run root. The kernel command line is not used, because it breaks on quotes and non-ASCII text and lets values override the file.
-- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device (with `--net`), disable the implicit vsock device, on macOS add a vsock device without TSI features and without port map (it carries only the host time sync to the guest init), make the virtual terminal `tty0` the kernel console (only when no stdio stream is a terminal), start.
+- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device (with `--net`), add one virtio-fs device per volume and the mount helper overlay (with `-v`), disable the implicit vsock device, on macOS add a vsock device without TSI features and without port map (it carries only the host time sync to the guest init), make the virtual terminal `tty0` the kernel console (only when no stdio stream is a terminal), start.
 - The `tty0` kernel console works around a `libkrun` 1.19.8 race. The default console `hvc0` appears only after a virtio handshake with the VM process. Under host load, the guest kernel starts the init before `hvc0` exists, the init starts with closed stdio, and its redirect to the `krun-stdout` port then leaves the workload without stdout (EBADF, about 1 in 4 runs with 16 parallel VMs on an M4 Pro Mac). `tty0` registers at boot on every architecture and shows nothing, so the init always has stdio. A rarer second race remains: when the guest init looks for the named ports before the handshake names them, the workload writes to the console, and its output is lost (about 1 in 80 runs at that load, none in 200 runs with 8 parallel VMs). With `-t`, the console is the workload's terminal, so it stays `hvc0` and only the first race applies. `libkrun` main fixed the closed-stdio case in its new init (upstream issue 749). `sbxr` never calls the functions that set the exec command, working directory, resource limits, or port map, and never passes a NULL env list.
 - The guest init parser treats any string as a possible key and takes the first match. The writer therefore follows this contract:
   - Keys appear once each, in this order: `uid`, `gid`, `WorkingDir`, `Env`, `Entrypoint` (always empty), `args`.
@@ -250,6 +250,19 @@ Delivery has two phases:
   - A uid or gid of 4294967295 is rejected, because the guest init cannot set it and exits with 125.
   - The guest init matches keys case-insensitively and reads `Cmd` and `Cwd` as aliases for `args` and `WorkingDir`. The fixed key order keeps this safe, because no value before `args` can look like a key.
   - The file is written after removing any existing entry, with create-exclusive and no-follow semantics.
+- With `-v`, the guest init cannot mount the volumes itself: the `libkrun` 1.19.8 init mounts only system file systems and drops to the workload user before it runs the workload. `sbxr` therefore runs a small static mount helper first:
+  - `libkrun` serves the helper from memory at `/.sbxr-mount` in the root share (`krun_fs_add_overlay_file`), so the run root has no such file. The file is one-shot: after the init runs it, the workload does not see it.
+  - The config keeps the contract below, with `uid` and `gid` set to `0` and `args` starting with the helper, then `UID:GID`, the working directory, the mount count, one `TAG:rw:PATH` or `TAG:ro:PATH` entry per volume, and the workload `args`. The tag is `sbxr-` and 16 hex digits of the SHA-256 of the guest path.
+  - The helper walks each guest path inside the guest like the kernel: it follows symlinks, including symlinks in earlier volumes, fails when a component is not a directory, and creates each missing component as a directory, so `..` and later symlinks apply to real directories. It mounts on the resolved path and fails with exit 125 when that path is the guest root or reserved (`/dev`, `/proc`, `/sys`, `/.sbxr-mount`, `/.krun_config.json`, `/init.krun`). `internal/spec` checks the same list on the path as typed.
+  - The helper resolves each mount point once, right before its mount. A workload cannot run yet, but anything that changes an rw volume on the host during startup can redirect a later mount, and only to a place inside the guest.
+  - Volumes are ordered and deduplicated by the cleaned guest path as typed. Two volumes whose paths resolve to the same place stack, and the later one wins.
+  - The helper mounts each virtio-fs tag with `nosuid` and `nodev`, plus `ro` for `:ro`. It then changes to the working directory again, drops the supplementary groups, sets the gid and uid like the init, and runs the workload with a `PATH` search like `execvp`. It keeps the init's messages and exit codes (126, 127, 125 for setup failures).
+  - Runs without `-v` do not use the helper, and their config is unchanged.
+- Volume access:
+  - `:ro` is enforced by the host: `libkrun` exposes the device read-only, and the guest also mounts it read-only.
+  - A mount point that does not exist inside an earlier volume is created in that volume, so it appears in the host directory. Under a `:ro` volume it cannot be created, and the run fails with exit 125.
+  - macOS uses the `libkrun` permission semantics "Linux simplified": every guest user sees itself as the owner of the volume files and can read and write them, files that the guest creates belong to the invoking user on the host, and the guest cannot change ownership.
+  - Linux uses the default semantics inside the user namespace. Guest root is the invoking user, so the workload as root reads and writes the user's files, and its new files belong to the invoking user. Other guest users map to the user's subordinate ids: they see the user's files as owned by root, get access only through the "other" permission bits, and their new files belong to subordinate ids on the host.
 - Commands are not resolved on the host. Bare names reach the guest init, which searches the image `PATH`.
 - Image user names in `User` are resolved by reading the image's `/etc/passwd` and `/etc/group` inside the cached image root. Path resolution never leaves that root. An unknown name fails with exit 125.
 - The workload gets no supplementary groups. This differs from `docker run`.
@@ -277,7 +290,7 @@ Commands:
 | `--memory SIZE`                 | `1G`                          | Guest RAM, for example `512M`, `2G`                                                                       |
 | `-e, --env KEY=VALUE`           | none                          | Set an env var. Repeatable. `KRUN_*` and `HOSTNAME` are rejected                                          |
 | `--env-file PATH`               | none                          | Read env vars from a file. Same rules as `-e`                                                             |
-| `-v, --volume HOST:GUEST[:ro]`  | none                          | Share a host directory. Repeatable                                                                        |
+| `-v, --volume HOST:GUEST[:ro]`  | none                          | Share a host directory at an absolute guest path. `:ro` makes it read-only. Repeatable                    |
 | `--net`                         | off                           | Outbound IPv4 to public addresses. Host-local, LAN, and metadata addresses are blocked                    |
 | `--allow-lan`                   | off                           | Also allow RFC1918 addresses and the host's LAN address. Requires `--net`                                 |
 | `-p, --publish [IP:]HOST:GUEST` | none                          | Publish a guest TCP port. Binds `127.0.0.1` unless an IPv4 address is given. Requires `--net`. Repeatable |
@@ -378,12 +391,18 @@ On Linux, a text report with a failed check ends with the setup block from "Dist
 - Egress policy, enforced by `sbxr` for every new TCP connection and UDP flow:
   - Always blocked: `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16` (including cloud metadata), `224.0.0.0/4`, `240.0.0.0/4`, the gateway address except DNS and DHCP, and all non-IPv4 traffic except ARP.
   - Blocked unless `--allow-lan`: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, and every address of the host's own interfaces (re-read while the run is active).
+  - Also always blocked: the rest of the guest subnet, `255.255.255.255` except DHCP, DHCP to any other address, and guest TCP to the gateway except DNS and replies from published ports.
+  - Frames whose source MAC address is not the guest MAC, and ARP from any other sender address, are dropped, so the switch learns no other MAC address.
   - Allowed: all other IPv4 destinations.
 - Enforcement has two layers, because the network library dials any destination it is given:
   - A frame filter between the VM and the network stack drops blocked frames before the stack sees them. Without it, guest UDP to `0.0.0.0` reached a host loopback service in testing.
+  - A blocked TCP connection gets a reset from the frame filter, so it fails at once. Blocked UDP and other traffic is dropped silently.
   - `sbxr` builds the network stack from the library's packages and installs its own TCP and UDP forwarders, which check the destination again at dial time and count flows.
 - `-p`: one forward per mapping, created by the network stack on the host. The default bind address is `127.0.0.1`. Only listed ports are reachable.
+- Guest addresses are fixed: subnet `192.168.127.0/24`, gateway `.1`, guest `.2`. A host LAN in the same range is not reachable from the guest, even with `--allow-lan`.
 - Resource limits: each run allows at most 1024 established TCP connections and 256 UDP flows. Past the cap, new TCP connections get a reset and new UDP flows are dropped. The library alone limits only half-open TCP connections, and in testing a guest held 2000 connections, each costing one host file descriptor.
+- Published connections and DNS TCP connections count against the TCP cap. A published or DNS TCP connection past the cap gets a reset.
+- Gateway DNS: at most 64 queries resolve at once, and further queries are dropped. Each query has a 2-second timeout. A queries go to the host resolver, AAAA queries get an empty answer because the guest has no IPv6 route, and other types go to the nameservers in `/etc/resolv.conf`. Forwarded queries are rebuilt with one `IN` question, recursion desired, and no guest options. A truncated UDP answer is asked again over TCP. The gateway refuses non-`IN` classes and does not implement other opcodes or zone transfers.
 - The core defines a network backend interface. The userspace stack is one adapter used by the CLI. The phase 2 TAP network is another adapter. The core and the fake test VM do not depend on the userspace stack.
 
 ### Run lifecycle
@@ -458,19 +477,21 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 
 - Behavior scenarios are written once and run against several targets: `fake` (no hypervisor), `cli` (real VM), `k8s-p1` (kind cluster with phase 1), and later `k8s-p2`.
 - Each target declares its capabilities. Each scenario declares the capabilities it needs and runs only on targets that have them. Scenarios never check the target name.
-- Capabilities: `stdin`, `tty`, `split-stderr`, `signal-exit`, `graceful-stop`, `exec`, `net`, `net-off`, `publish`, `dns`, `volumes`, `memory-limit`, `probes`, `spec-validation`, `exact-config`.
+- Capabilities: `stdin`, `tty`, `split-stderr`, `signal-exit`, `graceful-stop`, `exec`, `net`, `net-off`, `publish`, `dns`, `volumes`, `memory-limit`, `probes`, `spec-validation`, `exact-config`, `egress-guard`.
 - `spec-validation`: the target rejects invalid run input (relative workdir, control characters, reserved env names) before anything starts. `exact-config`: the workload sees the image config and the run flags and nothing else. Kubernetes targets lack both, because Kubernetes accepts such input, adds service env and `HOSTNAME`, and does not apply the group of a numeric image `USER`.
+- `egress-guard`: `--net` and `--allow-lan` select the egress policy of "Networking (CLI)", and the host resolver answers DNS. Kubernetes targets lack it, because pods use the pod network and cluster DNS.
 
-  | Target   | Capabilities                                                                                                                    |
-  | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
-  | `fake`   | `stdin`, `tty`, `split-stderr`, `signal-exit`, `net`, `net-off`, `publish`, `dns`, `volumes`, `spec-validation`, `exact-config` |
-  | `cli`    | same as `fake`                                                                                                                  |
-  | `k8s-p1` | `net`, `publish`, `dns`, `memory-limit`, `probes`                                                                               |
-  | `k8s-p2` | `k8s-p1` plus `exec`, `graceful-stop`                                                                                           |
+  | Target   | Capabilities                                                                                                                                    |
+  | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `fake`   | `stdin`, `tty`, `split-stderr`, `signal-exit`, `net`, `net-off`, `publish`, `dns`, `volumes`, `spec-validation`, `exact-config`, `egress-guard` |
+  | `cli`    | same as `fake`                                                                                                                                  |
+  | `k8s-p1` | `net`, `publish`, `dns`, `memory-limit`, `probes`                                                                                               |
+  | `k8s-p2` | `k8s-p1` plus `exec`, `graceful-stop`                                                                                                           |
 
 - Scenarios assert on behavior: stdout (or combined output), exit code, and a target-neutral error class. Error classes: `ok`, `invalid-spec`, `image`, `preflight`, `not-found`, `not-executable`, `interrupted`. Each target maps its own signals to these classes. Scenarios never assert the order across stdout and stderr.
 - After each scenario, the target verifies that no VM process, network listener, pod, or run state remains.
 - The fake target runs the real userspace network stack against a small simulated guest network, so port publishing, egress blocking, and cleanup are tested without a hypervisor.
+- Network scenarios need no public address. They serve HTTP on a non-loopback address of the host, which the guest reaches only with `--allow-lan`, and publish a guest port on a free port of `127.0.0.1`. The netstack unit tests cover public destinations through a dial hook.
 - The config file writer is tested with property and fuzz tests against a copy of the guest init parser. The seed corpus lives in `internal/krunconfig/testdata/fuzz/FuzzMarshal`. The hypervisor job also boots every seed that the writer accepts through the real guest init and compares the arguments, env, uid, gid, and working directory that the workload sees.
 - Hypervisor detection uses the same rules as the `hypervisor` doctor check.
 - `SBXR_REQUIRE_HV=1` turns hypervisor skips into failures. CI sets it on hypervisor jobs.
@@ -512,6 +533,7 @@ CI contract:
 - Project base: `albertsko/go-kickstart` (mise tools and tasks, strict golangci-lint, goreleaser).
 - `vendor/` is gitignored. `mise run deps` runs `go mod vendor`. CI runs the same task, so local and CI builds use the same vendored sources.
 - Tasks: `deps`, `test`, `test:hv`, `test:kind`, `lint`, `build`, `ci`. The same tasks run locally and in CI.
+- `go generate ./internal/guestmount` builds the mount helper for `linux/amd64` and `linux/arm64`, and `sbxr` embeds the one for its own architecture. `mise run build`, the goreleaser before-hook, and the hv test build run it. Git ignores the generated files. A build without them works, except that `-v` fails with exit 125 and asks for `mise run build`.
 - `libkrun` 1.x support: `sbxr` follows 1.19.x patch releases. It moves to `libkrun` 2.x when any of these happens: 2.0.0 ships with `libkrunfw` 6, `crun` or Fedora switch to ABI 2, 1.19.x gets no release for about 3 months, or 2.x fixes process takeover and Linux graceful shutdown. The `libkrun` binding lives behind one interface, so a 2.x binding can be added next to it.
 
 ## Out of Scope
@@ -540,18 +562,18 @@ CI contract:
 
 ### Assumptions
 
-| ID  | Assumption                                                                                                                                                                                                                                | Confidence |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| A1  | `libkrun` 1.19.x stays maintained for the next 6 to 12 months                                                                                                                                                                             | 85%        |
-| A2  | One phase 1 node bundle, built on Ubuntu 22.04 with its own libraries, runs on nodes with glibc 2.35 or later. Verified on Ubuntu 22.04 and 24.04, Debian 12, Rocky 9, Amazon Linux 2023, and the kind node. Debian 11 (glibc 2.31) fails | verified   |
-| A3  | One scenario set with capability tags covers all targets without target-specific branches inside scenarios                                                                                                                                | 75%        |
-| A4  | RKE2 imports the `config-v3.toml.d` drop-in directory like k3s. Verified on RKE2 1.34.13 and 1.37.2, with the k3s and k0s paths. Restarting the k3s or RKE2 unit restarts containerd                                                      | verified   |
-| A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install. Verified: `brew install albertsko/tap/sbxr` needs no extra step on Homebrew 7.0.13                                                                            | verified   |
-| A6  | Overlay edge cases not yet tested (hardlinks across copy-up, renaming lower directories) work over virtio-fs                                                                                                                              | 75%        |
-| A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot                                                                                                     | 75%        |
-| A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available on every Kubernetes version the installer supports. Failed as first written: Kubernetes serves it by default only from 1.36, so the installer requires 1.36     | verified   |
-| A9  | The fang terminal color query problem (fang issue 104) gets fixed upstream, so the CLI's workaround can be removed                                                                                                                        | 50%        |
-| A10 | The macOS process that could not exit after holding 2000 guest connections in testing does not recur under the per-run connection caps                                                                                                    | 60%        |
+| ID  | Assumption                                                                                                                                                                                                                                                                                                                                                                                 | Confidence |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- |
+| A1  | `libkrun` 1.19.x stays maintained for the next 6 to 12 months                                                                                                                                                                                                                                                                                                                              | 85%        |
+| A2  | One phase 1 node bundle, built on Ubuntu 22.04 with its own libraries, runs on nodes with glibc 2.35 or later. Verified on Ubuntu 22.04 and 24.04, Debian 12, Rocky 9, Amazon Linux 2023, and the kind node. Debian 11 (glibc 2.31) fails                                                                                                                                                  | verified   |
+| A3  | One scenario set with capability tags covers all targets without target-specific branches inside scenarios                                                                                                                                                                                                                                                                                 | 75%        |
+| A4  | RKE2 imports the `config-v3.toml.d` drop-in directory like k3s. Verified on RKE2 1.34.13 and 1.37.2, with the k3s and k0s paths. Restarting the k3s or RKE2 unit restarts containerd                                                                                                                                                                                                       | verified   |
+| A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install. Verified: `brew install albertsko/tap/sbxr` needs no extra step on Homebrew 7.0.13                                                                                                                                                                                                                             | verified   |
+| A6  | Overlay edge cases not yet tested (hardlinks across copy-up, renaming lower directories) work over virtio-fs                                                                                                                                                                                                                                                                               | 75%        |
+| A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot                                                                                                                                                                                                                                                      | 75%        |
+| A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available on every Kubernetes version the installer supports. Failed as first written: Kubernetes serves it by default only from 1.36, so the installer requires 1.36                                                                                                                                                      | verified   |
+| A9  | The fang terminal color query problem (fang issue 104) gets fixed upstream, so the CLI's workaround can be removed                                                                                                                                                                                                                                                                         | 50%        |
+| A10 | The macOS process that could not exit after holding 2000 guest connections in testing does not recur under the per-run connection caps. Verified on an M4 Pro Mac with `libkrun` 1.19.8 (see HANDOFF "Evidence"): the parent exited within 0.1 s in every run at the caps (1024 TCP, 256 UDP), above them, and with 2000 TCP connections. `TestCloseAtCaps` checks the network stack in CI | verified   |
 
 ### Open questions
 
@@ -576,10 +598,6 @@ These questions stay open at handoff. Each one names who decides or what work an
   6. **The guest init keeps the first of duplicate env entries.**
      - Seen: containerd lists the image env first and the pod env after it, and the init sets each entry without overwriting. A pod env value that the image also sets is lost.
      - Seen on: Kubernetes phase 1 through `crun`. The phase 1 bundle patches the init to let the last entry win.
-- **Q3. macOS process that cannot exit (assumption A10).**
-  - Seen: in a network test on macOS, the parent process held 2000 guest TCP connections and then got stuck while exiting, in state `?E`. It ignored `kill -9` and was still present 15 minutes later. The same test exited cleanly on Linux.
-  - Not done: no root-cause analysis, because that needed root access.
-  - Answered by: a test of the network stack under the per-run connection caps on macOS during implementation. If the hang recurs below the caps, lower the caps or move the network stack into a separate helper process.
 
 ## Further Notes
 

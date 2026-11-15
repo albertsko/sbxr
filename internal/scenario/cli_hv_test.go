@@ -50,7 +50,10 @@ func TestHVCLITarget(t *testing.T) {
 			Images:   refs,
 			Flags:    hvFlags,
 			Env:      hvEnv(),
-			Caps:     []scenario.Capability{scenario.Stdin, scenario.TTY, scenario.SplitStderr, scenario.SignalExit, scenario.SpecValidation, scenario.ExactConfig},
+			Caps: []scenario.Capability{
+				scenario.Stdin, scenario.TTY, scenario.SplitStderr, scenario.SignalExit, scenario.SpecValidation, scenario.ExactConfig,
+				scenario.Net, scenario.NetOff, scenario.Publish, scenario.DNS, scenario.EgressGuard, scenario.Volumes,
+			},
 		}
 	})
 }
@@ -428,4 +431,38 @@ func hvImages(t *testing.T) map[string]string {
 	}
 
 	return hvRefs
+}
+
+// TestHVVolumeSymlinksCannotEscape mounts a volume through symlinks in an earlier volume that lead to a reserved path,
+// the guest root, or through a file.
+func TestHVVolumeSymlinksCannotEscape(t *testing.T) {
+	t.Parallel()
+
+	bin := hvBinary(t)
+	refs := hvImages(t)
+	cacheDir := hvCacheDir(t)
+
+	links, target := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(links, "file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, to := range map[string]string{"escape": "/missing/../proc", "root": "/", "edge": "/a/file/../ok"} {
+		if err := os.Symlink(to, filepath.Join(links, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, want := range map[string]string{"escape": "reserved path /proc", "root": "resolves to the guest root", "edge": "not a directory"} {
+		args := append(append([]string{"run", "-q"}, hvFlags...), "-v", links+":/a", "-v", target+":/a/"+name, refs[scenario.Busybox], "true")
+
+		out, code := sbxr(t, bin, hvEnv(cacheDir), args...)
+		if code != 125 || !strings.Contains(out, want) {
+			t.Errorf("volume at /a/%s: sbxr run = %d, %q; want 125 and %q", name, code, out, want)
+		}
+	}
+
+	if err := scenario.CheckClean(cacheDir); err != nil {
+		t.Error(err)
+	}
 }

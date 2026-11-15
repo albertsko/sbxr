@@ -95,11 +95,51 @@ func All() []Scenario {
 			Check: expect(Workload{Image: Busybox, Memory: 128, Args: []string{"sh", "-c", "x=$(yes | head -c 400000000); echo survived"}}, 137, OK),
 		},
 		{
-			Name:    "no network without --net",
-			Needs:   []Capability{NetOff},
-			Pending: "needs run: S5",
-			Check:   expect(Workload{Image: Busybox, Args: []string{"wget", "-T", "2", "-qO-", "http://1.1.1.1"}}, 1, OK),
+			Name:  "no network without --net",
+			Needs: []Capability{NetOff},
+			Check: expect(Workload{Image: Busybox, Args: wget("http://1.1.1.1")}, 1, OK),
 		},
+		{Name: "allow-lan reaches a host address", Needs: []Capability{Net, EgressGuard}, Check: reachHost(true)},
+		{Name: "net blocks host addresses without allow-lan", Needs: []Capability{Net, EgressGuard}, Check: reachHost(false)},
+		{
+			Name:  "allow-lan still blocks cloud metadata",
+			Needs: []Capability{Net, EgressGuard},
+			Check: expect(Workload{Image: Busybox, Net: true, AllowLAN: true, Args: wget("http://169.254.169.254/")}, 1, OK),
+		},
+		{
+			Name:  "dns resolves through the gateway",
+			Needs: []Capability{DNS, EgressGuard},
+			Check: expect(Workload{Image: Busybox, Net: true, Args: []string{"nslookup", "-type=a", "localhost"}}, 0, OK, stdoutContains("127.0.0.1")),
+		},
+		{Name: "volume is readable and writable both ways", Needs: []Capability{Volumes}, Check: volumeReadWrite},
+		{Name: "read-only volume rejects writes", Needs: []Capability{Volumes}, Check: volumeReadOnly},
+		{
+			Name:  "volume keeps the image config",
+			Needs: []Capability{Volumes, ExactConfig},
+			Check: withVolume(Workload{Image: Configured}, 0, OK, stdout("image image\n1000\n1000\n/tmp\n")),
+		},
+		{
+			Name:  "volume adds nothing to the guest env",
+			Needs: []Capability{Volumes, ExactConfig},
+			Check: withVolume(Workload{Image: Busybox, Args: []string{"env"}, Env: []string{"A=1", "TERM=xterm"}}, 0, OK, envExactly("PATH=/bin", "A=1", "TERM=xterm", "HOME=/")),
+		},
+		{
+			Name:  "volume with a missing command",
+			Needs: []Capability{Volumes},
+			Check: withVolume(Workload{Image: Busybox, Args: []string{"nope"}}, 127, NotFound),
+		},
+		{
+			Name:  "volume with a relative guest path",
+			Needs: []Capability{Volumes, SpecValidation},
+			Check: invalidVolume(Volume{Guest: "work"}),
+		},
+		{
+			Name:  "volume with a missing host directory",
+			Needs: []Capability{Volumes, SpecValidation},
+			Check: invalidVolume(Volume{Host: "/nonexistent/sbxr-volume", Guest: workDir}),
+		},
+		{Name: "publish reaches a guest port on 127.0.0.1", Needs: []Capability{Publish, Stdin}, Check: publishReachesGuest},
+		{Name: "publish on a busy port", Needs: []Capability{Publish, SpecValidation}, Check: publishBusyPort},
 	}
 }
 

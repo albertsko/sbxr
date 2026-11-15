@@ -16,7 +16,9 @@ import (
 )
 
 // Applets lists the commands of the fake busybox.
-var Applets = []string{"cat", "echo", "env", "false", "id", "pwd", "rm", "sh", "sleep", "stat", "stty", "true", "yes"}
+var Applets = []string{
+	"cat", "echo", "env", "false", "id", "nc", "nslookup", "pwd", "rm", "sh", "sleep", "stat", "stty", "touch", "true", "wget", "yes",
+}
 
 // run runs one applet and returns its exit code.
 func (g *guest) run(applet string, args []string, stdio Stdio) int {
@@ -35,20 +37,30 @@ func (g *guest) run(applet string, args []string, stdio Stdio) int {
 		return 1
 	case "id":
 		return g.id(args, stdio)
+	case "nc":
+		return g.nc(args, stdio)
+	case "nslookup":
+		return g.nslookup(args, stdio)
 	case "pwd":
 		return lines(stdio, g.cwd)
 	case "rm":
 		return g.rm(args, stdio)
 	case "sh":
 		return g.sh(args, stdio)
+	case "sbxr-mount":
+		return g.mountHelper(args, stdio)
 	case "sleep":
 		return sleep(args, stdio)
 	case "stat":
 		return g.stat(args, stdio)
 	case "stty":
 		return stty(args, stdio)
+	case "touch":
+		return g.touch(args, stdio)
 	case "true":
 		return 0
+	case "wget":
+		return g.wget(args, stdio)
 	case "yes":
 		return yes(stdio)
 	default:
@@ -92,7 +104,9 @@ func (g *guest) cat(args []string, stdio Stdio) int {
 	status := 0
 
 	for _, name := range args {
-		data, err := g.root.ReadFile(rel(g.abs(name)))
+		root, file, _ := g.fs(name)
+
+		data, err := root.ReadFile(file)
 		if err != nil {
 			sayf(stdio.Err, "cat: can't open '%s': No such file or directory\n", name)
 
@@ -165,7 +179,7 @@ func (g *guest) rm(args []string, stdio Stdio) int {
 	status := 0
 
 	for _, name := range args {
-		err := g.root.Remove(rel(g.abs(name)))
+		err := g.remove(name)
 		if err != nil {
 			sayf(stdio.Err, "rm: can't remove '%s': %v\n", name, err)
 

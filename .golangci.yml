@@ -119,10 +119,15 @@ linters:
         - 'charm\.land/log/v2\.Options'
         - 'archive/tar\.Header'
         - '.+/go-containerregistry/pkg/v1\.(Config|ConfigFile)'
+        # Library types with many optional fields.
+        - 'gvisor\.dev/gvisor/.+'
+        - 'github\.com/containers/gvisor-tap-vsock/.+'
+        - 'github\.com/miekg/dns\..+'
+        - 'net/http\.(Server|Client|Transport)'
       # Types whose fields are optional by design.
       optional-patterns:
         - '.+/internal/run\.ImageConfig'
-        - '.+/internal/scenario\.(Scenario|Workload)'
+        - '.+/internal/scenario\.(Scenario|Workload|Volume)'
         - '.+/internal/spec\.Error'
 
     gocritic:

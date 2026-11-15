@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -54,10 +55,31 @@ type Images interface {
 	NewRoot(ctx context.Context, img Image, dir string) (root string, release func() error, err error)
 }
 
+// Network is the network of one run.
+type Network interface {
+	// VMFile is the socket that the VM process attaches its network device to.
+	VMFile() *os.File
+	// GuestMAC is the MAC address that the VM must use.
+	GuestMAC() net.HardwareAddr
+	// Close stops the network and removes its listeners.
+	Close() error
+}
+
+// NetworkConfig describes the network of one run.
+type NetworkConfig struct {
+	AllowLAN bool
+	Publish  []spec.Port
+	Log      *slog.Logger
+}
+
 // Runner runs workloads.
 type Runner struct {
 	Images Images
 	Checks []preflight.Check
+	// Network starts the network of a run with --net.
+	Network func(ctx context.Context, cfg NetworkConfig) (Network, error)
+	// MountHelper reports whether this build has the guest mount helper for volumes (see internal/guestmount).
+	MountHelper func() error
 	// Isolate, when set, runs the rest of the run in another process and returns its exit code.
 	// On Linux, it runs the same command again inside a user namespace.
 	Isolate func(stdin, stdout, stderr *os.File) (int, error)
@@ -125,6 +147,22 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 		return ExitSetup, err
 	}
 
+	// The network starts before any run state, so that a busy publish port fails early.
+	var network Network
+
+	if s.Net {
+		network, err = r.Network(ctx, NetworkConfig{AllowLAN: s.AllowLAN, Publish: s.Publish, Log: r.Log})
+		if err != nil {
+			return ExitSetup, fmt.Errorf("network: %w", err)
+		}
+
+		defer func() {
+			if err := network.Close(); err != nil {
+				r.Log.Warn("stop network", "err", err)
+			}
+		}()
+	}
+
 	dir, lock, unlock, err := newRunDir(r.RunsDir, r.Log)
 	if err != nil {
 		return ExitSetup, err
@@ -134,14 +172,19 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 	release := func() error { return nil }
 	defer func() { r.cleanup(dir, release) }()
 
-	release, err = r.prepare(ctx, s, img, cfg, dir)
+	release, err = r.prepare(ctx, s, img, cfg, dir, network)
 	if err != nil {
 		return ExitSetup, err
 	}
 
 	r.Log.Debug("run state", "state", "running")
 
-	code, err := r.start(ctx, s, dir, hold, lock)
+	extra := []*os.File{hold, lock}
+	if network != nil {
+		extra = append(extra, network.VMFile())
+	}
+
+	code, err := r.start(ctx, s, dir, extra)
 
 	r.Log.Debug("run state", "state", "exited", "code", code)
 
@@ -158,15 +201,7 @@ func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
 		return err //nolint:wrapcheck // The preflight error is a complete user message.
 	}
 
-	if len(s.Volumes) > 0 {
-		return &spec.Error{Source: "-v", Problem: "volumes are not supported yet"}
-	}
-
-	if s.Net {
-		return &spec.Error{Source: "--net", Problem: "networking is not supported yet"}
-	}
-
-	return nil
+	return r.checkVolumes(s.Volumes)
 }
 
 // workload resolves and checks the guest init config before any run state exists.
@@ -199,28 +234,35 @@ func (r *Runner) workload(s spec.Spec, img Image) (krunconfig.Config, error) {
 
 // prepare creates the run root and writes the workload config and the machine into the run directory.
 // It returns the release function of the root, also on error.
-func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, cfg krunconfig.Config, dir string) (func() error, error) {
+func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, cfg krunconfig.Config, dir string, network Network) (func() error, error) {
 	rootPath, release, err := r.Images.NewRoot(ctx, img, dir)
 	if err != nil {
 		return func() error { return nil }, imageError(s, err)
 	}
 
-	return release, r.configure(s, cfg, dir, rootPath)
+	return release, r.configure(s, cfg, dir, rootPath, network)
 }
 
-func (r *Runner) configure(s spec.Spec, cfg krunconfig.Config, dir, rootPath string) error {
+func (r *Runner) configure(s spec.Spec, cfg krunconfig.Config, dir, rootPath string, network Network) error {
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		return fmt.Errorf("open run root: %w", err)
 	}
 	defer root.Close() //nolint:errcheck // The root is only read and written through Write.
 
+	cfg, volumes := withVolumes(s.Volumes, cfg)
+
 	err = krunconfig.Write(root, cfg)
 	if err != nil {
 		return fmt.Errorf("write workload config: %w", err)
 	}
 
-	err = vm.WriteMachine(dir, vm.Machine{Root: rootPath, CPUs: s.CPUs, MemoryMiB: s.MemoryMiB, LogLevel: r.VMLogLevel})
+	m := vm.Machine{Root: rootPath, CPUs: s.CPUs, MemoryMiB: s.MemoryMiB, LogLevel: r.VMLogLevel, Net: nil, Volumes: volumes}
+	if network != nil {
+		m.Net = &vm.Net{FD: vm.NetFD, MAC: network.GuestMAC().String()}
+	}
+
+	err = vm.WriteMachine(dir, m)
 	if err != nil {
 		return fmt.Errorf("prepare vm: %w", err)
 	}

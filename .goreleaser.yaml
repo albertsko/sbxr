@@ -1,5 +1,9 @@
 version: 2
 project_name: sbxr
+before:
+  hooks:
+    # The release embeds the guest mount helper for -v.
+    - go generate ./internal/guestmount
 builds:
   - main: ./cmd/sbxr
     env:

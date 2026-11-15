@@ -15,7 +15,9 @@ import (
 	"path"
 	"strings"
 
+	"github.com/albertsko/sbxr/internal/guestmount"
 	"github.com/albertsko/sbxr/internal/krunconfig"
+	"github.com/albertsko/sbxr/internal/netstack/guestsim"
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
@@ -42,7 +44,17 @@ func (Hypervisor) Start(m vm.Machine) error {
 		stdio.In = console(os.Stdin, stdio.Out)
 	}
 
-	os.Exit(Boot(root, stdio))
+	network, err := attachNetwork(m.Net)
+	if err != nil {
+		return err
+	}
+
+	volumes := make(map[string]vm.Volume, len(m.Volumes))
+	for _, v := range m.Volumes {
+		volumes[v.Tag] = v
+	}
+
+	os.Exit(boot(root, stdio, network, volumes))
 
 	return nil
 }
@@ -64,7 +76,10 @@ type config struct {
 
 // Boot behaves like the libkrun guest init: it reads the config, changes to the working directory,
 // and runs the command through the image PATH. It returns the exit code.
-func Boot(root *os.Root, stdio Stdio) int {
+func Boot(root *os.Root, stdio Stdio) int { return boot(root, stdio, nil, nil) }
+
+// boot runs the guest init with the guest network (nil without a network device) and the volume devices by tag.
+func boot(root *os.Root, stdio Stdio, network *guestsim.Guest, volumes map[string]vm.Volume) int {
 	data, err := root.ReadFile(krunconfig.FileName)
 	if err != nil {
 		sayf(stdio.Out, "fake init: read config: %v\n", err)
@@ -81,7 +96,7 @@ func Boot(root *os.Root, stdio Stdio) int {
 		return vm.ExitSetup
 	}
 
-	g := &guest{root: root, cfg: cfg, cwd: "/", status: 0}
+	g := &guest{root: root, cfg: cfg, cwd: "/", status: 0, net: network, volumes: volumes, mounts: nil}
 
 	// Like the real init, a failed chdir keeps / as the working directory.
 	if info, err := root.Stat(rel(cfg.WorkingDir)); err == nil && info.IsDir() {
@@ -105,6 +120,11 @@ type guest struct {
 	cfg    config
 	cwd    string
 	status int
+	// net is the guest network, or nil without a network device.
+	net *guestsim.Guest
+	// volumes are the virtio-fs devices by tag, and mounts are the ones that the mount helper mounted.
+	volumes map[string]vm.Volume
+	mounts  []mount
 }
 
 // Errors from command resolution, with libc strerror text.
@@ -125,6 +145,11 @@ func exitCode(err error) int {
 // resolve finds name like execvp: through PATH for a bare name, else as a path.
 // It returns the applet that the fake busybox runs.
 func (g *guest) resolve(name string) (string, error) {
+	// libkrun serves the mount helper from memory, so the root has no file for it.
+	if name == guestmount.Path {
+		return "sbxr-mount", nil
+	}
+
 	if strings.Contains(name, "/") {
 		return g.applet(name, g.abs(name))
 	}
