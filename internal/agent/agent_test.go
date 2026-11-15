@@ -5,6 +5,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -178,4 +179,51 @@ func openPTY(t *testing.T) (*os.File, *os.File) {
 	})
 
 	return master, slave
+}
+
+// TestDeleteTerminalExecBeforeStart deletes a terminal exec whose streams wait for a console that never came.
+// The streams end, and a console that arrives late is closed.
+func TestDeleteTerminalExecBeforeStart(t *testing.T) {
+	t.Parallel()
+
+	s := newService(newReaper(), slog.New(slog.DiscardHandler))
+	s.root = t.TempDir()
+	s.containers["c1"] = &container{bundle: "", init: &process{done: make(chan struct{}), consoleReady: make(chan struct{})}, started: true, execs: map[string]*process{}}
+
+	_, err := s.Exec(t.Context(), &taskAPI.ExecProcessRequest{ID: "c1", ExecID: "sh", Terminal: true, Stdout: "out", Spec: &anypb.Any{Value: []byte(`{}`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, p, err := s.find("c1", "sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	host, agent := net.Pipe()
+	defer host.Close()
+
+	attached := make(chan struct{})
+
+	go func() {
+		p.attach("stdout", agent, agent)
+		close(attached)
+	}()
+
+	if _, err := s.Delete(t.Context(), &taskAPI.DeleteRequest{ID: "c1", ExecID: "sh"}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-attached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream still waits for the console after Delete")
+	}
+
+	master, _ := openPTY(t)
+	p.setConsole(master)
+
+	if _, err := master.WriteString("x"); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("late console: write error %v, want it closed", err)
+	}
 }

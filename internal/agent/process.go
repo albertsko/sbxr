@@ -163,7 +163,11 @@ func (p *process) pidAndExit() (int, exit, bool) {
 }
 
 func (p *process) closeAll() {
-	for _, f := range append(p.child[:], p.stdin, p.stdout, p.stderr, p.console) {
+	p.mu.Lock()
+	console := p.console
+	p.mu.Unlock()
+
+	for _, f := range append(p.child[:], p.stdin, p.stdout, p.stderr, console) {
 		if f != nil {
 			_ = f.Close()
 		}
@@ -171,8 +175,13 @@ func (p *process) closeAll() {
 }
 
 // setConsole records the console of a terminal process, or nil when it did not start, and applies a waiting resize.
+// A console that arrives after cancel goes, because nobody reads it any more.
 func (p *process) setConsole(f *os.File) {
+	set := false
+
 	p.consoleOnce.Do(func() {
+		set = true
+
 		p.mu.Lock()
 		p.console = f
 		size := p.size
@@ -184,6 +193,17 @@ func (p *process) setConsole(f *os.File) {
 
 		close(p.consoleReady)
 	})
+
+	if !set && f != nil {
+		_ = f.Close()
+	}
+}
+
+// cancel ends the waits of attached streams for a console that has not arrived, because the process goes away.
+func (p *process) cancel() {
+	if p.terminal {
+		p.setConsole(nil)
+	}
 }
 
 // resize sets the terminal size now, or when the console arrives.

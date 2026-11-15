@@ -322,6 +322,7 @@ func (s *service) Delete(_ context.Context, req *taskAPI.DeleteRequest) (*taskAP
 	}
 
 	pid, e, _ := p.pidAndExit()
+	p.cancel()
 	p.closeAll()
 
 	return &taskAPI.DeleteResponse{Pid: uint32(pid), ExitStatus: e.Status, ExitedAt: timestamppb.New(e.At)}, nil //nolint:gosec // Pids fit.
