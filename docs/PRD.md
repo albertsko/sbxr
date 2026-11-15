@@ -367,12 +367,18 @@ When the `userns` check fails and the AppArmor restriction is on, `sbxr doctor` 
 - Egress policy, enforced by `sbxr` for every new TCP connection and UDP flow:
   - Always blocked: `0.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16` (including cloud metadata), `224.0.0.0/4`, `240.0.0.0/4`, the gateway address except DNS and DHCP, and all non-IPv4 traffic except ARP.
   - Blocked unless `--allow-lan`: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`, and every address of the host's own interfaces (re-read while the run is active).
+  - Also always blocked: the rest of the guest subnet, `255.255.255.255` except DHCP, DHCP to any other address, and guest TCP to the gateway except DNS and replies from published ports.
+  - Frames whose source MAC address is not the guest MAC, and ARP from any other sender address, are dropped, so the switch learns no other MAC address.
   - Allowed: all other IPv4 destinations.
 - Enforcement has two layers, because the network library dials any destination it is given:
   - A frame filter between the VM and the network stack drops blocked frames before the stack sees them. Without it, guest UDP to `0.0.0.0` reached a host loopback service in testing.
+  - A blocked TCP connection gets a reset from the frame filter, so it fails at once. Blocked UDP and other traffic is dropped silently.
   - `sbxr` builds the network stack from the library's packages and installs its own TCP and UDP forwarders, which check the destination again at dial time and count flows.
 - `-p`: one forward per mapping, created by the network stack on the host. The default bind address is `127.0.0.1`. Only listed ports are reachable.
+- Guest addresses are fixed: subnet `192.168.127.0/24`, gateway `.1`, guest `.2`. A host LAN in the same range is not reachable from the guest, even with `--allow-lan`.
 - Resource limits: each run allows at most 1024 established TCP connections and 256 UDP flows. Past the cap, new TCP connections get a reset and new UDP flows are dropped. The library alone limits only half-open TCP connections, and in testing a guest held 2000 connections, each costing one host file descriptor.
+- Published connections and DNS TCP connections count against the TCP cap. A published connection past the cap gets a reset.
+- Gateway DNS: at most 64 queries resolve at once, and further queries are dropped. Each query has a 2-second timeout. A queries go to the host resolver, AAAA queries get an empty answer because the guest has no IPv6 route, and other types go to the nameservers in `/etc/resolv.conf`.
 - The core defines a network backend interface. The userspace stack is one adapter used by the CLI. The phase 2 TAP network is another adapter. The core and the fake test VM do not depend on the userspace stack.
 
 ### Run lifecycle
