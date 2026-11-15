@@ -48,8 +48,10 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
   - `internal/preflight`: doctor checks and the `doctor --json` report. The schema is [doctor.schema.json](doctor.schema.json).
   - `internal/cli`: cobra, fang, and output. The only package that imports them.
   - `internal/scenario`: behavior scenarios, the scenario images and their registry, the `fake` and `cli` targets, and the `k8s-p1` target (build tag `kind`).
-  - `internal/node` and `cmd/sbxr-node`: the phase 1 node installer. `deploy/node` builds its image, with the node bundle, and holds the manifest template. [kubernetes.md](kubernetes.md) is the user guide.
-- `mise run ci` passes on macOS and Ubuntu. `mise run test:hv` passes on an Apple silicon Mac, in the `hv` job, and in an Ubuntu 24.04 arm64 VM with nested KVM. The `kind` job runs the `k8s-p1` target and the PRD phase 1 criteria.
+  - `internal/node` and `cmd/sbxr-node`: the node installer for phase 1 and phase 2 (`SBXR_PHASE`, default 2). `deploy/node` builds its image, with the node bundle, and holds the manifest template. [kubernetes.md](kubernetes.md) is the user guide.
+  - `internal/shim` and `cmd/containerd-shim-sbxr-v1`: the phase 2 containerd shim (sandbox and task APIs) and, in its hidden `vm` mode, the VM process.
+  - `internal/agent` and `cmd/sbxr-agent`: the phase 2 guest agent. `internal/podvm` is the contract between the shim and the agent. `internal/podnet` moves the pod network to a TAP device.
+- `mise run ci` passes on macOS and Ubuntu. `mise run test:hv` passes on an Apple silicon Mac, in the `hv` job, and in an Ubuntu 24.04 arm64 VM with nested KVM. The `kind` job runs the `k8s-p1` target and the PRD phase 1 criteria. The `kind-p2` job installs phase 1, upgrades the node to phase 2, and runs the `k8s-p2` target, the phase 2 criteria, and the phase 1 criteria that still apply.
 - A cached `sbxr run alpine true` takes about 0.14 s on an M4 Pro Mac (median of 20 runs).
 - Deviation from the S3 plan: no checked-in fixture root. S3 and S4 landed together, and the `cli` target uses pulled busybox images (PRD "Test contract").
 
@@ -273,6 +275,8 @@ Exit criteria:
 
 ### S8: Kubernetes phase 2
 
+Done. Evidence: `kind-p2` job run [43739077867](https://github.com/albertsko/sbxr/actions/runs/43739077867). Spike A7: run [43727468549](https://github.com/albertsko/sbxr/actions/runs/43727468549), tag `archive/spike-k8s-p2`. The release workflow builds the shim and the agent into the node image, behind the same `check` and `install` jobs.
+
 Scope:
 
 - Add the shim, the guest agent, and TAP networking. Add a `kind-p2` CI job for the `k8s-p2` target.
@@ -321,6 +325,11 @@ A step or pull request is done when:
 - **TSI exposes every guest listener on the host, and no setting limits it.** The CLI never uses TSI. "No network" mode disables socket forwarding and adds no network device. Phase 1 Kubernetes uses TSI inside the pod network namespace.
 - **The userspace network stack dials any destination.** In testing, guest UDP to `0.0.0.0` reached a host loopback service. Do not ship `--net` without the egress guard.
 - **Go's built-in user namespace mapping writes only one mapping.** Use `newuidmap` and `newgidmap`, and re-execute only after the maps are written. The execve as mapped uid 0 also clears the parent death signal, so `internal/userns` sets it again.
+- **containerd's shim sandboxer ignores `runtime_path`.** It finds `containerd-shim-sbxr-v1` only in `PATH` or next to the containerd binary, so the installer links it into `/usr/local/bin`.
+- **containerd waits for EOF on a process's output FIFOs** before it deletes the process. The shim holds the only write ends, so it closes them when the guest stream ends, or 2 seconds after the exit when a child process keeps the output open.
+- **Overlayfs cannot be idmapped,** and separate idmapped binds of its upper and work directories fail ("must reside under the same mount"). Idmap only the lower layers. Copy-up keeps their mapped owners.
+- **Go's `net.FileListener` rejects vsock sockets.** The agent accepts on the raw socket with non-blocking descriptors, so connections still use the runtime poller.
+- **The guest agent is PID 1** and reaps every process. It never calls `exec.Cmd.Wait`. `reboot(RESTART)` ends the VM, `poweroff` hangs it.
 - **kind resets `/dev/kvm` permissions** when it creates a cluster. Run `sudo chmod 666 /dev/kvm` after `kind create cluster`.
 - **kind needs D-Bus and a version 2 drop-in.** With systemd cgroups, `crun` reaches systemd only through D-Bus, and the kind node image has none, so the kind setup installs `dbus` in the node. kind writes a version 2 containerd config, and containerd fails to start with a version 3 drop-in under it.
 - **Kubernetes rewrites `$$` to `$`** in pod commands. Write `$$$$` in test pod specs.
@@ -361,6 +370,7 @@ git show archive/spike-gvnet:.github/workflows/gvnet.yml
 | Egress guard and connection caps                                                        | [43593357284](https://github.com/albertsko/sbxr/actions/runs/43593357284) | `archive/spike-netstack-bypass` |
 | Phase 1 node bundle, drop-in directories, MutatingAdmissionPolicy versions (A2, A4, A8) | [43704817204](https://github.com/albertsko/sbxr/actions/runs/43704817204) | `archive/spike-node-bundle`     |
 | Fresh install on Ubuntu and macOS, tap trust (A5)                                       | [43722622849](https://github.com/albertsko/sbxr/actions/runs/43722622849) | none                            |
+| Phase 2 guest agent, vsock, TAP, idmapped container roots (A7)                          | [43727468549](https://github.com/albertsko/sbxr/actions/runs/43727468549) | `archive/spike-k8s-p2`          |
 
 - **A10, macOS exit with held connections** (local, M4 Pro, `libkrun` 1.19.8, 2026-11-15, no tag): a stress build of the network stack with its own forwarders held guest connections in a real VM, then the VM exited, was killed, or the parent got SIGINT. 5 runs per case at the caps (1024 TCP, 256 UDP), above them (1100 TCP, 300 UDP), and with 2000 TCP connections. The parent exited within 0.1 s every time, and no process stayed stuck.
 
