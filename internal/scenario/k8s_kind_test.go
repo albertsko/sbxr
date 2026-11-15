@@ -596,6 +596,7 @@ func kindImages(t *testing.T, cluster string) map[string]string {
 
 	// Nothing listens on port 1, so the pull fails at once.
 	images := map[string]string{scenario.MissingImage: "localhost:1/sbxr/missing:1"}
+	dir := t.TempDir()
 
 	for image, ref := range served {
 		if image == scenario.MissingImage {
@@ -603,7 +604,7 @@ func kindImages(t *testing.T, cluster string) map[string]string {
 		}
 
 		images[image] = "sbxr-scenario/" + image + ":1"
-		archive := filepath.Join(t.TempDir(), image+".tar")
+		archive := filepath.Join(dir, image+".tar")
 
 		src, err := name.ParseReference(ref)
 
