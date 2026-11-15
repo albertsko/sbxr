@@ -157,7 +157,8 @@ func Enter(dir string, cfg Config) error {
 		}
 	}
 
-	// The implicit vsock device would forward guest sockets to the host (TSI), so without a network device the guest has no network at all.
+	// The implicit vsock device would forward guest sockets to the host (TSI).
+	// Disabling it leaves a guest without a network device with no network at all.
 	if err := check("krun_disable_implicit_vsock", krun.disableImplicitVsock(ctx)); err != nil {
 		return err
 	}
