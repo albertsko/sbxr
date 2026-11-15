@@ -266,5 +266,6 @@ func addVolumes(krun *api, ctx uint32, cfg Config) error {
 	mountHelper = cfg.MountHelper
 	name := strings.TrimPrefix(guestmount.Path, "/")
 
-	return check("krun_fs_add_overlay_file", krun.addOverlayFile(ctx, rootTag, name, &mountHelper[0], uintptr(len(mountHelper)), 0o100755, false))
+	// One-shot: the init looks the helper up once to run it, and the workload never sees it.
+	return check("krun_fs_add_overlay_file", krun.addOverlayFile(ctx, rootTag, name, &mountHelper[0], uintptr(len(mountHelper)), 0o100755, true))
 }
