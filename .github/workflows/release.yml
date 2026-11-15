@@ -17,7 +17,7 @@ jobs:
     uses: ./.github/workflows/install.yml
   node-image:
     name: node-image (${{ matrix.arch }})
-    needs: check
+    needs: [check, install]
     strategy:
       matrix:
         include:
@@ -96,7 +96,7 @@ jobs:
           retention-days: 1
   release:
     name: release
-    needs: [check, install, node-manifests]
+    needs: node-manifests
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
