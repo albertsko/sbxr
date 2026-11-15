@@ -38,13 +38,23 @@ TOML
 systemctl restart containerd && echo "RESULT v3 drop-in under v2 main: containerd started" || { echo "RESULT v3 drop-in under v2 main: containerd failed"; journalctl -u containerd --no-pager | grep -i -E "error|fail|version" | tail -5; }'
 
 # A drop-in uses the same config version as the main file.
-docker exec "$node" sh -c 'cat >/etc/containerd/conf.d/sbxr.toml <<TOML
+# sbxr: wrapper with systemd cgroups. sbxr-link: crun link with systemd cgroups. sbxr-cgfs: crun link with cgroupfs.
+docker exec "$node" sh -c 'ls -l /run/dbus/system_bus_socket /run/systemd/private; cat >/etc/containerd/conf.d/sbxr.toml <<TOML
 version = 2
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr]
   runtime_type = "io.containerd.runc.v2"
   [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr.options]
     BinaryName = "/opt/sbxr/bin/krun"
     SystemdCgroup = true
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr-link]
+  runtime_type = "io.containerd.runc.v2"
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr-link.options]
+    BinaryName = "/opt/sbxr/libexec/krun"
+    SystemdCgroup = true
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr-cgfs]
+  runtime_type = "io.containerd.runc.v2"
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr-cgfs.options]
+    BinaryName = "/opt/sbxr/libexec/krun"
 TOML
 systemctl restart containerd || { journalctl -u containerd --no-pager | tail -20; exit 1; }'
 sleep 5
@@ -79,6 +89,27 @@ spec:
     - {name: c, image: "busybox:1.37", command: [sh, -c, "echo hi; exit 3"]}
 YAML
 
+for h in sbxr-link sbxr-cgfs; do
+  kubectl apply -f - <<YAML
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata: {name: $h}
+handler: $h
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: hi-$h}
+spec:
+  runtimeClassName: $h
+  restartPolicy: Never
+  containers:
+    - name: c
+      image: "alpine:3.22"
+      command: [sh, -c, "echo hi; cat /sys/fs/cgroup/memory.max 2>/dev/null; uname -r"]
+      resources: {limits: {memory: 256Mi}}
+YAML
+done
+
 kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/hi --timeout=180s || kubectl describe pod hi
 kubectl wait --for=jsonpath='{.status.phase}'=Failed pod/exit3 --timeout=180s || kubectl describe pod exit3
 echo "hi logs: $(kubectl logs hi | tr '\n' ' ')"
@@ -86,5 +117,10 @@ echo "exit3 logs: $(kubectl logs exit3)"
 code=$(kubectl get pod exit3 -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')
 echo "exit3 exitCode: $code"
 echo "host kernel: $(uname -r)"
+for h in sbxr-link sbxr-cgfs; do
+  kubectl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/hi-$h" --timeout=120s >/dev/null || true
+  echo "RESULT handler $h: phase $(kubectl get pod "hi-$h" -o jsonpath='{.status.phase}') logs: $(kubectl logs "hi-$h" 2>/dev/null | tr '\n' ' ') event: $(kubectl get events --field-selector "involvedObject.name=hi-$h,type=Warning" -o jsonpath='{.items[0].message}' | cut -c1-220)"
+done
+docker exec "$node" sh -c 'for p in $(pgrep -f "^/opt/sbxr|krun"); do echo "proc $p $(cat /proc/$p/comm) $(cat /proc/$p/cgroup)"; done' || true
 
 [[ $(kubectl logs hi | head -1) == hi && $code == 3 ]]
