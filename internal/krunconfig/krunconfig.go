@@ -39,7 +39,7 @@ type Config struct {
 
 // Error describes an invalid value.
 // CheckValue and CheckEnvName return it without the source and value, which the caller adds.
-// Marshal wraps it with the source and value.
+// Marshal wraps it with the source and value when the error belongs to one value.
 type Error struct {
 	Problem string
 	Fix     string

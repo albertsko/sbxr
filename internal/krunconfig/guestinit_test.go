@@ -6,7 +6,8 @@ package krunconfig
 //   - src/init_blob/init/init.c: hexToDigit, Utf32toUtf8, unescape_string, config_parse_env, config_parse_args,
 //     config_parse_string, jsoneq, config_parse_file, and the part of main that reads the result.
 // The port keeps the C quirks on purpose: case-insensitive keys, values matched as keys, first match wins,
-// in-place rewrites of the file buffer, the broken \u decoding, and the root shell fallback.
+// the in-place rewrites that change results, the broken \u decoding, and the root shell fallback.
+// The init.c parts are Apache-2.0 licensed by the libkrun authors. See LICENSE.libkrun in this directory.
 //
 // The jsmn port carries this notice from jsmn.h:
 //
@@ -161,7 +162,7 @@ func (p *jsmnParser) parseString(js []byte, tokens []jsmnTok) int {
 		switch js[p.pos] {
 		case '"', '/', '\\', 'b', 'f', 'r', 'n', 't':
 		case 'u':
-			// The C code leaves missing digits uninitialized; the port uses NUL.
+			// The C code leaves missing digits uninitialized. The port uses NUL.
 			var digits []byte
 
 			p.pos++
