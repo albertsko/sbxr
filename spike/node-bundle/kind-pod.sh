@@ -38,25 +38,24 @@ TOML
 systemctl restart containerd && echo "RESULT v3 drop-in under v2 main: containerd started" || { echo "RESULT v3 drop-in under v2 main: containerd failed"; journalctl -u containerd --no-pager | grep -i -E "error|fail|version" | tail -5; }'
 
 # A drop-in uses the same config version as the main file.
-# sbxr: wrapper with systemd cgroups. sbxr-link: crun link with systemd cgroups. sbxr-cgfs: crun link with cgroupfs.
-docker exec "$node" sh -c 'ls -l /run/dbus/system_bus_socket /run/systemd/private; cat >/etc/containerd/conf.d/sbxr.toml <<TOML
+# sbxr: systemd cgroups, which crun reaches only through D-Bus. sbxr-cgfs: cgroupfs.
+docker exec "$node" sh -c 'cat >/etc/containerd/conf.d/sbxr.toml <<TOML
 version = 2
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr]
   runtime_type = "io.containerd.runc.v2"
   [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr.options]
     BinaryName = "/opt/sbxr/bin/krun"
     SystemdCgroup = true
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr-link]
-  runtime_type = "io.containerd.runc.v2"
-  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr-link.options]
-    BinaryName = "/opt/sbxr/libexec/krun"
-    SystemdCgroup = true
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr-cgfs]
   runtime_type = "io.containerd.runc.v2"
   [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr-cgfs.options]
-    BinaryName = "/opt/sbxr/libexec/krun"
+    BinaryName = "/opt/sbxr/bin/krun"
 TOML
 systemctl restart containerd || { journalctl -u containerd --no-pager | tail -20; exit 1; }'
+
+# The kind node image has no D-Bus. crun needs it for systemd cgroups, and runc does not.
+docker exec "$node" sh -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends dbus >/dev/null && systemctl start dbus && ls -l /run/dbus/system_bus_socket'
+docker exec "$node" sh -c 'grep -i cgroupDriver /var/lib/kubelet/config.yaml'
 sleep 5
 docker exec "$node" sh -c 'crictl info | grep -A6 "\"sbxr\""'
 docker exec "$node" /opt/sbxr/bin/krun --version
@@ -89,23 +88,22 @@ spec:
     - {name: c, image: "busybox:1.37", command: [sh, -c, "echo hi; exit 3"]}
 YAML
 
-for h in sbxr-link sbxr-cgfs; do
+for h in sbxr sbxr-cgfs; do
   kubectl apply -f - <<YAML
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
-metadata: {name: $h}
-handler: $h
+metadata: {name: sbxr-cgfs}
+handler: sbxr-cgfs
 ---
 apiVersion: v1
 kind: Pod
-metadata: {name: hi-$h}
+metadata: {name: sleep-$h}
 spec:
   runtimeClassName: $h
-  restartPolicy: Never
   containers:
     - name: c
       image: "alpine:3.22"
-      command: [sh, -c, "echo hi; cat /sys/fs/cgroup/memory.max 2>/dev/null; uname -r"]
+      command: [sleep, "600"]
       resources: {limits: {memory: 256Mi}}
 YAML
 done
@@ -117,10 +115,12 @@ echo "exit3 logs: $(kubectl logs exit3)"
 code=$(kubectl get pod exit3 -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')
 echo "exit3 exitCode: $code"
 echo "host kernel: $(uname -r)"
-for h in sbxr-link sbxr-cgfs; do
-  kubectl wait --for=jsonpath='{.status.phase}'=Succeeded "pod/hi-$h" --timeout=120s >/dev/null || true
-  echo "RESULT handler $h: phase $(kubectl get pod "hi-$h" -o jsonpath='{.status.phase}') logs: $(kubectl logs "hi-$h" 2>/dev/null | tr '\n' ' ') event: $(kubectl get events --field-selector "involvedObject.name=hi-$h,type=Warning" -o jsonpath='{.items[0].message}' | cut -c1-220)"
+# Where each handler puts the VM process: the pod cgroup under kubepods.slice, or somewhere else.
+for h in sbxr sbxr-cgfs; do
+  kubectl wait --for=condition=Ready "pod/sleep-$h" --timeout=120s >/dev/null || kubectl describe pod "sleep-$h" | tail -5
+  uid=$(kubectl get pod "sleep-$h" -o jsonpath='{.metadata.uid}' | tr - _)
+  cid=$(kubectl get pod "sleep-$h" -o jsonpath='{.status.containerStatuses[0].containerID}' | sed 's|.*://||')
+  docker exec "$node" sh -c "pid=\$(crictl inspect -o go-template --template '{{.info.pid}}' $cid); cg=\$(cut -d: -f3 /proc/\$pid/cgroup); echo \"RESULT handler $h: vm pid \$pid comm \$(cat /proc/\$pid/comm) cgroup \$cg memory.max \$(cat /sys/fs/cgroup\$cg/memory.max)\"; echo \"pod $uid under kubepods: \$(find /sys/fs/cgroup/kubepods.slice -type d -name \"*$uid*\" | head -1)\""
 done
-docker exec "$node" sh -c 'for p in $(pgrep -f "^/opt/sbxr|krun"); do echo "proc $p $(cat /proc/$p/comm) $(cat /proc/$p/cgroup)"; done' || true
 
 [[ $(kubectl logs hi | head -1) == hi && $code == 3 ]]

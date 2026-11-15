@@ -5,22 +5,13 @@
 set -euo pipefail
 
 prefix=$1
-mkdir -p "$prefix/bin" "$prefix/lib" "$prefix/libexec"
+mkdir -p "$prefix/bin" "$prefix/lib"
 
 install -m 755 /src/crun/crun "$prefix/bin/crun"
 strip --strip-unneeded "$prefix/bin/crun"
 
 # crun picks the libkrun handler when its program name is "krun".
-# With systemd cgroups, crun needs a D-Bus socket. Nodes without D-Bus (kind) get systemd's private socket, as runc does.
-ln -s ../bin/crun "$prefix/libexec/krun"
-cat >"$prefix/bin/krun" <<SH
-#!/bin/sh
-if [ -z "\$DBUS_SYSTEM_BUS_ADDRESS" ] && [ ! -S /run/dbus/system_bus_socket ]; then
-  export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/systemd/private
-fi
-exec $prefix/libexec/krun "\$@"
-SH
-chmod 755 "$prefix/bin/krun"
+ln -s crun "$prefix/bin/krun"
 cp -P /usr/local/lib/libkrun.so.1* "$prefix/lib/"
 find /src/fw -name 'libkrunfw.so.5*' -exec cp -P {} "$prefix/lib/" \;
 
@@ -49,6 +40,5 @@ if [[ -n $leaks ]]; then
 fi
 "$prefix/bin/krun" --version
 echo "glibc floor: $(objdump -T "$prefix"/bin/crun "$prefix"/lib/*.so* | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
-cat "$prefix/bin/krun"
-ls -lA "$prefix/bin" "$prefix/lib" "$prefix/libexec"
+ls -lA "$prefix/bin" "$prefix/lib"
 du -sh "$prefix"
