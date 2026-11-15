@@ -135,6 +135,23 @@ func TestPullSelectsHostPlatform(t *testing.T) {
 	}
 }
 
+func TestPullRejectsALayerWithTheWrongDigest(t *testing.T) {
+	t.Parallel()
+
+	reg := newRegistry(t)
+	good := layer(t, file("a", "good"))
+	ref := reg.push(t, "app", hostImage(t, good))
+	reg.swap(t, good, layer(t, file("a", "evil")))
+	c, dir := openCache(t)
+
+	_, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
+	if err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("Pull error = %v, want a digest mismatch", err)
+	}
+
+	assertNoCacheEntry(t, dir)
+}
+
 func TestPullWithoutHostPlatform(t *testing.T) {
 	t.Parallel()
 

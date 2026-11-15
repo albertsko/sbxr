@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -124,6 +125,8 @@ type testRegistry struct {
 	srv   *httptest.Server
 	mu    sync.Mutex
 	blobs int
+	// swapped serves other content for a blob digest, chunked and without Content-Length, like a tampering mirror.
+	swapped map[string][]byte
 }
 
 func newRegistry(t *testing.T) *testRegistry {
@@ -135,7 +138,16 @@ func newRegistry(t *testing.T) *testRegistry {
 		if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/blobs/") {
 			r.mu.Lock()
 			r.blobs++
+			body, swap := r.swapped[path.Base(req.URL.Path)]
 			r.mu.Unlock()
+
+			if swap {
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				_, _ = w.Write(body)
+
+				return
+			}
 		}
 
 		h.ServeHTTP(w, req)
@@ -169,6 +181,36 @@ func (r *testRegistry) pushIndex(t *testing.T, repo string, idx v1.ImageIndex) s
 	}
 
 	return ref
+}
+
+// swap makes the registry serve the compressed content of with for the blob of layer.
+func (r *testRegistry) swap(t *testing.T, layer, with v1.Layer) {
+	t.Helper()
+
+	digest, err := layer.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := with.Compressed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.swapped == nil {
+		r.swapped = map[string][]byte{}
+	}
+
+	r.swapped[digest.String()] = body
 }
 
 func (r *testRegistry) blobGets() int {

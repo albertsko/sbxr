@@ -144,13 +144,14 @@ func (l layerApplier) apply(layer v1.Layer, count func(int)) error {
 	}
 	defer func() { _ = rc.Close() }()
 
-	tr := tar.NewReader(countingReader{r: rc, count: count})
+	r := countingReader{r: rc, count: count}
+	tr := tar.NewReader(r)
 	written := map[string]bool{}
 
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			return drain(r, rc)
 		}
 
 		if err != nil {
@@ -201,6 +202,20 @@ func (l layerApplier) apply(layer v1.Layer, count func(int)) error {
 			return fmt.Errorf("unpack %q: %w", hdr.Name, err)
 		}
 	}
+}
+
+// drain reads the layer past the tar end marker to its end, because the layer digest is checked only there.
+func drain(r io.Reader, rc io.Closer) error {
+	_, err := io.Copy(io.Discard, r)
+	if err == nil {
+		err = rc.Close()
+	}
+
+	if err != nil {
+		return fmt.Errorf("verify layer: %w", err)
+	}
+
+	return nil
 }
 
 // entry writes one tar entry, which replaces any existing entry except a directory over a directory.
