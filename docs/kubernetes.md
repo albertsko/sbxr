@@ -42,7 +42,7 @@ The DaemonSet runs on every node. On each node, it:
 1. Detects the distribution from its active systemd units.
 2. Runs preflight: `/dev/kvm`, glibc, containerd version, main config version, an `imports` entry that covers the drop-in directory, the Linux version, `/dev/net/tun`, and the `kubelet` id range. It reserves the `sbxr` id range in `/etc/subuid` and `/etc/subgid`.
 3. On failure, changes nothing and writes the reason to the node annotation `sbxr.dev/preflight`. It never edits a main containerd config.
-4. Copies the bundle to `/opt/sbxr.new`, checks every file against its SHA-256, swaps it in, moves the previous bundle to `/opt/sbxr.old/<time>` (see "Upgrade"), and links the shim to `/usr/local/bin/containerd-shim-sbxr-v1`, because containerd finds a sandboxer shim only by its name. Then it writes the drop-in `sbxr.toml` atomically, under a host lock, and restarts the containerd unit only when the drop-in changed.
+4. Copies the bundle to a new directory below `/opt/sbxr.old`, checks every file against its SHA-256, and swaps it with `/opt/sbxr`, so the previous bundle stays in `/opt/sbxr.old` (see "Upgrade"), and links the shim to `/usr/local/bin/containerd-shim-sbxr-v1`, because containerd finds a sandboxer shim only by its name. Then it writes the drop-in `sbxr.toml` atomically, under a host lock, and restarts the containerd unit only when the drop-in changed.
 5. Waits until the unit is active and the kubelet posts a node status, after the restart, that lists runtime handler `sbxr`. Then it sets the label `sbxr.dev/ready=true`. If the restart or this check fails, it restores the previous drop-in (or removes it) and restarts containerd again.
 
 Read the result of a node:
@@ -92,7 +92,7 @@ spec:
 
 Apply the `sbxr-install.yaml` of the new release and wait for the rollout as in "Install". Running pods need no drain: they keep working, with `kubectl exec`, exec probes, and graceful stop.
 
-The installer moves the previous bundle to `/opt/sbxr.old/<time>` instead of removing it. A running phase 2 VM keeps its guest root and its agent's `crun` there, and older shims and phase 1 VMs keep their binaries and libraries. Each install, and uninstall, removes the retired bundles that no process uses any more, so a retired bundle goes at the first install after the kubelet removed the sandboxes of its last pods, which it does about a minute after their deletion. New pods use the new bundle.
+The installer keeps the previous bundle in `/opt/sbxr.old` instead of removing it. A running phase 2 VM keeps its guest root and its agent's `crun` there, and older shims and phase 1 VMs keep their binaries and libraries. Each install, and uninstall, removes the retired bundles that no process uses any more, so a retired bundle goes at the first install after the kubelet removed the sandboxes of its last pods, which it does about a minute after their deletion. New pods use the new bundle.
 
 ## Upgrade from phase 1
 
