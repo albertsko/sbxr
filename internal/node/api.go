@@ -57,7 +57,7 @@ func InCluster(name string) (API, error) {
 
 	return &client{
 		url:  "https://" + host + "/api/v1/nodes/" + name,
-		http: &http.Client{Transport: transport, Timeout: 30 * time.Second}, //nolint:exhaustruct_v5 // Defaults for the rest.
+		http: &http.Client{Transport: transport, Timeout: 30 * time.Second},
 	}, nil
 }
 
