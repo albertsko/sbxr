@@ -43,6 +43,7 @@ func Main(ctx context.Context, args []string, log *slog.Logger) int {
 		// With node leases, the kubelet posts an unchanged node status only every 5 minutes.
 		Timeout:        6 * time.Minute,
 		Log:            log,
+		Proc:           "/proc",
 		afterSubidRead: nil,
 	}
 

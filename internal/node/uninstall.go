@@ -38,8 +38,17 @@ func (in *Installer) Uninstall(ctx context.Context) error {
 		return in.fail(ctx, fmt.Errorf("%d sbxr containers still exist (%s); delete the sbxr pods on this node", len(containers), strings.Join(containers, ", ")))
 	}
 
+	kept, err := removeRetired(in.HostRoot+RetiredRoot, in.HostRoot, in.Proc)
+	if err != nil {
+		return in.fail(ctx, err)
+	}
+
+	if name, pid, ok := anyRetired(kept); ok {
+		return in.fail(ctx, fmt.Errorf("process %d still uses the retired bundle %s/%s; delete the sbxr pods on this node", pid, RetiredRoot, name))
+	}
+
 	// Keep verifyAfter: the kubelet may still post the handler of the removed drop-in, and a reinstall must not trust it.
-	err = errors.Join(
+	err = errors.Join(os.RemoveAll(in.HostRoot+RetiredRoot),
 		os.RemoveAll(in.HostRoot+Prefix), os.RemoveAll(in.HostRoot+Prefix+".new"),
 		os.RemoveAll(in.HostRoot+filepath.Dir(RuntimeRoot)), unlinkShim(in.HostRoot+ShimLink), in.releaseIDs(),
 	)

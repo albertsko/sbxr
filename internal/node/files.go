@@ -144,8 +144,13 @@ const sumsFile = "SHA256SUMS"
 
 // installBundle installs the bundle at src to dst, unless dst already has the same SHA256SUMS.
 // It copies the bundle to dst.new, checks every file against SHA256SUMS, and then exchanges dst.new and dst atomically.
-// A failure leaves dst unchanged. Running VMs keep their open files after the exchange.
-func installBundle(src, dst string) error {
+// A failure leaves dst unchanged.
+//
+// The previous bundle moves to a new directory below retired instead of going away. A running phase 2 VM holds its guest
+// root by a descriptor that follows the rename (libkrun's virtio-fs opens the root with O_PATH and looks up every path
+// relative to it), and its agent still runs crun from that root for each exec, probe, kill, and delete. Old shims and
+// phase 1 VMs keep their binaries and libraries there too. removeRetired deletes a retired bundle once no process uses it.
+func installBundle(src, dst, retired string) error {
 	staged := dst + ".new"
 
 	err := os.RemoveAll(staged)
@@ -169,23 +174,119 @@ func installBundle(src, dst string) error {
 	}
 
 	_, err = os.Stat(dst)
-	if err == nil {
-		// staged now holds the previous bundle.
-		err = exchange(staged, dst)
-	} else {
+	if err != nil {
 		err = os.Rename(staged, dst)
+		if err != nil {
+			return errors.Join(fmt.Errorf("install bundle: %w", err), os.RemoveAll(staged))
+		}
+
+		return syncDir(filepath.Dir(dst))
 	}
 
+	err = exchange(staged, dst)
 	if err != nil {
 		return errors.Join(fmt.Errorf("install bundle: %w", err), os.RemoveAll(staged))
 	}
 
-	err = errors.Join(syncDir(filepath.Dir(dst)), os.RemoveAll(staged))
+	// staged now holds the previous bundle.
+	err = os.MkdirAll(retired, 0o755) //nolint:gosec // Like /opt/sbxr.
+	if err == nil {
+		err = os.Rename(staged, filepath.Join(retired, time.Now().UTC().Format("20060102T150405.000000000")))
+	}
+
+	err = errors.Join(err, syncDir(filepath.Dir(dst)), syncDir(retired))
 	if err != nil {
-		return fmt.Errorf("install bundle: %w", err)
+		return fmt.Errorf("install bundle: retire the previous bundle: %w", err)
 	}
 
 	return nil
+}
+
+// removeRetired deletes every retired bundle below retired that no process uses, and returns the bundles that stay,
+// each with a process that uses it. hostRoot is where the host file system is mounted, and proc is the host's /proc.
+func removeRetired(retired, hostRoot, proc string) (map[string]int, error) {
+	kept := map[string]int{}
+
+	entries, err := os.ReadDir(retired)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && len(entries) == 0) {
+		return kept, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("list retired bundles: %w", err)
+	}
+
+	// /proc shows paths from the reader's root. The installer reads the host's files below hostRoot, so a VM's file
+	// can show either way, depending on whether the host root is visible as such.
+	users := retiredUsers(proc, retired, strings.TrimPrefix(retired, hostRoot))
+
+	var errs []error
+
+	for _, e := range entries {
+		if pid, ok := users[e.Name()]; ok {
+			kept[e.Name()] = pid
+
+			continue
+		}
+
+		errs = append(errs, os.RemoveAll(filepath.Join(retired, e.Name())))
+	}
+
+	return kept, errors.Join(errs...)
+}
+
+// retiredUsers scans the processes below proc for files below one of the retired directories: their executable,
+// working directory, root, open files, and mapped files. Paths there follow renames, so a moved bundle shows its new
+// path. It returns one pid for each retired bundle in use.
+func retiredUsers(proc string, retired ...string) map[string]int {
+	users := map[string]int{}
+
+	note := func(pid int, path string) {
+		for _, dir := range retired {
+			if rest, ok := strings.CutPrefix(path, dir+"/"); ok {
+				name, _, _ := strings.Cut(rest, "/")
+				users[name] = pid
+			}
+		}
+	}
+
+	pids, _ := os.ReadDir(proc)
+
+	for _, p := range pids {
+		pid, err := strconv.Atoi(p.Name())
+		if err != nil {
+			continue
+		}
+
+		dir := filepath.Join(proc, p.Name())
+
+		for _, link := range []string{"exe", "cwd", "root"} {
+			if target, err := os.Readlink(filepath.Join(dir, link)); err == nil {
+				note(pid, target)
+			}
+		}
+
+		fds, _ := os.ReadDir(filepath.Join(dir, "fd"))
+		for _, fd := range fds {
+			if target, err := os.Readlink(filepath.Join(dir, "fd", fd.Name())); err == nil {
+				note(pid, target)
+			}
+		}
+
+		maps, err := os.ReadFile(filepath.Join(dir, "maps"))
+		if err != nil {
+			continue
+		}
+
+		for line := range strings.Lines(string(maps)) {
+			// The path is the sixth field. It may contain spaces, and it ends in " (deleted)" for removed files.
+			if f := strings.Fields(line); len(f) >= 6 {
+				note(pid, strings.Join(f[5:], " "))
+			}
+		}
+	}
+
+	return users
 }
 
 // stageBundle copies src to dst and fails unless every file matches SHA256SUMS and every listed file exists.
@@ -332,4 +433,14 @@ func unlinkShim(link string) error {
 	}
 
 	return nil
+}
+
+// anyRetired returns one of the kept retired bundles, the first by name.
+func anyRetired(kept map[string]int) (string, int, bool) {
+	names := slices.Sorted(maps.Keys(kept))
+	if len(names) == 0 {
+		return "", 0, false
+	}
+
+	return names[0], kept[names[0]], true
 }
