@@ -4,9 +4,10 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
+tasks/deps
 hk validate --deny-warnings
 tasks/fmt --check
 tasks/lint
-tasks/test
+tasks/test/_default
 tasks/build
 tasks/release-check

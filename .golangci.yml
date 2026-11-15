@@ -3,6 +3,9 @@
 
 version: "2"
 
+run:
+  build-tags: [hv, kind]
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
@@ -14,6 +17,7 @@ linters:
     # Bugs and correctness.
     - bidichk
     - bodyclose
+    - depguard
     - durationcheck
     - errcheck
     - errorlint
@@ -25,6 +29,7 @@ linters:
     - gocritic
     - govet
     - ineffassign
+    - loggercheck
     - makezero
     - nilerr
     - nilnesserr
@@ -75,6 +80,29 @@ linters:
     - wsl_v5
 
   settings:
+    depguard:
+      rules:
+        core:
+          files:
+            - "**/internal/**"
+            - "!**/internal/cli/**"
+            - "!**/internal/netstack/**"
+            - "!**/internal/scenario/**"
+            - "!**/internal/vm/fake/**"
+          deny:
+            - pkg: github.com/spf13/cobra
+              desc: only internal/cli may use the CLI framework
+            - pkg: charm.land
+              desc: only internal/cli may use charm libraries
+            - pkg: github.com/charmbracelet
+              desc: only internal/cli may use charm libraries
+            - pkg: github.com/containers/gvisor-tap-vsock
+              desc: only internal/netstack and internal/vm/fake may use the network stack
+            - pkg: gvisor.dev
+              desc: only internal/netstack and internal/vm/fake may use the network stack
+            - pkg: k8s.io
+              desc: the core has no Kubernetes code
+
     dupl:
       threshold: 200
 
@@ -86,6 +114,14 @@ linters:
 
     exhaustruct_v5:
       allow-empty: true
+      ignore-patterns:
+        - '.+/cobra\.Command'
+        - 'charm\.land/log/v2\.Options'
+      # Types whose fields are optional by design.
+      optional-patterns:
+        - '.+/internal/run\.ImageConfig'
+        - '.+/internal/scenario\.(Scenario|Workload)'
+        - '.+/internal/spec\.Error'
 
     gocritic:
       enabled-tags:
@@ -120,10 +156,15 @@ linters:
       - path: _test\.go$
         linters:
           - dupl
+          - goconst
           - errcheck
           - exhaustruct_v5
           - gocognit
           - gosec
+      # Scenario tables repeat workload words such as echo.
+      - path: internal/scenario/scenarios\.go$
+        linters:
+          - goconst
 
 formatters:
   enable:
