@@ -302,8 +302,9 @@ A step or pull request is done when:
 - **kind resets `/dev/kvm` permissions** when it creates a cluster. Run `sudo chmod 666 /dev/kvm` after `kind create cluster`.
 - **The spike built the phase 1 node bundle inside the kind node image** (`kindest/node:v1.37.0`, Debian with glibc 2.41). Such a build does not run on nodes with an older glibc. The product bundle needs an old glibc baseline (assumption A2). `crun` also needs `libjson-c`, which the kind node image lacks.
 - **Kubernetes rewrites `$$` to `$`** in pod commands. Write `$$$$` in test pod specs.
-- **fang queries the terminal color on every help and error render.** The workaround in PRD "Further Notes" keeps workload output safe only if stdout is restored before any workload runs. Set `cobra.EnableTraverseRunHooks = true`, so that a subcommand hook cannot skip the restore.
+- **fang queries the terminal color on every help and error render.** The workaround in PRD "Further Notes" keeps workload output safe only if stdout is restored before any workload runs. Restore it inside the `run` command, not in a persistent hook, because hooks also run for `sbxr help` and would bring the color query back.
 - **The race detector needs cgo.** The release binary builds with cgo off. Build the binary that the `cli` target tests with `CGO_ENABLED=0`, the same as the release.
+- **The `-t` terminal is not the VM process's controlling terminal.** When a controlling process exits, the kernel hangs the terminal up, and macOS then drops unread output. Without `-i`, the VM process's stdin is empty. Check in S3 that `libkrun` sets up its console from stdout in that case.
 - **CI shuffles and parallelizes tests.** Publish tests must bind port 0. Cleanup checks must look only at the test's own run directory and processes, not at every process on the host.
 
 ## Evidence
