@@ -34,6 +34,7 @@ func guestRoot(t *testing.T) string {
 		"root-link":     "/",
 		"data/up":       "..",
 		"data/file":     "",
+		"edge":          "/data/file/../sub",
 	}
 	for name, target := range links {
 		if target == "" {
@@ -105,6 +106,9 @@ func TestMountPointRejects(t *testing.T) {
 		{in: "/data/up", want: "resolves to the guest root"},
 		{in: "/loop/x", err: syscall.ELOOP},
 		{in: "/data/file/x", err: syscall.ENOTDIR},
+		{in: "/data/file", err: syscall.ENOTDIR},
+		{in: "/data/file/../sub", err: syscall.ENOTDIR},
+		{in: "/edge", err: syscall.ENOTDIR},
 	}
 
 	for _, tt := range tests {

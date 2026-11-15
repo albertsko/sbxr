@@ -31,7 +31,8 @@ func Reserved(p string) string {
 }
 
 // MountPoint walks the guest path p inside root, the directory that holds the guest root, like the kernel resolves it.
-// It follows each symlink and creates each missing component as a directory, so `..` and symlinks after it apply to real directories.
+// It follows each symlink, rejects a component that is not a directory, and creates each missing component as a directory,
+// so `..` and symlinks after it apply to real directories.
 // It returns the resolved guest path, which the mount must use. It fails when the result is the guest root or reserved,
 // and it never creates a directory in a reserved path.
 func MountPoint(root, p string) (string, error) {
@@ -55,7 +56,7 @@ func MountPoint(root, p string) (string, error) {
 		next := path.Join(cur, c)
 		host := filepath.Join(root, next)
 
-		target, err := os.Readlink(host)
+		info, err := os.Lstat(host)
 
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -69,11 +70,14 @@ func MountPoint(root, p string) (string, error) {
 			}
 
 			cur = next
-		case errors.Is(err, syscall.EINVAL):
-			cur = next // Not a symlink.
 		case err != nil:
 			return "", err //nolint:wrapcheck // The error names the path.
-		default:
+		case info.Mode()&fs.ModeSymlink != 0:
+			target, err := os.Readlink(host)
+			if err != nil {
+				return "", err //nolint:wrapcheck // The error names the path.
+			}
+
 			links++
 			if links > maxSymlinks {
 				return "", fmt.Errorf("%s: %w", p, syscall.ELOOP)
@@ -84,6 +88,11 @@ func MountPoint(root, p string) (string, error) {
 			}
 
 			rest = append(strings.Split(target, "/"), rest...)
+		case !info.IsDir():
+			// Like the kernel, a path cannot go through a file, not even with `..`. A mount point must be a directory too.
+			return "", &fs.PathError{Op: "mount point", Path: next, Err: syscall.ENOTDIR}
+		default:
+			cur = next
 		}
 	}
 
