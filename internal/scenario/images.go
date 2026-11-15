@@ -122,7 +122,9 @@ func testLayer() (v1.Layer, error) {
 	headers := []*tar.Header{
 		{Name: "data/", Typeflag: tar.TypeDir, Mode: 0o755},
 		{Name: strings.TrimPrefix(SetuidFile, "/"), Typeflag: tar.TypeReg, Mode: 0o4755, Gid: 42, Size: 1},
-		{Name: strings.TrimPrefix(LinkFile, "/"), Typeflag: tar.TypeLink, Linkname: strings.TrimPrefix(SetuidFile, "/")},
+		// Like GNU tar, the hardlink header repeats the owner and mode of its target.
+		// containerd applies them to the shared inode, so headers without them reset the target.
+		{Name: strings.TrimPrefix(LinkFile, "/"), Typeflag: tar.TypeLink, Linkname: strings.TrimPrefix(SetuidFile, "/"), Mode: 0o4755, Gid: 42},
 		{Name: "data/hijack.json", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(hijack))},
 		{Name: ".krun_config.json", Typeflag: tar.TypeSymlink, Linkname: "/data/hijack.json", Mode: 0o777},
 	}
