@@ -78,8 +78,8 @@ type Runner struct {
 	Checks []preflight.Check
 	// Network starts the network of a run with --net.
 	Network func(ctx context.Context, cfg NetworkConfig) (Network, error)
-	// MountHelper returns the guest mount helper (see internal/guestmount). The runner calls it to fail early when a build cannot mount volumes.
-	MountHelper func() ([]byte, error)
+	// MountHelper reports whether this build has the guest mount helper for volumes (see internal/guestmount).
+	MountHelper func() error
 	// Isolate, when set, runs the rest of the run in another process and returns its exit code.
 	// On Linux, it runs the same command again inside a user namespace.
 	Isolate func(stdin, stdout, stderr *os.File) (int, error)

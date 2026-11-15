@@ -27,7 +27,7 @@ func backend() cli.Backend {
 		},
 		Isolate:     nil,
 		VMEnv:       nil,
-		MountHelper: guestmount.Binary,
+		MountHelper: guestmount.Check,
 	}
 
 	// Without a library directory the libkrun check fails first, so an empty environment is fine.

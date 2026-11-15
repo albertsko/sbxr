@@ -28,7 +28,7 @@ func (r *Runner) checkVolumes(volumes []spec.Volume) error {
 		}
 	}
 
-	_, err := r.MountHelper()
+	err := r.MountHelper()
 	if errors.Is(err, guestmount.ErrMissing) {
 		return &spec.Error{Source: "-v", Problem: err.Error(), Fix: "build sbxr with mise run build"}
 	}
