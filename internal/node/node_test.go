@@ -924,3 +924,33 @@ func TestInstallPhase2(t *testing.T) {
 		t.Errorf("subuid after uninstall = %q", got)
 	}
 }
+
+// unknownRuntimeAPI reports the runtime version as unknown for the first reads, as the kubelet does after a containerd restart.
+type unknownRuntimeAPI struct {
+	*fakeNode
+}
+
+func (a unknownRuntimeAPI) Node(ctx context.Context) (Node, error) {
+	n, err := a.fakeNode.Node(ctx)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.nodeReads <= 2 {
+		n.RuntimeVersion = "containerd://Unknown"
+	}
+
+	return n, err
+}
+
+func TestInstallWaitsForTheRuntimeVersion(t *testing.T) {
+	t.Parallel()
+
+	f, in := newFakeNode(t)
+	in.API = unknownRuntimeAPI{f}
+
+	err := in.Install(t.Context())
+	if err != nil || f.labels[ReadyLabel] != "true" {
+		t.Errorf("error %v, labels %v, annotations %v; want the node ready", err, f.labels, f.annotations)
+	}
+}

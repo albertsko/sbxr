@@ -381,9 +381,9 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *su
 		return distro{}, "", nil, nil, err
 	}
 
-	n, err := in.API.Node(ctx)
+	n, err := in.runtimeNode(ctx)
 	if err != nil {
-		return distro{}, "", nil, nil, fmt.Errorf("read node: %w", err)
+		return distro{}, "", nil, nil, err
 	}
 
 	config, err := os.ReadFile(in.HostRoot + d.config)
@@ -434,6 +434,29 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *su
 	}
 
 	return d, unit, dropIn, &r, nil
+}
+
+// runtimeNode reads the node once the kubelet knows the container runtime version.
+// Right after a containerd restart the kubelet reports "containerd://Unknown", which is no reason to reject the node.
+func (in *Installer) runtimeNode(ctx context.Context) (Node, error) {
+	deadline := time.Now().Add(in.Timeout)
+
+	for {
+		n, err := in.API.Node(ctx)
+		if err != nil {
+			return n, fmt.Errorf("read node: %w", err)
+		}
+
+		if !strings.HasSuffix(n.RuntimeVersion, "://Unknown") || time.Now().After(deadline) {
+			return n, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return n, ctx.Err() //nolint:wrapcheck // The installer stops.
+		case <-time.After(in.Poll):
+		}
+	}
 }
 
 // imported returns the content of every file that the main config imports, in import order, except the sbxr drop-in.
