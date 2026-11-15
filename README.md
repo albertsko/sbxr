@@ -24,8 +24,8 @@ The formula installs `libkrun` from Homebrew and signs `sbxr` with the hyperviso
 Ubuntu 24.04 on x86_64 or arm64 with KVM and [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux). `sbxr doctor` prints the same block when a check fails.
 
 ```sh
-sudo apt-get install -y uidmap
-grep -q "^$USER:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+sudo apt-get update && sudo apt-get install -y uidmap
+for f in /etc/subuid /etc/subgid; do grep -q "^$USER:" "$f" || echo "$USER:$(awk -F: '{e=$2+$3} e>m{m=e} END{print (m<100000)?100000:m}' "$f"):65536" | sudo tee -a "$f" >/dev/null; done
 sudo usermod -aG kvm "$USER"
 brew install libkrun
 curl -fsSL "https://github.com/albertsko/sbxr/releases/latest/download/sbxr_linux_$(dpkg --print-architecture).tar.gz" | tar -xz sbxr

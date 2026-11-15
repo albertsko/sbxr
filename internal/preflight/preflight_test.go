@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,5 +85,83 @@ func TestREADMEHasLinuxSetup(t *testing.T) {
 
 	if !strings.Contains(string(readme), "```sh\n"+preflight.LinuxSetup+"```\n") {
 		t.Errorf("README.md has no sh block equal to preflight.LinuxSetup:\n%s", preflight.LinuxSetup)
+	}
+}
+
+// TestLinuxSetupSubIDs runs the subordinate id line of the setup block against temporary files.
+func TestLinuxSetupSubIDs(t *testing.T) {
+	t.Parallel()
+
+	var line string
+
+	for l := range strings.Lines(preflight.LinuxSetup) {
+		if strings.Contains(l, "/etc/subuid") {
+			line = l
+		}
+	}
+
+	tests := []struct {
+		name                   string
+		subuid, subgid         string
+		wantSubuid, wantSubgid string
+	}{
+		{
+			name:       "empty files",
+			wantSubuid: "alice:100000:65536\n",
+			wantSubgid: "alice:100000:65536\n",
+		},
+		{
+			name:       "after the highest range",
+			subuid:     "bob:100000:65536\ncarol:300000:1000\ndan:200000:65536\n",
+			subgid:     "bob:1000:10\n",
+			wantSubuid: "bob:100000:65536\ncarol:300000:1000\ndan:200000:65536\nalice:301000:65536\n",
+			wantSubgid: "bob:1000:10\nalice:100000:65536\n",
+		},
+		{
+			name:       "only the missing file",
+			subuid:     "alice:100000:65536\n",
+			subgid:     "bob:100000:65536\n",
+			wantSubuid: "alice:100000:65536\n",
+			wantSubgid: "bob:100000:65536\nalice:165536:65536\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			subuid := filepath.Join(dir, "subuid")
+			subgid := filepath.Join(dir, "subgid")
+
+			for path, data := range map[string]string{subuid: tt.subuid, subgid: tt.subgid} {
+				err := os.WriteFile(path, []byte(data), 0o600)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			script := strings.NewReplacer("/etc/subuid /etc/subgid", subuid+" "+subgid, "sudo tee", "tee").Replace(line)
+
+			cmd := exec.CommandContext(t.Context(), "bash", "-euo", "pipefail", "-c", script)
+
+			cmd.Env = append(os.Environ(), "USER=alice")
+
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s: %v\n%s", script, err, out)
+			}
+
+			for path, want := range map[string]string{subuid: tt.wantSubuid, subgid: tt.wantSubgid} {
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if string(got) != want {
+					t.Errorf("%s = %q, want %q", filepath.Base(path), got, want)
+				}
+			}
+		})
 	}
 }
