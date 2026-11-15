@@ -17,8 +17,8 @@ import (
 
 const (
 	hypervisorDetail = "/dev/kvm is usable"
-	libkrunInstall   = "install libkrun 1.19.8 or later built with NET=1 and libkrunfw 5.6.4 or later into /usr/local/lib"
-	krunfwInstall    = "install libkrunfw 5.6.4 or later into /usr/local/lib"
+	libkrunInstall   = "brew install libkrun, or install libkrun 1.19.8 or later built with NET=1 and libkrunfw 5.6.4 or later into /usr/local/lib"
+	krunfwInstall    = "brew upgrade libkrunfw, or install libkrunfw 5.6.4 or later into /usr/local/lib"
 )
 
 var platformChecks = []Check{Userns}

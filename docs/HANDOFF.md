@@ -31,6 +31,7 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - On Linux, `sbxr run` and `sbxr prune` run again inside a user namespace (`internal/userns`) after the checks. See PRD "Process model".
 - The fake build (`-tags sbxrfake`) replaces only the hypervisor and the doctor checks. It pulls images like the release build and keeps ownership in xattrs on every platform, so it needs no user namespace.
 - Not built yet: `--net`, `-p`, and `-v` (S5).
+- Distribution (S6): goreleaser builds the release archives on `v*` tags. The formula `albertsko/homebrew-tap/Formula/sbxr.rb` installs `sbxr_darwin_arm64` and signs it, and has a placeholder version until the first release. The Linux setup block lives in `internal/preflight/setup.go` and the README, and a test keeps them equal. The `install` workflow installs a goreleaser snapshot on fresh `ubuntu-latest` and `macos-15` runners (PRD "CI contract").
 - Packages:
   - `internal/spec`: run input validation, no I/O.
   - `internal/krunconfig`: the config writer.
@@ -354,5 +355,6 @@ git show archive/spike-gvnet:.github/workflows/gvnet.yml
 | Phase 1 DNS mitigation                                                                  | [43426355714](https://github.com/albertsko/sbxr/actions/runs/43426355714) | `archive/spike-k8s-dns`         |
 | Egress guard and connection caps                                                        | [43593357284](https://github.com/albertsko/sbxr/actions/runs/43593357284) | `archive/spike-netstack-bypass` |
 | Phase 1 node bundle, drop-in directories, MutatingAdmissionPolicy versions (A2, A4, A8) | [43704817204](https://github.com/albertsko/sbxr/actions/runs/43704817204) | `archive/spike-node-bundle`     |
+| Fresh install on Ubuntu and macOS, tap trust (A5)                                       | [43722622849](https://github.com/albertsko/sbxr/actions/runs/43722622849) | none                            |
 
 GitHub keeps Actions logs for a limited time (90 days by default), so the run links expire. The tags keep the code. Copy any log output you need into an issue or the repository before the links expire.

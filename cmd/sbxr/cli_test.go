@@ -25,6 +25,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"golang.org/x/sys/unix"
 
+	"github.com/albertsko/sbxr/internal/preflight"
 	"github.com/albertsko/sbxr/internal/scenario"
 	"github.com/albertsko/sbxr/internal/vm/fake"
 )
@@ -432,6 +433,31 @@ func TestPipedOutput(t *testing.T) {
 
 			if res.stderr != tt.wantStderr {
 				t.Errorf("stderr = %q, want %q", res.stderr, tt.wantStderr)
+			}
+		})
+	}
+}
+
+// TestDoctorSetupBlock checks that a failed doctor report ends with the Linux setup block on Linux only.
+func TestDoctorSetupBlock(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		fail string
+		want bool
+	}{
+		{name: "failed check", fail: "hypervisor", want: runtime.GOOS == "linux"},
+		{name: "all checks pass", fail: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			res := sbxr(t, env(t, "SBXR_FAKE_PREFLIGHT_FAIL="+tt.fail), "doctor")
+			if got := strings.HasSuffix(res.stdout, "\n"+preflight.LinuxSetup); got != tt.want {
+				t.Errorf("stdout %q ends with the setup block: %v, want %v", res.stdout, got, tt.want)
 			}
 		})
 	}

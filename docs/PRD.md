@@ -348,6 +348,8 @@ Output streams:
 
 When the `userns` check fails and the AppArmor restriction is on, `sbxr doctor` checks the running binary's resolved path. For `/usr/bin/sbxr` or `/usr/local/bin/sbxr` it prints the profile install commands, for example `sbxr doctor apparmor-profile | sudo tee /etc/apparmor.d/sbxr && sudo apparmor_parser -r /etc/apparmor.d/sbxr`. For any other path it tells the user to install to `/usr/local/bin`.
 
+On Linux, a text report with a failed check ends with the setup block from "Distribution".
+
 `sbxr doctor --json` output shape:
 
 ```json
@@ -486,6 +488,8 @@ CI contract:
 | hv             | `ubuntu-latest`, KVM enabled, AppArmor profile installed | `cli` target, fuzz corpus through the real init, `SBXR_REQUIRE_HV=1`                                   | 10 min |
 | kind           | `ubuntu-latest`, KVM enabled                             | `k8s-p1` target                                                                                        | 10 min |
 | fuzz (nightly) | `ubuntu-latest`                                          | long fuzz runs                                                                                         | 20 min |
+| install-linux  | `ubuntu-latest`                                          | README setup block on a goreleaser snapshot, `doctor` passes after a new login                         | 6 min  |
+| install-macos  | `macos-15`                                               | tap formula on a goreleaser snapshot, `doctor` fails only `hypervisor`                                 | 6 min  |
 
 - KVM on `ubuntu-latest` needs a udev rule that opens `/dev/kvm` to all users. kind resets `/dev/kvm` permissions when it creates a cluster, so the kind job sets them again after creation.
 - The hv job installs `sbxr` to `/usr/local/bin` and the AppArmor profile, because the runner has the user namespace restriction on.
@@ -496,7 +500,10 @@ CI contract:
 
 - macOS: a hand-written Homebrew formula in the tap `albertsko/homebrew-tap`. It depends on `libkrun`, installs the prebuilt release binary, and signs it with the hypervisor entitlement during install. The formula has no bottles, so Homebrew never re-signs the binary.
 - Linux: `libkrun` from Homebrew on Linux, and the `sbxr` release binary installed to `/usr/local/bin`. The README and `sbxr doctor` print one setup block: install `uidmap`, add the user to the `kvm` group, install the binary, install the AppArmor profile.
-- Release archives and checksums come from goreleaser. No goreleaser-generated Homebrew casks.
+- `libkrun` and `libkrunfw` come from `homebrew/core` (since 2026-11-05) on macOS and on Linux. The Linux bottle is built with `NET=1`.
+- `brew install albertsko/tap/sbxr` taps the tap and trusts only the `sbxr` formula, so tap trust adds no step. This verifies assumption A5 (Homebrew 7.0.13, run [43722622849](https://github.com/albertsko/sbxr/actions/runs/43722622849)).
+- Release archives and checksums come from goreleaser: `sbxr_darwin_arm64`, `sbxr_linux_amd64`, and `sbxr_linux_arm64`. The names carry no version, so `releases/latest/download/` URLs stay stable. The archives include `entitlements.plist`. No goreleaser-generated Homebrew casks.
+- After a release, the tap formula gets the new version and checksum by hand. The tap README has the commands.
 - `go install` works for development. `sbxr doctor` prints the signing command (macOS) and the install path rule (Linux).
 - Developer ID signing and notarization come later, when `sbxr` ships outside Homebrew on macOS. Notarization requires hardened runtime, so it needs one of these: the entitlements `cs.disable-library-validation` and `cs.allow-dyld-environment-variables` (tested: the VM boots), `libkrun` and `libkrunfw` signed with the project's own Team ID plus the `DYLD_*` entitlement, or a bundled guest kernel passed to `libkrun` so that `libkrunfw` is not loaded.
 
@@ -539,7 +546,7 @@ CI contract:
 | A2  | One phase 1 node bundle, built on Ubuntu 22.04 with its own libraries, runs on nodes with glibc 2.35 or later. Verified on Ubuntu 22.04 and 24.04, Debian 12, Rocky 9, Amazon Linux 2023, and the kind node. Debian 11 (glibc 2.31) fails | verified   |
 | A3  | One scenario set with capability tags covers all targets without target-specific branches inside scenarios                                                                                                                                | 75%        |
 | A4  | RKE2 imports the `config-v3.toml.d` drop-in directory like k3s. Verified on RKE2 1.34.13 and 1.37.2, with the k3s and k0s paths. Restarting the k3s or RKE2 unit restarts containerd                                                      | verified   |
-| A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install                                                                                                                                                                | 70%        |
+| A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install. Verified: `brew install albertsko/tap/sbxr` needs no extra step on Homebrew 7.0.13                                                                            | verified   |
 | A6  | Overlay edge cases not yet tested (hardlinks across copy-up, renaming lower directories) work over virtio-fs                                                                                                                              | 75%        |
 | A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot                                                                                                     | 75%        |
 | A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available on every Kubernetes version the installer supports. Failed as first written: Kubernetes serves it by default only from 1.36, so the installer requires 1.36     | verified   |
@@ -595,4 +602,5 @@ These questions stay open at handoff. Each one names who decides or what work an
   - Phase 2 TAP networking: the guest owned the pod address with ICMP, TCP, and UDP working, and the VM process ran without capabilities.
   - Phase 1 in kind: VMs ran with the pause container outside, logs, exit codes, probes, Services, port-forward, memory limits, and OOM behaved as listed. SIGTERM did not reach workloads. The `use-vc` mutating policy fixed Go and glibc DNS.
   - Phase 1 installer in kind (Kubernetes 1.37, containerd 2.3): the installer passed preflight, installed the bundle, and labeled the node. The phase 1 acceptance criteria and the `k8s-p1` scenarios passed, and uninstall left nothing behind. A node without the drop-in import stayed unchanged and unlabeled, with the reason in its annotation.
+  - Fresh install (2026-11-15): on `ubuntu-latest`, the README setup block with Homebrew `libkrun` 1.19.8 and a new login made every doctor check pass. The runner's `/dev/kvm` needed only the `kvm` group. On `macos-15` with Homebrew 7.0.13, `brew install albertsko/tap/sbxr` tapped the tap, trusted the formula, installed `libkrun`, and signed `sbxr`. Doctor failed only `hypervisor`.
 - **Council review.** Four independent reviewers (architecture, VMM and security, CLI experience, tests and CI) reviewed the design in three rounds. Their decisions are recorded in this document.
