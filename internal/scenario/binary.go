@@ -157,7 +157,13 @@ func (b *Binary) args(w Workload) []string {
 // classify maps the CLI exit code and stderr to an error class.
 // sbxr failures exit 125 and print a line that starts with "sbxr: <source>".
 func classify(code int, stderr string) ErrorClass {
-	_, sbxrErr, failed := strings.Cut(stderr, "sbxr: ")
+	sbxrErr, failed := "", false
+
+	for line := range strings.Lines(stderr) {
+		if after, ok := strings.CutPrefix(line, "sbxr: "); ok && code == 125 {
+			sbxrErr, failed = after, true
+		}
+	}
 
 	switch {
 	case failed && strings.HasPrefix(sbxrErr, "preflight "):
