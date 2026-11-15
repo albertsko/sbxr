@@ -131,11 +131,12 @@ func sleep(args []string, stdio Stdio) int {
 	return 0
 }
 
-// stty supports only `stty size`, which prints the rows and columns of the stdin terminal.
+// stty supports only `stty size`. It prints the rows and columns of the console, which is stdout here,
+// because the fake console replaces stdin with a pipe.
 func stty(args []string, stdio Stdio) int {
-	f, ok := stdio.In.(*os.File)
+	f, ok := stdio.Out.(*os.File)
 	if len(args) != 1 || args[0] != "size" || !ok {
-		sayln(stdio.Err, "stty: only 'stty size' on a terminal is supported")
+		sayln(stdio.Err, "stty: only 'stty size' is supported")
 
 		return 1
 	}

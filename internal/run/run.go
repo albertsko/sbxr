@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"golang.org/x/term"
+
 	"github.com/albertsko/sbxr/internal/krunconfig"
 	"github.com/albertsko/sbxr/internal/preflight"
 	"github.com/albertsko/sbxr/internal/spec"
@@ -95,6 +97,11 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 
 	r.Log.Debug("run state", "state", "preparing")
 
+	cfg, err := r.workload(s, img)
+	if err != nil {
+		return ExitSetup, err
+	}
+
 	err = os.MkdirAll(r.RunsDir, 0o700)
 	if err != nil {
 		return ExitSetup, fmt.Errorf("create runs directory: %w", err)
@@ -107,7 +114,7 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 
 	defer r.cleanup(dir)
 
-	err = r.prepare(ctx, s, img, dir)
+	err = r.prepare(ctx, s, img, cfg, dir)
 	if err != nil {
 		return ExitSetup, err
 	}
@@ -122,6 +129,10 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 }
 
 func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
+	if s.Interactive && s.TTY && !term.IsTerminal(int(r.Stdin.Fd())) {
+		return &spec.Error{Source: "-t", Problem: "the input device is not a terminal", Fix: "drop -t, or run sbxr from a terminal"}
+	}
+
 	report := preflight.Run(ctx, r.Checks)
 	if failed := report.Failures(); len(failed) > 0 {
 		return &spec.Error{Source: "preflight", Value: failed[0].ID, Problem: failed[0].Detail, Fix: failed[0].Fix}
@@ -138,15 +149,11 @@ func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
 	return nil
 }
 
-func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, dir string) error {
-	rootPath, err := r.Images.NewRoot(ctx, img, dir)
-	if err != nil {
-		return &spec.Error{Source: "image", Value: s.Image, Problem: err.Error()}
-	}
-
+// workload resolves and checks the guest init config before any run state exists.
+func (r *Runner) workload(s spec.Spec, img Image) (krunconfig.Config, error) {
 	cfg, warnings, err := Workload(s, img.Config)
 	if err != nil {
-		return err
+		return krunconfig.Config{}, err
 	}
 
 	for _, w := range warnings {
@@ -155,7 +162,16 @@ func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, dir string
 
 	_, err = krunconfig.Marshal(cfg)
 	if err != nil {
-		return &spec.Error{Source: "workload", Problem: err.Error()}
+		return krunconfig.Config{}, &spec.Error{Source: "workload", Problem: err.Error()}
+	}
+
+	return cfg, nil
+}
+
+func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, cfg krunconfig.Config, dir string) error {
+	rootPath, err := r.Images.NewRoot(ctx, img, dir)
+	if err != nil {
+		return &spec.Error{Source: "image", Value: s.Image, Problem: err.Error()}
 	}
 
 	root, err := os.OpenRoot(rootPath)

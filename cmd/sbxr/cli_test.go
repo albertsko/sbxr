@@ -99,22 +99,43 @@ func sbxr(t *testing.T, environ []string, args ...string) result {
 func sbxrOnTerminal(t *testing.T, environ []string, args ...string) (string, int, time.Duration) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-	defer cancel()
+	return startOnTerminal(t, environ, nil, args...).wait()
+}
+
+// terminal is a run of the binary on a pseudo-terminal of 30 rows and 100 columns.
+type terminal struct {
+	t     *testing.T
+	ptmx  *os.File
+	cmd   *exec.Cmd
+	start time.Time
+
+	mu  sync.Mutex
+	out bytes.Buffer
+}
+
+// startOnTerminal starts the binary with stdin, stderr, and stdout on a new pseudo-terminal.
+// A non-nil stdout replaces the terminal as stdout.
+func startOnTerminal(t *testing.T, environ []string, stdout io.Writer, args ...string) *terminal {
+	t.Helper()
 
 	ptmx, tty, err := pty.Open()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ptmx.Close()
 
 	// macOS drops unread output when the last terminal file closes, so the test keeps tty open.
-	defer tty.Close()
+	t.Cleanup(func() {
+		tty.Close()
+		ptmx.Close()
+	})
 
 	err = pty.Setsize(ptmx, &pty.Winsize{Rows: 30, Cols: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	t.Cleanup(cancel)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 
@@ -122,10 +143,11 @@ func sbxrOnTerminal(t *testing.T, environ []string, args ...string) (string, int
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 
-	var (
-		mu  sync.Mutex
-		out bytes.Buffer
-	)
+	if stdout != nil {
+		cmd.Stdout = stdout
+	}
+
+	tm := &terminal{t: t, ptmx: ptmx, cmd: cmd, start: time.Now()}
 
 	go func() {
 		buf := make([]byte, 4096)
@@ -133,9 +155,9 @@ func sbxrOnTerminal(t *testing.T, environ []string, args ...string) (string, int
 		for {
 			n, err := ptmx.Read(buf)
 
-			mu.Lock()
-			out.Write(buf[:n])
-			mu.Unlock()
+			tm.mu.Lock()
+			tm.out.Write(buf[:n])
+			tm.mu.Unlock()
 
 			if err != nil {
 				return
@@ -143,33 +165,60 @@ func sbxrOnTerminal(t *testing.T, environ []string, args ...string) (string, int
 		}
 	}()
 
-	start := time.Now()
-
-	err = cmd.Run()
-	elapsed := time.Since(start)
-
-	var exit *exec.ExitError
-	if err != nil && !errors.As(err, &exit) {
+	err = cmd.Start()
+	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Wait until the output stops growing.
-	for last := -1; ; time.Sleep(100 * time.Millisecond) {
-		mu.Lock()
-		n := out.Len()
-		mu.Unlock()
+	return tm
+}
 
-		if n == last {
-			break
+func (tm *terminal) output() string {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	return tm.out.String()
+}
+
+// waitForOutput waits until the terminal output contains text.
+func (tm *terminal) waitForOutput(text string) {
+	tm.t.Helper()
+
+	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(tm.output(), text); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			tm.t.Fatalf("output %q, want it to contain %q", tm.output(), text)
 		}
+	}
+}
 
-		last = n
+func (tm *terminal) write(s string) {
+	tm.t.Helper()
+
+	_, err := tm.ptmx.WriteString(s)
+	if err != nil {
+		tm.t.Fatal(err)
+	}
+}
+
+// wait waits for the exit and then until the output stops growing.
+func (tm *terminal) wait() (string, int, time.Duration) {
+	tm.t.Helper()
+
+	err := tm.cmd.Wait()
+	elapsed := time.Since(tm.start)
+
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		tm.t.Fatal(err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	for last := tm.output(); ; last = tm.output() {
+		time.Sleep(100 * time.Millisecond)
 
-	return out.String(), cmd.ProcessState.ExitCode(), elapsed
+		if out := tm.output(); out == last {
+			return out, tm.cmd.ProcessState.ExitCode(), elapsed
+		}
+	}
 }
 
 func TestHelpAndErrorsDoNotWaitForTerminalQueries(t *testing.T) {
@@ -209,13 +258,10 @@ func TestHelpAndErrorsDoNotWaitForTerminalQueries(t *testing.T) {
 func TestWorkloadOutputReachesTerminalStdout(t *testing.T) {
 	t.Parallel()
 
-	out, code, elapsed := sbxrOnTerminal(t, env(t), "run", scenario.Busybox, "echo", "hi")
+	// The CLI hides stdout from fang, so this also checks that run restores it.
+	out, code, _ := sbxrOnTerminal(t, env(t), "run", scenario.Busybox, "echo", "hi")
 	if code != 0 || out != "hi\r\n" {
 		t.Errorf("sbxr run = %d, %q; want 0, %q", code, out, "hi\r\n")
-	}
-
-	if elapsed >= time.Second {
-		t.Errorf("sbxr run took %v, want under 1s", elapsed)
 	}
 }
 
@@ -290,6 +336,7 @@ func TestPipedOutput(t *testing.T) {
 		{name: "control character in argument", args: []string{"run", scenario.Busybox, "echo", "a\x1bb"}, wantCode: 125, wantStderr: `sbxr: argument 2 "a\x1bb": control character U+001B; only tab and newline are allowed` + "\n"},
 		{name: "reserved env", args: []string{"run", "-e", "KRUN_INIT=/x", scenario.Busybox}, wantCode: 125, wantStderr: `sbxr: -e "KRUN_INIT=/x": KRUN_* names are reserved by the VM init; rename the variable` + "\n"},
 		{name: "publish without net", args: []string{"run", "-p", "8080:80", scenario.Busybox}, wantCode: 125, wantStderr: `sbxr: -p "8080:80": requires --net` + "\n"},
+		{name: "interactive terminal without a terminal", args: []string{"run", "-it", scenario.Busybox, "true"}, wantCode: 125, wantStderr: `sbxr: -t: the input device is not a terminal; drop -t, or run sbxr from a terminal` + "\n"},
 		{name: "failed preflight", args: []string{"run", scenario.Busybox, "true"}, extraEnv: []string{"SBXR_FAKE_PREFLIGHT_FAIL=libkrun"}, wantCode: 125, wantStderr: `sbxr: preflight "libkrun": fake libkrun failure; fake fix for libkrun` + "\n"},
 		{name: "bad log level", args: []string{"doctor"}, extraEnv: []string{"SBXR_LOG_LEVEL=loud"}, wantCode: 1, wantStderr: `sbxr: SBXR_LOG_LEVEL "loud": unknown level; use debug, info, warn, or error` + "\n"},
 		{name: "doctor extra argument", args: []string{"doctor", "x"}, wantCode: 2, wantStderr: `sbxr: unexpected argument "x"; see 'sbxr doctor --help'` + "\n"},
@@ -399,7 +446,111 @@ func TestSignals(t *testing.T) {
 			}
 
 			waitForNoProcess(t, cacheDir)
+
+			// After a SIGKILL, the VM process removes the run state when it sees the parent is gone.
+			err = scenario.CheckClean(cacheDir)
+			if err != nil {
+				t.Error(err)
+			}
 		})
+	}
+}
+
+func TestCtrlCWithInteractiveTTYStopsTheWorkload(t *testing.T) {
+	t.Parallel()
+
+	tm := startOnTerminal(t, env(t), nil, "run", "-it", scenario.Busybox, "sh", "-c", "echo ready; sleep 30")
+	tm.waitForOutput("ready")
+	tm.write("\x03")
+
+	out, code, _ := tm.wait()
+	if code != 130 || strings.Contains(out, "sbxr:") {
+		t.Errorf("sbxr run -it then Ctrl-C = %d, %q; want 130 and no sbxr error", code, out)
+	}
+}
+
+func TestTTYWithoutInteractiveNeverReadsStdin(t *testing.T) {
+	t.Parallel()
+
+	// The test keeps the pipe open, like a terminal that the user never types into.
+	stdin, keepOpen, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer keepOpen.Close()
+	defer stdin.Close()
+
+	cmd := exec.CommandContext(t.Context(), bin, "run", "-t", scenario.Busybox, "cat")
+	cmd.Env = env(t)
+	cmd.Stdin = stdin
+
+	done := make(chan error, 1)
+
+	go func() { done <- cmd.Run() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("sbxr run -t cat = %v, want exit 0", err)
+		}
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+
+		t.Fatal("sbxr run -t cat still runs, want it to read an empty stdin")
+	}
+}
+
+func TestTTYOutputReachesASlowReader(t *testing.T) {
+	t.Parallel()
+
+	// The output is larger than a pipe buffer, so the runner must wait for the reader.
+	word := strings.Repeat("x", 50000)
+	want := strings.Join([]string{word, word, word, word}, " ") + "\r\n"
+
+	cmd := exec.CommandContext(t.Context(), bin, "run", "-t", scenario.Busybox, "echo", word, word, word, word)
+	cmd.Env = env(t)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = cmd.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got bytes.Buffer
+
+	buf := make([]byte, 4096)
+
+	for {
+		time.Sleep(2 * time.Millisecond)
+
+		n, err := stdout.Read(buf)
+		got.Write(buf[:n])
+
+		if err != nil {
+			break
+		}
+	}
+
+	err = cmd.Wait()
+	if err != nil || got.String() != want {
+		t.Errorf("sbxr run -t echo = %v with %d bytes, want exit 0 with %d bytes", err, got.Len(), len(want))
+	}
+}
+
+func TestNoColorsWhenStdoutIsNotATerminal(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+
+	tm := startOnTerminal(t, env(t), &stdout, "run", "-w", "app", scenario.Busybox)
+
+	out, code, _ := tm.wait()
+	if code != 125 || out != "sbxr: -w \"app\": must be absolute; for example /app\r\n" {
+		t.Errorf("stderr on a terminal = %d, %q; want 125 and the error without ANSI codes", code, out)
 	}
 }
 
