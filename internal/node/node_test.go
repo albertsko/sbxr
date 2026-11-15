@@ -592,7 +592,7 @@ func TestInstallBundle(t *testing.T) {
 	dst := f.root + Prefix
 	bundles := []string{in.Bundle, newBundle(t, "crun v2")}
 
-	err := installBundle(bundles[0], dst, dst+".old")
+	err := installBundle(bundles[0], dst, dst+".old", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +620,7 @@ func TestInstallBundle(t *testing.T) {
 		}()
 
 		for i := range 20 {
-			err := installBundle(bundles[i%2], dst, dst+".old")
+			err := installBundle(bundles[i%2], dst, dst+".old", nil)
 			if err != nil {
 				t.Error(err)
 			}
@@ -646,12 +646,12 @@ func TestInstallBundle(t *testing.T) {
 
 		before := read(t, dst+"/bin/crun")
 
-		err := installBundle(bad, dst, dst+".old")
+		err := installBundle(bad, dst, dst+".old", nil)
 		if err == nil || !strings.Contains(err.Error(), "bin/crun has SHA-256") {
 			t.Fatalf("error %v, want a checksum error", err)
 		}
 
-		if read(t, dst+"/bin/crun") != before || exists(dst+".new") {
+		if entries, _ := os.ReadDir(dst + ".old"); read(t, dst+"/bin/crun") != before || len(entries) > 0 {
 			t.Errorf("bundle changed: %v", files(t, f.root+"/opt"))
 		}
 	})
@@ -1156,5 +1156,99 @@ func TestUpgradeKeepsTheGuestRoot(t *testing.T) {
 
 	if err := in.Uninstall(t.Context()); err != nil || exists(f.root+RetiredRoot) || exists(f.root+Prefix) {
 		t.Errorf("uninstall: %v, files %v", err, files(t, f.root+"/opt"))
+	}
+}
+
+// TestInstallBundleFailsAfterExchange stops an install right after the exchange, then retries. The previous bundle is
+// already in the retired directory, so neither the retry nor the cleanup deletes it while a VM holds its guest root.
+func TestInstallBundleFailsAfterExchange(t *testing.T) {
+	t.Parallel()
+
+	root, proc := t.TempDir(), t.TempDir()
+	dst, retired := root+Prefix, root+RetiredRoot
+	v1, v2 := newBundle(t, "crun v1"), newBundle(t, "crun v2")
+
+	if err := installBundle(v1, dst, retired, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	crash := errors.New("crash")
+
+	err := installBundle(v2, dst, retired, func() error {
+		// The VM of a running pod holds the guest root of the previous bundle.
+		entries, _ := os.ReadDir(retired)
+		for _, e := range entries {
+			fakeProc(t, proc, 4242, RetiredRoot+"/"+e.Name()+"/guest", "")
+		}
+
+		return crash
+	})
+	if !errors.Is(err, crash) {
+		t.Fatalf("install: %v, want the crash", err)
+	}
+
+	// The retry finds v2 installed, and the cleanup keeps the bundle that the VM uses.
+	if err := installBundle(v2, dst, retired, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	kept, err := removeRetired(retired, root, proc)
+	if err != nil || len(kept) != 1 {
+		t.Fatalf("kept %v, %v; want the previous bundle", kept, err)
+	}
+
+	for name := range kept {
+		if got := read(t, retired+"/"+name+"/bin/crun"); got != "crun v1" {
+			t.Errorf("retired crun %q, want crun v1", got)
+		}
+	}
+}
+
+func TestRemoveUnusedLegacyStaging(t *testing.T) {
+	t.Parallel()
+
+	root, proc := t.TempDir(), t.TempDir()
+	write(t, root+legacyStaged+"/guest/usr/bin/crun", "crun")
+	fakeProc(t, proc, 7, legacyStaged+"/guest", "")
+
+	if pid, err := removeUnused(root+legacyStaged, root, proc); err != nil || pid != 7 || !exists(root+legacyStaged+"/guest/usr/bin/crun") {
+		t.Errorf("removeUnused = %d, %v; want it kept for pid 7", pid, err)
+	}
+
+	if err := os.RemoveAll(proc + "/7"); err != nil {
+		t.Fatal(err)
+	}
+
+	if pid, err := removeUnused(root+legacyStaged, root, proc); err != nil || pid != 0 || exists(root+legacyStaged) {
+		t.Errorf("removeUnused = %d, %v; want it removed", pid, err)
+	}
+}
+
+func TestDirUsersErrors(t *testing.T) {
+	t.Parallel()
+
+	root, proc := t.TempDir(), t.TempDir()
+	dir := root + RetiredRoot + "/a"
+
+	if _, err := dirUsers(proc+"/missing", root, []string{dir}); err == nil {
+		t.Error("dirUsers without /proc: no error")
+	}
+
+	// A process that has exited leaves an empty directory: it uses nothing.
+	if err := os.MkdirAll(proc+"/10", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := dirUsers(proc, root, []string{dir})
+	if err != nil || len(users) != 0 {
+		t.Errorf("users %v, %v; want none", users, err)
+	}
+
+	// A process whose files cannot be listed may use anything.
+	write(t, proc+"/11/fd", "not a directory")
+
+	users, err = dirUsers(proc, root, []string{dir})
+	if err != nil || users[dir] != 11 {
+		t.Errorf("users %v, %v; want pid 11 for the unreadable process", users, err)
 	}
 }

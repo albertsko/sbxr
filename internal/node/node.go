@@ -37,7 +37,11 @@ const (
 	// PodsRoot holds a directory for each phase 2 pod while it exists.
 	PodsRoot = "/run/sbxr/pods"
 	// RetiredRoot holds bundles that a newer install replaced, while running VMs, shims, or crun still use them.
+	// The installer also stages each new bundle there.
 	RetiredRoot = Prefix + ".old"
+	// legacyStaged is where installers before RetiredRoot staged bundles. After an interrupted exchange it held the
+	// previous bundle.
+	legacyStaged = Prefix + ".new"
 	// ShimLink makes the phase 2 shim visible to containerd. containerd's shim sandboxer finds a shim only by its name,
 	// in PATH or next to the containerd binary, and ignores runtime_path.
 	ShimLink = "/usr/local/bin/containerd-shim-sbxr-v1"
@@ -106,7 +110,7 @@ func (in *Installer) Install(ctx context.Context) error {
 
 	in.Log.Info("preflight passed", "distribution", d.name, "unit", unit)
 
-	err = installBundle(in.Bundle, in.HostRoot+Prefix, in.HostRoot+RetiredRoot)
+	err = installBundle(in.Bundle, in.HostRoot+Prefix, in.HostRoot+RetiredRoot, nil)
 	if err != nil {
 		return err
 	}
@@ -139,8 +143,14 @@ func (in *Installer) Install(ctx context.Context) error {
 	return in.configure(ctx, in.HostRoot+d.dropInFile(), unit, dropIn, pending)
 }
 
-// removeRetired deletes the retired bundles that no process uses any more. A failure only delays it to the next install.
+// removeRetired deletes the retired bundles that no process uses any more, and the staging directory of older
+// installers, which can hold a previous bundle. A failure only delays it to the next install.
 func (in *Installer) removeRetired() {
+	pid, err := removeUnused(in.HostRoot+legacyStaged, in.HostRoot, in.Proc)
+	if err != nil || pid != 0 {
+		in.Log.Warn("keep "+legacyStaged, "pid", pid, "error", err)
+	}
+
 	kept, err := removeRetired(in.HostRoot+RetiredRoot, in.HostRoot, in.Proc)
 	if err != nil {
 		in.Log.Warn("remove retired bundles", "error", err)
