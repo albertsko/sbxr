@@ -27,7 +27,7 @@ func Hypervisor(context.Context) Result {
 		return Failed(id, fmt.Sprintf("open /dev/kvm: %v", err), "check that KVM works on this machine")
 	}
 
-	defer unix.Close(fd)
+	defer unix.Close(fd) //nolint:errcheck // The descriptor was only read.
 
 	version, err := unix.IoctlRetInt(fd, kvmGetAPIVersion)
 	if err != nil || version != 12 {
