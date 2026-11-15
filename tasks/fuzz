@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+#MISE description="Fuzz the config writer against the guest init parser copy"
+#USAGE arg "[fuzztime]" default="1m" help="Fuzz duration, for example 30s or 15m"
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+exec go test -run='^$' -fuzz='^FuzzMarshal$' -fuzztime="${usage_fuzztime:-1m}" ./internal/krunconfig
