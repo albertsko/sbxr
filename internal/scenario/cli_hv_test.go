@@ -191,11 +191,15 @@ func TestHVInteractiveShell(t *testing.T) {
 			}
 		}
 
-		// The input repeats until the output appears, because a resize reaches the guest a moment later.
-		for !strings.Contains(out.String(), step.want) {
-			_, err = io.WriteString(ptmx, step.input)
-			if err != nil {
-				t.Fatal(err)
+		// After a resize the input repeats until the output appears, because the resize reaches the guest a moment later.
+		for sent := false; !strings.Contains(out.String(), step.want); {
+			if !sent || step.resize != nil {
+				_, err = io.WriteString(ptmx, step.input)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				sent = true
 			}
 
 			select {
@@ -203,7 +207,7 @@ func TestHVInteractiveShell(t *testing.T) {
 				t.Fatalf("after %q, output %q does not contain %q", step.input, out.String(), step.want)
 			case <-exited:
 				t.Fatalf("sbxr exited before the output %q contained %q", out.String(), step.want)
-			case <-time.After(300 * time.Millisecond):
+			case <-time.After(time.Second):
 			}
 		}
 	}
