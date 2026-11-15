@@ -48,9 +48,13 @@ func withSignals(ctx context.Context) (context.Context, func()) {
 //
 // The VM process stays in the runner's process group, so job control and TOSTOP treat both alike.
 // It ignores terminal interrupts (see vm.Child), so Ctrl-C ends the run only through the runner.
-func (r *Runner) start(ctx context.Context, s spec.Spec, dir string) (int, error) {
+//
+// The VM process inherits the locks, so that sweeps and prune leave the run alone while the VM lives, even after the runner died.
+func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, locks ...*os.File) (int, error) {
 	cmd := exec.CommandContext(ctx, r.Exe, vm.ChildArg, dir) //nolint:gosec // Exe is the sbxr binary itself.
 	cmd.Env = append(os.Environ(), r.VMEnv...)
+
+	cmd.ExtraFiles = locks
 
 	release, err := vm.AttachLifeline(cmd)
 	if err != nil {

@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -43,8 +42,9 @@ type Image struct {
 
 // Images is the image store.
 type Images interface {
-	// Hold keeps the store from removing images until the closer is closed.
-	Hold(ctx context.Context) (io.Closer, error)
+	// Hold keeps the store from removing images while the returned lock file is open.
+	// The runner passes it to the VM process, so that the hold lasts while the VM runs, even when the runner dies.
+	Hold(ctx context.Context) (*os.File, error)
 	// Pull returns the image for ref, downloading it when policy allows.
 	Pull(ctx context.Context, ref string, policy spec.Pull) (Image, error)
 	// ResolveUser resolves an image User value inside the image.
@@ -125,7 +125,7 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 		return ExitSetup, err
 	}
 
-	dir, _, unlock, err := newRunDir(r.RunsDir, r.Log)
+	dir, lock, unlock, err := newRunDir(r.RunsDir, r.Log)
 	if err != nil {
 		return ExitSetup, err
 	}
@@ -141,7 +141,7 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 
 	r.Log.Debug("run state", "state", "running")
 
-	code, err := r.start(ctx, s, dir)
+	code, err := r.start(ctx, s, dir, hold, lock)
 
 	r.Log.Debug("run state", "state", "exited", "code", code)
 

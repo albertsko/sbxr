@@ -2,7 +2,7 @@ package image
 
 import (
 	"context"
-	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/albertsko/sbxr/internal/run"
@@ -20,7 +20,7 @@ type Store struct {
 }
 
 // Hold holds the cache, so that prune cannot remove images while the run lasts.
-func (s Store) Hold(ctx context.Context) (io.Closer, error) {
+func (s Store) Hold(ctx context.Context) (*os.File, error) {
 	return s.Cache.Hold(ctx)
 }
 

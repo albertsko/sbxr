@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -46,7 +45,7 @@ func Open(dir string, own Ownership) (*Cache, error) {
 
 // Hold takes a shared hold on the cache that keeps Prune out until it is closed.
 // A run holds it from before Pull until its per-run root is removed.
-func (c *Cache) Hold(ctx context.Context) (io.Closer, error) {
+func (c *Cache) Hold(ctx context.Context) (*os.File, error) {
 	f, err := lockFile(ctx, filepath.Join(c.dir, "lock"), unix.LOCK_SH)
 	if err != nil {
 		return nil, err
