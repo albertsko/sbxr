@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-#MISE description="Run Go tests"
+#MISE description="Run unit tests and the fake target scenarios"
 set -euo pipefail
 
-cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
 if [[ -n "${CI:-}" ]]; then
 	exec go test -race -shuffle=on ./... "$@"
