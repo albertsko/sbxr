@@ -44,8 +44,11 @@ func Setup(nsPath string, uid, gid int) (Guest, error) {
 		var err error
 
 		g, err = setup(uid, gid)
+		if err != nil {
+			return errors.Join(err, teardown(g))
+		}
 
-		return err
+		return nil
 	})
 
 	return g, err
@@ -122,6 +125,67 @@ func setup(uid, gid int) (Guest, error) {
 	}
 
 	return g, nil
+}
+
+// Teardown undoes Setup in the network namespace at nsPath: it removes the TAP device and the redirect,
+// and gives the addresses and routes in g back to the pod interface.
+func Teardown(nsPath string, g Guest) error {
+	return Do(nsPath, func() error { return teardown(g) })
+}
+
+func teardown(g Guest) error {
+	var errs []error
+
+	if tap, err := netlink.LinkByName(TAP); err == nil {
+		errs = append(errs, netlink.LinkDel(tap))
+	}
+
+	pod, err := netlink.LinkByName(PodInterface)
+	if err != nil {
+		return errors.Join(append(errs, fmt.Errorf("find %s: %w", PodInterface, err))...)
+	}
+
+	qdisc := &netlink.Ingress{LinkIndex: pod.Attrs().Index, Handle: netlink.MakeHandle(0xffff, 0), Parent: netlink.HANDLE_INGRESS}
+	if err := netlink.QdiscDel(qdisc); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.EINVAL) {
+		errs = append(errs, fmt.Errorf("remove the redirect: %w", err))
+	}
+
+	for _, a := range g.Addresses {
+		err := netlink.AddrAdd(pod, &netlink.Addr{IPNet: ipNet(a)})
+		if err != nil && !errors.Is(err, unix.EEXIST) {
+			errs = append(errs, fmt.Errorf("restore address %s: %w", a, err))
+		}
+	}
+
+	for _, r := range g.Routes {
+		if err := netlink.RouteReplace(Route(pod.Attrs().Index, r)); err != nil {
+			errs = append(errs, fmt.Errorf("restore route %+v: %w", r, err))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// Route converts r to a netlink route on the link with index link.
+func Route(link int, r podvm.Route) *netlink.Route {
+	route := &netlink.Route{LinkIndex: link}
+	if r.Dst.IsValid() {
+		route.Dst = ipNet(r.Dst)
+	}
+
+	if r.Gateway.IsValid() {
+		route.Gw = net.IP(r.Gateway.AsSlice())
+	}
+
+	if r.OnLink {
+		route.Flags = int(netlink.FLAG_ONLINK)
+	}
+
+	return route
+}
+
+func ipNet(p netip.Prefix) *net.IPNet {
+	return &net.IPNet{IP: net.IP(p.Addr().AsSlice()), Mask: net.CIDRMask(p.Bits(), p.Addr().BitLen())}
 }
 
 // guestRoutes returns the routes of the pod interface for the guest: on-link and covered routes first, then routes through gateways.
