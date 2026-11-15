@@ -67,15 +67,16 @@ func TestTCPCap(t *testing.T) {
 	// A published connection past the cap gets a reset too.
 	var nd net.Dialer
 
+	// The reset can arrive during the dial or at the first read.
 	pub, err := nd.DialContext(t.Context(), "tcp", n.Published()[0].Host.String())
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		_ = pub.SetDeadline(time.Now().Add(5 * time.Second))
+		_, err = pub.Read(make([]byte, 1))
+		_ = pub.Close()
 	}
-	defer pub.Close()
 
-	_ = pub.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := pub.Read(make([]byte, 1)); !errors.Is(err, syscall.ECONNRESET) {
-		t.Errorf("published connection past the cap: read error %v, want a reset", err)
+	if !errors.Is(err, syscall.ECONNRESET) {
+		t.Errorf("published connection past the cap: error %v, want a reset", err)
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
