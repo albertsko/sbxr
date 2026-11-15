@@ -18,17 +18,32 @@ type exit struct {
 	At     time.Time
 }
 
-// reaper waits for every child of PID 1, including orphans that crun leaves, and hands each exit to its watcher.
-// The agent never calls exec.Cmd.Wait, because the reaper's wait would race with it.
+// reaper waits for every child of PID 1, including orphans that crun leaves, and hands each exit to the subscriptions
+// that are active when it reaps the process. It keeps no exit that nobody subscribed to, so a reused pid never gets
+// the exit of an earlier process. The agent never calls exec.Cmd.Wait, because the reaper's wait would race with it.
 type reaper struct {
-	mu       sync.Mutex
-	watchers map[int]chan exit
-	// unclaimed holds exits of processes that nobody watches yet, such as a container that exits before crun create returns.
-	unclaimed map[int]exit
+	mu   sync.Mutex
+	subs map[*subscription]struct{}
+}
+
+// subscription receives the exit of one process. Subscribe before the process can exit, then name its pid with wait.
+type subscription struct {
+	r *reaper
+
+	mu  sync.Mutex
+	pid int // Zero until wait names it.
+	// early holds the exits that arrived before the pid was known, in reap order.
+	early []pidExit
+	done  chan exit
+}
+
+type pidExit struct {
+	pid int
+	e   exit
 }
 
 func newReaper() *reaper {
-	return &reaper{mu: sync.Mutex{}, watchers: map[int]chan exit{}, unclaimed: map[int]exit{}}
+	return &reaper{mu: sync.Mutex{}, subs: map[*subscription]struct{}{}}
 }
 
 func (r *reaper) run() {
@@ -49,56 +64,101 @@ func (r *reaper) reap() {
 			return
 		}
 
-		e := exit{Status: exitStatus(ws), At: time.Now()}
+		r.dispatch(pid, exit{Status: exitStatus(ws), At: time.Now()})
+	}
+}
 
-		r.mu.Lock()
+// dispatch hands the exit of pid to every active subscription. Without one, the exit is dropped.
+func (r *reaper) dispatch(pid int, e exit) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-		if ch, ok := r.watchers[pid]; ok {
-			delete(r.watchers, pid)
+	for s := range r.subs {
+		s.deliver(pid, e)
+	}
+}
 
-			ch <- e
-		} else {
-			r.unclaimed[pid] = e
+// subscribe starts collecting exits for a process that is about to start.
+func (r *reaper) subscribe() *subscription {
+	s := &subscription{r: r, mu: sync.Mutex{}, pid: 0, early: nil, done: make(chan exit, 1)}
+
+	r.mu.Lock()
+	r.subs[s] = struct{}{}
+	r.mu.Unlock()
+
+	return s
+}
+
+func (s *subscription) deliver(pid int, e exit) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch s.pid {
+	case 0:
+		s.early = append(s.early, pidExit{pid: pid, e: e})
+	case pid:
+		s.finish(e)
+	}
+}
+
+// finish sends the exit once. The caller holds s.mu.
+func (s *subscription) finish(e exit) {
+	select {
+	case s.done <- e:
+	default:
+	}
+
+	s.pid = -1 // Nothing more to deliver.
+	s.early = nil
+
+	go s.close() // dispatch holds the reaper lock.
+}
+
+// wait names the process's pid and returns a channel that receives its exit, also when the process already exited.
+// The latest early exit of pid counts: an earlier one belongs to a process that had the pid before.
+func (s *subscription) wait(pid int) <-chan exit {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var (
+		last  exit
+		found bool
+	)
+
+	for _, pe := range s.early {
+		if pe.pid == pid {
+			last, found = pe.e, true
 		}
-
-		r.mu.Unlock()
-	}
-}
-
-// watch returns a channel that receives the exit of pid.
-func (r *reaper) watch(pid int) <-chan exit {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	ch := make(chan exit, 1)
-
-	if e, ok := r.unclaimed[pid]; ok {
-		delete(r.unclaimed, pid)
-
-		ch <- e
-
-		return ch
 	}
 
-	r.watchers[pid] = ch
+	s.pid, s.early = pid, nil
 
-	return ch
+	if found {
+		s.finish(last)
+	}
+
+	return s.done
 }
 
-// start starts cmd and watches it. The lock keeps the reaper from taking the exit before the watch exists.
+// close ends the subscription. A process that never started needs it.
+func (s *subscription) close() {
+	s.r.mu.Lock()
+	delete(s.r.subs, s)
+	s.r.mu.Unlock()
+}
+
+// start starts cmd and returns a channel that receives its exit.
 func (r *reaper) start(cmd *exec.Cmd) (<-chan exit, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	sub := r.subscribe()
 
 	err := cmd.Start()
 	if err != nil {
+		sub.close()
+
 		return nil, err //nolint:wrapcheck // Callers name the command.
 	}
 
-	ch := make(chan exit, 1)
-	r.watchers[cmd.Process.Pid] = ch
-
-	return ch, nil
+	return sub.wait(cmd.Process.Pid), nil
 }
 
 // exitStatus converts a wait status to a shell-style exit status.

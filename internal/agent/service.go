@@ -119,6 +119,9 @@ func (s *service) startProcess(p *process, args []string, id, execID string) (in
 		return 0, err
 	}
 
+	// Subscribe before crun starts the process, which may exit before its pid file is read.
+	sub := s.reaper.subscribe()
+
 	err = s.crunCmd(stdio, append(args, id)...)
 
 	closeNull()
@@ -133,6 +136,7 @@ func (s *service) startProcess(p *process, args []string, id, execID string) (in
 	}
 
 	if err != nil {
+		sub.close()
 		p.closeAll()
 
 		return 0, err
@@ -140,10 +144,12 @@ func (s *service) startProcess(p *process, args []string, id, execID string) (in
 
 	pid, err := readPid(files.pid)
 	if err != nil {
+		sub.close()
+
 		return 0, err
 	}
 
-	p.watch(pid, s.reaper.watch(pid), s.log)
+	p.watch(pid, sub.wait(pid), s.log)
 
 	return pid, nil
 }
