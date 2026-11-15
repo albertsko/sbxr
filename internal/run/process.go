@@ -49,12 +49,13 @@ func withSignals(ctx context.Context) (context.Context, func()) {
 // The VM process stays in the runner's process group, so job control and TOSTOP treat both alike.
 // It ignores terminal interrupts (see vm.Child), so Ctrl-C ends the run only through the runner.
 //
-// The VM process inherits the locks, so that sweeps and prune leave the run alone while the VM lives, even after the runner died.
-func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, locks ...*os.File) (int, error) {
+// The VM process inherits the cache hold and the run lock, so that sweeps and prune leave the run alone while the VM lives,
+// even after the runner died. Its fds are 3 for the lifeline (see vm.AttachLifeline), 4 for hold, and 5 for lock.
+func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, hold, lock *os.File) (int, error) {
 	cmd := exec.CommandContext(ctx, r.Exe, vm.ChildArg, dir) //nolint:gosec // Exe is the sbxr binary itself.
 	cmd.Env = append(os.Environ(), r.VMEnv...)
 
-	cmd.ExtraFiles = locks
+	cmd.ExtraFiles = []*os.File{hold, lock}
 
 	release, err := vm.AttachLifeline(cmd)
 	if err != nil {
@@ -65,7 +66,7 @@ func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, locks ...*o
 	if s.TTY {
 		err = r.runTTY(ctx, cmd, s.Interactive)
 	} else {
-		err = r.runPlain(cmd, s.Interactive)
+		err = r.runPlain(ctx, cmd, s.Interactive)
 	}
 
 	exit, isExit := errors.AsType[*exec.ExitError](err)
@@ -91,15 +92,105 @@ func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, locks ...*o
 	}
 }
 
-// runPlain gives the VM process the user's stdout and stderr, and stdin only when interactive.
-func (r *Runner) runPlain(cmd *exec.Cmd, interactive bool) error {
-	cmd.Stdout, cmd.Stderr = r.Stdout, r.Stderr
+// runPlain relays the user's stdout and stderr, and stdin only when interactive, through pipes.
+// The VM process never sees a terminal without -t, because libkrun sends output to a terminal through its console,
+// which mixes the streams and loses stderr when only stdout is redirected.
+// The relay drains the output after the VM exits, and the context ends a drain that a slow reader holds back.
+func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) error {
+	// A closed stdout or stderr reader would end the runner with SIGPIPE before cleanup, so the relay gets EPIPE instead.
+	sigpipe := make(chan os.Signal, 1)
+	signal.Notify(sigpipe, syscall.SIGPIPE)
 
-	if interactive {
-		cmd.Stdin = r.Stdin
+	defer signal.Stop(sigpipe)
+
+	stdout := &guardedWriter{w: r.Stdout, closed: atomic.Bool{}}
+	stderr := &guardedWriter{w: r.Stderr, closed: atomic.Bool{}}
+
+	defer stdout.close()
+	defer stderr.close()
+
+	outPipe, outDone, err := relay(stdout)
+	if err != nil {
+		return err
 	}
 
-	return cmd.Run() //nolint:wrapcheck // start inspects the exec error.
+	errPipe, errDone, err := relay(stderr)
+	if err != nil {
+		_ = outPipe.Close() // The relay ends at once.
+
+		return err
+	}
+
+	cmd.Stdout, cmd.Stderr = outPipe, errPipe
+
+	var stdin *os.File
+
+	if interactive {
+		pr, pw, err := os.Pipe()
+		if err != nil {
+			return fmt.Errorf("create stdin pipe: %w", err)
+		}
+		defer pr.Close() //nolint:errcheck // The VM process has its own copy.
+
+		cmd.Stdin, stdin = pr, pw
+	}
+
+	err = cmd.Start()
+
+	// The runner keeps only the read ends, so that each relay ends when the VM process exits.
+	_ = outPipe.Close()
+	_ = errPipe.Close()
+
+	if err != nil {
+		return fmt.Errorf("start vm process: %w", err)
+	}
+
+	if stdin != nil {
+		go func() {
+			_, _ = io.Copy(stdin, r.Stdin) // The VM exit ends the run, not the input copy.
+			_ = stdin.Close()              // The workload sees the end of input.
+		}()
+	}
+
+	err = cmd.Wait()
+
+	for _, done := range []<-chan struct{}{outDone, errDone} {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
+	}
+
+	return err //nolint:wrapcheck // start inspects the exec error.
+}
+
+// relay returns the write end of a new pipe and copies everything from its read end to w.
+// Write errors do not stop the copy, so that the VM never blocks on output. done closes at the end of the pipe.
+func relay(w io.Writer) (*os.File, <-chan struct{}, error) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return nil, nil, fmt.Errorf("create output pipe: %w", err)
+	}
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		defer pr.Close() //nolint:errcheck // The pipe was only read.
+
+		buf := make([]byte, 32*1024)
+
+		for {
+			n, err := pr.Read(buf)
+			_, _ = w.Write(buf[:n]) // See above.
+
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	return pw, done, nil
 }
 
 // runTTY gives the VM process a new pseudo-terminal for its output, and for its input only when interactive.

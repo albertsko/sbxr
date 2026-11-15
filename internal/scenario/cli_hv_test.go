@@ -122,6 +122,47 @@ func TestHVAppArmorNeedsInstallPath(t *testing.T) {
 	}
 }
 
+// TestHVStderrOnTerminalWithPipedStdout checks that each guest stream reaches its own host stream
+// when only stderr is a terminal.
+func TestHVStderrOnTerminalWithPipedStdout(t *testing.T) {
+	t.Parallel()
+
+	bin := hvBinary(t)
+	refs := hvImages(t)
+
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+
+	term := &syncBuffer{}
+
+	go func() { _, _ = io.Copy(term, ptmx) }() // The copy ends when the terminal closes.
+
+	args := append(append([]string{"run", "-q"}, hvFlags...), refs[scenario.Busybox], "sh", "-c", "echo OUT; echo ERR >&2")
+	cmd := exec.CommandContext(t.Context(), bin, args...)
+
+	var stdout bytes.Buffer
+
+	cmd.Env = hvEnv(hvCacheDir(t))
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, &stdout, tty
+
+	err = cmd.Run()
+	if err != nil {
+		t.Fatalf("sbxr run: %v (terminal %q)", err, term.String())
+	}
+
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(term.String(), "ERR") && time.Now().Before(deadline); {
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if stdout.String() != "OUT\n" || !strings.Contains(term.String(), "ERR") || strings.Contains(term.String(), "OUT") {
+		t.Errorf("stdout %q, terminal %q; want OUT on stdout and ERR on the terminal", stdout.String(), term.String())
+	}
+}
+
 // TestHVInteractiveShell types into an interactive shell on a terminal and resizes the terminal.
 // libkrun 1.19.8 forwards terminal resizes to the guest only on Linux.
 func TestHVInteractiveShell(t *testing.T) {

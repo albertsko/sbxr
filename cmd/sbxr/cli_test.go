@@ -858,6 +858,48 @@ func startStoppedVM(t *testing.T, environ []string) (*exec.Cmd, int) {
 	}
 }
 
+func TestStderrOnTerminalWithPipedStdout(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+
+	// cat writes its error to stderr.
+	out, code, _ := startOnTerminal(t, env(t), &stdout, "run", "-q", busybox, "sh", "-c", "echo OUT; cat /missing").wait()
+	if code != 1 || stdout.String() != "OUT\n" || !strings.Contains(out, "/missing") || strings.Contains(out, "OUT") {
+		t.Errorf("sbxr run = %d, stdout %q, terminal %q; want 1, OUT on stdout, and the cat error on the terminal", code, stdout.String(), out)
+	}
+}
+
+func TestClosedStdoutReaderEndsTheRunNormally(t *testing.T) {
+	t.Parallel()
+
+	environ := env(t)
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Nobody reads stdout, so every write to it fails with EPIPE.
+	_ = pr.Close()
+
+	cmd := exec.CommandContext(t.Context(), bin, "run", busybox, "echo", "hi")
+	cmd.Env = environ
+	cmd.Stdout = pw
+
+	err = cmd.Run()
+	_ = pw.Close()
+
+	if code := cmd.ProcessState.ExitCode(); err != nil || code != 0 {
+		t.Errorf("sbxr run with a closed stdout reader = %d, %v; want 0", code, err)
+	}
+
+	err = scenario.CheckClean(cacheDirOf(environ))
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestKilledVMProcessIsAnSbxrError(t *testing.T) {
 	t.Parallel()
 
