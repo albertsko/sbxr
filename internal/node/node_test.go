@@ -102,7 +102,7 @@ func (f *fakeNode) host(_ context.Context, args ...string) (string, error) {
 		return "glibc 2.39\n", nil
 	case "uname -r":
 		return "6.8.0-1015-azure\n", nil
-	case "test -c /dev/net/tun":
+	case "test -c /dev/net/tun", "getent passwd kubelet", "sh -c command -v getsubids":
 		return "", nil
 	case "/opt/sbxr/bin/krun --version":
 		if !f.krunFails {
@@ -874,9 +874,24 @@ func TestInstallPhase2(t *testing.T) {
 	f, in := newFakeNode(t)
 	in.Phase = 2
 
+	// Without a kubelet range, kubelet pods with user namespaces could get any id.
 	err := in.Install(t.Context())
+	if err != nil || !strings.Contains(f.annotations[PreflightAnnotation], "add one equal kubelet entry") {
+		t.Fatalf("install without a kubelet range: %v, annotations %v", err, f.annotations)
+	}
+
+	write(t, f.root+"/etc/subuid", "kubelet:65536:7208960\n")
+	write(t, f.root+"/etc/subgid", "kubelet:65536:7208960")
+
+	err = in.Install(t.Context())
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	for _, name := range []string{"/etc/subuid", "/etc/subgid"} {
+		if got := read(t, f.root+name); got != "kubelet:65536:7208960\nsbxr:7274496:33554432\n" {
+			t.Errorf("%s = %q, want the sbxr range after the kubelet range", name, got)
+		}
 	}
 
 	dropIn := read(t, f.root+dropInPath)
@@ -903,5 +918,9 @@ func TestInstallPhase2(t *testing.T) {
 
 	if _, lerr := os.Lstat(f.root + ShimLink); err != nil || lerr == nil {
 		t.Errorf("uninstall: %v; shim link: %v, want removed", err, lerr)
+	}
+
+	if got := read(t, f.root+"/etc/subuid"); got != "kubelet:65536:7208960\n" {
+		t.Errorf("subuid after uninstall = %q", got)
 	}
 }

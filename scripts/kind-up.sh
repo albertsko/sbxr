@@ -25,8 +25,14 @@ if ! kind get clusters | grep -qx "$cluster"; then
 fi
 
 # The kind node image has no D-Bus, and crun reaches systemd only through D-Bus.
-docker exec "$node" sh -c 'test -S /run/dbus/system_bus_socket ||
-	{ export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y -qq --no-install-recommends dbus >/dev/null && systemctl start dbus; }'
+docker exec "$node" sh -c 'test -S /run/dbus/system_bus_socket && command -v getsubids >/dev/null ||
+	{ export DEBIAN_FRONTEND=noninteractive && apt-get update -qq && apt-get install -y -qq --no-install-recommends dbus uidmap >/dev/null && systemctl start dbus; }'
+# Phase 2 needs a kubelet id range for pods with user namespaces, apart from the sbxr range. The kubelet reads it at start.
+docker exec "$node" sh -c 'getent passwd kubelet >/dev/null && grep -q "^kubelet:" /etc/subuid && exit 0
+	getent passwd kubelet >/dev/null || useradd --system --no-create-home --shell /usr/sbin/nologin kubelet
+	for f in /etc/subuid /etc/subgid; do grep -q "^kubelet:" "$f" 2>/dev/null || echo kubelet:65536:7208960 >>"$f"; done
+	systemctl restart kubelet'
+"${kubectl[@]}" wait node --all --for=condition=Ready --timeout=2m
 
 image=${SBXR_NODE_IMAGE:-}
 if [[ -z $image ]]; then

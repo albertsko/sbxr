@@ -16,6 +16,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/albertsko/sbxr/internal/subid"
 )
 
 // Node label, annotation, handler, and install directory from the PRD.
@@ -86,7 +88,7 @@ func (in *Installer) Install(ctx context.Context) error {
 		return errors.Join(err, in.reject(ctx, "pending restart: "+err.Error()))
 	}
 
-	d, unit, dropIn, err := in.preflight(ctx)
+	d, unit, dropIn, ids, err := in.preflight(ctx)
 	if reject, ok := errors.AsType[rejection](err); ok {
 		return in.reject(ctx, "preflight: "+reject.Error())
 	}
@@ -107,6 +109,13 @@ func (in *Installer) Install(ctx context.Context) error {
 		return in.reject(ctx, fmt.Sprintf("bundle: krun --version on the host: %v: %s", err, out))
 	}
 
+	if ids != nil {
+		err = in.reserveIDs(*ids)
+		if err != nil {
+			return err
+		}
+	}
+
 	if in.Phase == 2 {
 		err = linkShim(in.HostRoot + ShimLink)
 		if err != nil {
@@ -115,6 +124,59 @@ func (in *Installer) Install(ctx context.Context) error {
 	}
 
 	return in.configure(ctx, in.HostRoot+d.dropInFile(), unit, dropIn, pending)
+}
+
+// reserveIDs adds r to /etc/subuid and /etc/subgid, so no other user and no kubelet pod gets these ids.
+func (in *Installer) reserveIDs(r subid.Range) error {
+	for _, name := range []string{"/etc/subuid", "/etc/subgid"} {
+		data, err := os.ReadFile(in.HostRoot + name)
+		if err != nil {
+			return fmt.Errorf("reserve ids: %w", err)
+		}
+
+		if len(data) > 0 && !bytes.HasSuffix(data, []byte("\n")) {
+			data = append(data, '\n')
+		}
+
+		err = writeFile(in.HostRoot+name, append(data, r.String()+"\n"...))
+		if err != nil {
+			return fmt.Errorf("reserve ids: %w", err)
+		}
+	}
+
+	in.Log.Info("reserved ids for pod VMs", "range", r.String())
+
+	return nil
+}
+
+// releaseIDs removes the sbxr entries from /etc/subuid and /etc/subgid.
+func (in *Installer) releaseIDs() error {
+	for _, name := range []string{"/etc/subuid", "/etc/subgid"} {
+		data, err := os.ReadFile(in.HostRoot + name)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+
+		if err != nil {
+			return fmt.Errorf("release ids: %w", err)
+		}
+
+		var kept []byte
+
+		for line := range strings.Lines(string(data)) {
+			if !strings.HasPrefix(line, subid.Name+":") {
+				kept = append(kept, line...)
+			}
+		}
+
+		if len(kept) != len(data) {
+			if err := writeFile(in.HostRoot+name, kept); err != nil {
+				return fmt.Errorf("release ids: %w", err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // configure publishes the drop-in, restarts the unit when needed, verifies the handler, and labels the node.
@@ -312,20 +374,21 @@ func (in *Installer) detect(ctx context.Context) (distro, string, error) {
 }
 
 // preflight returns the distribution, its unit, and the drop-in content. A rejection error means the node is not supported.
-func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, error) {
+// It also returns the pod VM id range of phase 2 when /etc/subuid and /etc/subgid still need it.
+func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *subid.Range, error) {
 	d, unit, err := in.detect(ctx)
 	if err != nil {
-		return distro{}, "", nil, err
+		return distro{}, "", nil, nil, err
 	}
 
 	n, err := in.API.Node(ctx)
 	if err != nil {
-		return distro{}, "", nil, fmt.Errorf("read node: %w", err)
+		return distro{}, "", nil, nil, fmt.Errorf("read node: %w", err)
 	}
 
 	config, err := os.ReadFile(in.HostRoot + d.config)
 	if err != nil {
-		return distro{}, "", nil, rejection{fmt.Errorf("read containerd config: %w", err)}
+		return distro{}, "", nil, nil, rejection{fmt.Errorf("read containerd config: %w", err)}
 	}
 
 	_, kvmErr := in.Host(ctx, "test", "-c", "/dev/kvm")
@@ -333,8 +396,12 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, err
 	_, tunErr := in.Host(ctx, "test", "-c", "/dev/net/tun")
 	glibc, _ := in.Host(ctx, "getconf", "GNU_LIBC_VERSION")
 	kernel, _ := in.Host(ctx, "uname", "-r")
+	_, kubeletErr := in.Host(ctx, "getent", "passwd", "kubelet")
+	_, getsubidsErr := in.Host(ctx, "sh", "-c", "command -v getsubids")
+	subuid, _ := os.ReadFile(in.HostRoot + "/etc/subuid")
+	subgid, _ := os.ReadFile(in.HostRoot + "/etc/subgid")
 
-	dropIn, err := preflight(d, facts{
+	f := facts{
 		kvm:     kvmErr == nil,
 		glibc:   glibc,
 		runtime: n.RuntimeVersion,
@@ -343,12 +410,30 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, err
 		dbus:    dbusErr == nil,
 		kernel:  kernel,
 		tun:     tunErr == nil,
-	}, in.Phase)
-	if err != nil {
-		return distro{}, "", nil, rejection{err}
+		subuid:  string(subuid),
+		subgid:  string(subgid),
+		kubelet: kubeletErr == nil && getsubidsErr == nil,
 	}
 
-	return d, unit, dropIn, nil
+	dropIn, err := preflight(d, f, in.Phase)
+	if err != nil {
+		return distro{}, "", nil, nil, rejection{err}
+	}
+
+	if in.Phase != 2 {
+		return d, unit, dropIn, nil, nil
+	}
+
+	r, isNew, err := podIDs(f)
+	if err != nil {
+		return distro{}, "", nil, nil, rejection{err}
+	}
+
+	if !isNew {
+		return d, unit, dropIn, nil, nil
+	}
+
+	return d, unit, dropIn, &r, nil
 }
 
 // imported returns the content of every file that the main config imports, in import order, except the sbxr drop-in.

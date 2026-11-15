@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/albertsko/sbxr/internal/subid"
 )
 
 // distro is a node distribution that runs containerd under its own systemd unit.
@@ -75,6 +77,10 @@ type facts struct {
 	dbus    bool   // The D-Bus system socket exists.
 	kernel  string // Output of "uname -r", for example "6.8.0-1015-azure".
 	tun     bool   // /dev/net/tun exists.
+	// subuid and subgid are /etc/subuid and /etc/subgid. kubelet reports whether the kubelet reads its entries:
+	// the kubelet user exists and getsubids is installed.
+	subuid, subgid string
+	kubelet        bool
 }
 
 var (
@@ -83,6 +89,26 @@ var (
 	// Phase 2 mounts overlays on idmapped lower layers, which Linux supports since 5.19.
 	minKernel = version{5, 19}
 )
+
+// podIDs returns the host id range for phase 2 pod VMs, and whether /etc/subuid and /etc/subgid still need it.
+//
+// Without a kubelet entry, the kubelet gives pods with user namespaces (hostUsers: false) random ids from almost the
+// whole id space, so any range could overlap them. With one, it uses only that entry, and the sbxr range stays apart.
+func podIDs(f facts) (subid.Range, bool, error) {
+	_, err := subid.Find(f.subuid, f.subgid, "kubelet")
+	if !f.kubelet || err != nil {
+		return subid.Range{}, false, errors.Join(errors.New("the kubelet may give pods with user namespaces any host id, "+
+			"which can overlap sbxr pod VMs: create the kubelet user, install getsubids, and add one equal kubelet entry to "+
+			"/etc/subuid and /etc/subgid (see docs/kubernetes.md)"), err)
+	}
+
+	r, isNew, err := subid.Choose(f.subuid, f.subgid)
+	if err != nil {
+		return r, false, fmt.Errorf("pod VM ids: %w", err)
+	}
+
+	return r, isNew, nil
+}
 
 // preflight returns the drop-in for d and phase, or the reason why the node is not supported.
 func preflight(d distro, f facts, phase int) ([]byte, error) {
