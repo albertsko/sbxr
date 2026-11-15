@@ -675,7 +675,7 @@ func TestCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 	defer stdout.Close()
 	defer unread.Close()
 
-	tm := startOnTerminal(t, environ, unread, "run", "-it", busybox, "sh", "-c", "echo "+word+" "+word+"; sleep 30")
+	tm := startOnTerminal(t, environ, unread, "run", "-it", busybox, "echo", word, word)
 
 	for deadline := time.Now().Add(10 * time.Second); !tm.raw(); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
@@ -683,7 +683,7 @@ func TestCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 		}
 	}
 
-	// The first Ctrl-C reaches the guest, which ends the workload. The stalled drain then keeps the runner waiting.
+	// The workload blocks on the full output until the first Ctrl-C ends it in the guest. The stalled drain then keeps the runner waiting.
 	time.Sleep(300 * time.Millisecond)
 	tm.write("\x03")
 
