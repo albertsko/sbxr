@@ -314,8 +314,8 @@ Exit codes for `sbxr run`:
 | 127           | The command does not exist in the image                     |
 | 129           | Stopped by SIGHUP, for example a closed terminal            |
 | 130           | Interrupted by SIGINT                                       |
-| 143           | Stopped by SIGTERM                                          |
 | 141           | The reader of stdout went away, like SIGPIPE in a pipeline  |
+| 143           | Stopped by SIGTERM                                          |
 
 A workload that exits 125, 126, or 127 cannot be told apart from an `sbxr` failure by exit code. `sbxr` failures always print a message that starts with `sbxr:` on stderr. Other commands exit 0 on success, 1 on failure, and 2 on usage errors.
 
