@@ -125,7 +125,7 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 		return ExitSetup, err
 	}
 
-	dir, unlock, err := newRunDir(r.RunsDir, r.Log)
+	dir, _, unlock, err := newRunDir(r.RunsDir, r.Log)
 	if err != nil {
 		return ExitSetup, err
 	}

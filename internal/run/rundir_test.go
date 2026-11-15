@@ -1,11 +1,15 @@
 package run
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestNewRunDirRemovesOnlyStaleRuns(t *testing.T) {
@@ -14,7 +18,7 @@ func TestNewRunDirRemovesOnlyStaleRuns(t *testing.T) {
 	runsDir := t.TempDir()
 	log := slog.New(slog.DiscardHandler)
 
-	active, unlockActive, err := newRunDir(runsDir, log)
+	active, _, unlockActive, err := newRunDir(runsDir, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,16 +33,29 @@ func TestNewRunDirRemovesOnlyStaleRuns(t *testing.T) {
 	unlocked := filepath.Join(runsDir, "unlocked")
 	mustWrite(t, filepath.Join(unlocked, "file"))
 
-	// A lone free lock file is stale.
+	// A lone free lock file is stale, and so is a free lock file that a run never renamed.
 	mustWrite(t, filepath.Join(runsDir, "lone"+lockSuffix))
+	crashedNew := filepath.Join(runsDir, newPrefix+"crashed")
+	mustWrite(t, crashedNew)
 
-	dir, unlock, err := newRunDir(runsDir, log)
+	old := time.Now().Add(-2 * newLockAge)
+
+	err = os.Chtimes(crashedNew, old, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A free but fresh new lock file may belong to a run that is about to lock it.
+	fresh := filepath.Join(runsDir, newPrefix+"fresh")
+	mustWrite(t, fresh)
+
+	dir, _, unlock, err := newRunDir(runsDir, log)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	got := entries(t, runsDir)
-	want := []string{filepath.Base(active), filepath.Base(active) + lockSuffix, filepath.Base(dir), filepath.Base(dir) + lockSuffix}
+	want := []string{filepath.Base(fresh), filepath.Base(active), filepath.Base(active) + lockSuffix, filepath.Base(dir), filepath.Base(dir) + lockSuffix}
 	slices.Sort(want)
 
 	if !slices.Equal(got, want) {
@@ -52,8 +69,58 @@ func TestNewRunDirRemovesOnlyStaleRuns(t *testing.T) {
 
 	unlock()
 
-	if got := entries(t, runsDir); len(got) != 2 {
-		t.Errorf("runs directory after unlock = %q, want only the first run", got)
+	if got := entries(t, runsDir); len(got) != 3 {
+		t.Errorf("runs directory after unlock = %q, want only the first run and the fresh file", got)
+	}
+}
+
+// TestNewRunDirUnderConcurrentSweeps checks that no run loses its directory or lock to the sweep of another run.
+func TestNewRunDirUnderConcurrentSweeps(t *testing.T) {
+	t.Parallel()
+
+	runsDir := t.TempDir()
+	log := slog.New(slog.DiscardHandler)
+
+	var wg sync.WaitGroup
+
+	errs := make(chan error, 32*20)
+
+	for range 32 {
+		wg.Go(func() {
+			for range 20 {
+				dir, lock, unlock, err := newRunDir(runsDir, log)
+				if err != nil {
+					errs <- err
+
+					return
+				}
+
+				// The run state must survive the sweeps that other runs make meanwhile.
+				removeStale(runsDir, log)
+
+				_, dirErr := os.Stat(dir)
+				_, lockErr := os.Stat(dir + lockSuffix)
+
+				if dirErr != nil || lockErr != nil || lock == nil {
+					errs <- fmt.Errorf("run state of %s is gone: %w", dir, errors.Join(dirErr, lockErr))
+				}
+
+				_ = os.Remove(dir)
+
+				unlock()
+			}
+		})
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+
+	if got := entries(t, runsDir); len(got) != 0 {
+		t.Errorf("runs directory = %q, want empty", got)
 	}
 }
 

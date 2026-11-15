@@ -8,48 +8,79 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-// lockSuffix names the lock file next to each run directory.
-// A run holds an exclusive flock on it from before the directory exists until the directory is gone,
-// so a directory whose lock is free or missing belongs to a run whose parent died.
-const lockSuffix = ".lock"
+// Run state in the runs directory:
+//   - <id>.lock: the run lock. It appears only already locked, and the run (and its VM process) holds it until <id> is gone.
+//   - <id>: the run directory, created after <id>.lock.
+//   - .new-*: a lock file that a run is about to lock and rename to <id>.lock.
+//
+// So a run directory whose lock is free or missing belongs to a run whose processes died.
+// A free .new-* file is stale once it is older than newLockAge, because a run locks and renames it at once.
+const (
+	lockSuffix = ".lock"
+	newPrefix  = ".new-"
+	newLockAge = time.Minute
+)
 
-// newRunDir removes stale run directories in runsDir, then creates a locked run directory.
-// unlock releases and removes the lock. Call it after the directory is removed.
-func newRunDir(runsDir string, log *slog.Logger) (dir string, unlock func(), err error) {
+// newRunDir removes stale run state in runsDir, then creates a locked run directory.
+// lock is the held run lock. unlock releases and removes it. Call unlock after the directory is removed.
+func newRunDir(runsDir string, log *slog.Logger) (dir string, lock *os.File, unlock func(), err error) {
 	err = os.MkdirAll(runsDir, 0o700)
 	if err != nil {
-		return "", nil, fmt.Errorf("create runs directory: %w", err)
+		return "", nil, nil, fmt.Errorf("create runs directory: %w", err)
 	}
 
 	removeStale(runsDir, log)
 
-	lock, err := os.CreateTemp(runsDir, "*"+lockSuffix)
+	lock, lockPath, err := newLock(runsDir)
 	if err != nil {
-		return "", nil, fmt.Errorf("create run lock: %w", err)
+		return "", nil, nil, fmt.Errorf("create run lock: %w", err)
 	}
 
 	unlock = func() {
-		_ = os.Remove(lock.Name()) // A leftover lock file is removed by the next run.
-		_ = lock.Close()           // Closing releases the flock.
+		_ = os.Remove(lockPath) // A leftover lock file is removed by the next run.
+		_ = lock.Close()        // Closing releases the flock.
 	}
 
-	err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
-	if err == nil {
-		dir = strings.TrimSuffix(lock.Name(), lockSuffix)
-		err = os.Mkdir(dir, 0o700)
-	}
+	dir = strings.TrimSuffix(lockPath, lockSuffix)
 
+	err = os.Mkdir(dir, 0o700)
 	if err != nil {
 		unlock()
 
-		return "", nil, fmt.Errorf("create run directory: %w", err)
+		return "", nil, nil, fmt.Errorf("create run directory: %w", err)
 	}
 
-	return dir, unlock, nil
+	return dir, lock, unlock, nil
+}
+
+// newLock creates a lock file under a name that the sweep leaves alone, locks it, and renames it to <id>.lock.
+// It returns the lock and its path.
+func newLock(runsDir string) (*os.File, string, error) {
+	f, err := os.CreateTemp(runsDir, newPrefix+"*")
+	if err != nil {
+		return nil, "", err //nolint:wrapcheck // newRunDir wraps the error.
+	}
+
+	name := filepath.Join(runsDir, strings.TrimPrefix(filepath.Base(f.Name()), newPrefix)+lockSuffix)
+
+	err = unix.Flock(int(f.Fd()), unix.LOCK_EX)
+	if err == nil {
+		err = os.Rename(f.Name(), name)
+	}
+
+	if err != nil {
+		_ = os.Remove(f.Name())
+		_ = f.Close()
+
+		return nil, "", err //nolint:wrapcheck // newRunDir wraps the error.
+	}
+
+	return f, name, nil
 }
 
 // removeStale removes the run directories and lock files of runs whose lock is not held.
@@ -60,33 +91,43 @@ func removeStale(runsDir string, log *slog.Logger) {
 	}
 
 	for _, e := range entries {
-		name := filepath.Join(runsDir, strings.TrimSuffix(e.Name(), lockSuffix))
-		if !e.IsDir() && !strings.HasSuffix(e.Name(), lockSuffix) {
+		var dir, lockPath string
+
+		switch {
+		case strings.HasPrefix(e.Name(), newPrefix):
+			if info, err := e.Info(); err != nil || time.Since(info.ModTime()) < newLockAge {
+				continue
+			}
+
+			lockPath = filepath.Join(runsDir, e.Name())
+		case e.IsDir():
+			dir = filepath.Join(runsDir, e.Name())
+			lockPath = dir + lockSuffix
+		case strings.HasSuffix(e.Name(), lockSuffix):
+			// A lock without its directory is stale only when free, which tryLock checks.
+			lockPath = filepath.Join(runsDir, e.Name())
+		default:
 			continue
 		}
 
-		if !e.IsDir() {
-			// A lock file without its directory is either stale or a run that is about to create the directory.
-			if _, err := os.Lstat(name); err == nil {
-				continue
-			}
-		}
-
-		lock, held := tryLock(name + lockSuffix)
+		lock, held := tryLock(lockPath)
 		if held {
 			continue
 		}
 
-		log.Debug("remove stale run state", "dir", name)
+		log.Debug("remove stale run state", "path", lockPath)
 
-		_ = os.RemoveAll(name)           // A failure leaves the state for the next run.
-		_ = os.Remove(name + lockSuffix) // See above.
-		_ = lock.Close()                 // Closing a lock file fails only for a closed file.
+		if dir != "" {
+			_ = os.RemoveAll(dir) // A failure leaves the state for the next run.
+		}
+
+		_ = os.Remove(lockPath) // See above.
+		_ = lock.Close()        // Closing a lock file fails only for a closed file.
 	}
 }
 
-// tryLock takes the lock at path without waiting. held reports that another run holds it.
-// A missing lock file counts as free, because a run creates its lock before its directory.
+// tryLock takes the lock at path without waiting. held reports that a live run holds it.
+// A missing lock file counts as free, because a lock appears before its directory.
 func tryLock(path string) (lock *os.File, held bool) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
