@@ -31,7 +31,7 @@ func (s Store) Pull(ctx context.Context, ref string, policy spec.Pull) (run.Imag
 		return run.Image{}, err
 	}
 
-	return run.Image{ID: img.Root, Config: run.ImageConfig(img.Config)}, nil
+	return run.Image{ID: img.Root, Config: img.Config}, nil
 }
 
 // ResolveUser resolves user through the image /etc/passwd and /etc/group.
@@ -54,5 +54,5 @@ func (s Store) NewRoot(_ context.Context, img run.Image, dir string) (string, fu
 
 // cached returns the cached image of a run image, which needs only the root for these operations.
 func cached(img run.Image) *Image {
-	return &Image{Digest: "", Root: img.ID, Config: Config{}}
+	return &Image{Root: img.ID, Config: run.ImageConfig{}}
 }

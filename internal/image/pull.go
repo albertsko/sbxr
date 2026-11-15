@@ -20,6 +20,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"golang.org/x/sys/unix"
+
+	"github.com/albertsko/sbxr/internal/run"
 )
 
 var (
@@ -43,21 +45,10 @@ const (
 
 // Image is an unpacked image in the cache. Its files must not change.
 type Image struct {
-	// Digest is the manifest digest of the platform image.
-	Digest string
 	// Root is the cached root directory.
 	Root string
 	// Config is the image run configuration.
-	Config Config
-}
-
-// Config is the part of the image configuration that decides what runs.
-type Config struct {
-	Entrypoint []string
-	Cmd        []string
-	Env        []string
-	WorkingDir string
-	User       string
+	Config run.ImageConfig
 }
 
 // hostPlatform is the only guest platform, because sbxr does not emulate other architectures.
@@ -140,7 +131,7 @@ func (c *Cache) load(digest string) (*Image, error) {
 		return nil, fmt.Errorf("read image config %s: %w", digest, err)
 	}
 
-	cfg := Config{
+	cfg := run.ImageConfig{
 		Entrypoint: cf.Config.Entrypoint,
 		Cmd:        cf.Config.Cmd,
 		Env:        cf.Config.Env,
@@ -148,7 +139,7 @@ func (c *Cache) load(digest string) (*Image, error) {
 		User:       cf.Config.User,
 	}
 
-	return &Image{Digest: digest, Root: filepath.Join(dir, "rootfs"), Config: cfg}, nil
+	return &Image{Root: filepath.Join(dir, "rootfs"), Config: cfg}, nil
 }
 
 func (c *Cache) imageDir(digest string) string {

@@ -21,14 +21,14 @@ func TestCloneRootIsolatesRuns(t *testing.T) {
 		entry{name: su, typ: tar.TypeReg, body: "su", mode: 0o4755},
 		entry{name: "bin/su-link", typ: tar.TypeLink, link: su},
 	)))
-	c, _ := openCache(t)
+	c, cacheDir := openCache(t)
 
 	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	run := filepath.Join(c.RunsDir(), "run1", "root")
+	run := filepath.Join(cacheDir, "runs", "run1", "root")
 	if err := os.MkdirAll(filepath.Dir(run), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestCloneRootIsolatesRuns(t *testing.T) {
 		t.Error("a change in the run root reached the cache")
 	}
 
-	next := filepath.Join(c.RunsDir(), "run2")
+	next := filepath.Join(cacheDir, "runs", "run2")
 	if err := img.CloneRoot(next); err != nil {
 		t.Fatal(err)
 	}

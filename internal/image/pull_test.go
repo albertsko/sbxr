@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/albertsko/sbxr/internal/image"
+	"github.com/albertsko/sbxr/internal/run"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -37,7 +38,7 @@ func TestPullReturnsImageConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := image.Config{Entrypoint: cfg.Entrypoint, Cmd: cfg.Cmd, Env: cfg.Env, WorkingDir: cfg.WorkingDir, User: cfg.User}
+	want := run.ImageConfig{Entrypoint: cfg.Entrypoint, Cmd: cfg.Cmd, Env: cfg.Env, WorkingDir: cfg.WorkingDir, User: cfg.User}
 	if !reflect.DeepEqual(img.Config, want) {
 		t.Errorf("Config = %+v, want %+v", img.Config, want)
 	}

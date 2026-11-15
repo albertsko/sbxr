@@ -65,7 +65,7 @@ func (r *reference) Run(ctx context.Context, w scenario.Workload) (scenario.Resu
 		return scenario.Result{ExitCode: 125, Class: scenario.Image}, nil
 	}
 
-	dir, err := os.MkdirTemp(r.images.Cache.RunsDir(), "")
+	dir, err := os.MkdirTemp(run.RunsDir(r.cacheDir), "")
 	if err != nil {
 		return scenario.Result{}, fmt.Errorf("create run directory: %w", err)
 	}

@@ -32,16 +32,6 @@ type Cache struct {
 	own Ownership
 }
 
-// DefaultDir returns the default cache directory, the user cache directory plus sbxr.
-func DefaultDir() (string, error) {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("find user cache directory: %w", err)
-	}
-
-	return filepath.Join(dir, "sbxr"), nil
-}
-
 // Open creates the cache layout in dir when needed and unpacks images with the given ownership strategy.
 func Open(dir string, own Ownership) (*Cache, error) {
 	for _, sub := range []string{"images", "refs", "runs", "locks"} {
@@ -52,11 +42,6 @@ func Open(dir string, own Ownership) (*Cache, error) {
 	}
 
 	return &Cache{dir: dir, own: own}, nil
-}
-
-// RunsDir returns the directory for per-run state.
-func (c *Cache) RunsDir() string {
-	return filepath.Join(c.dir, "runs")
 }
 
 // Hold takes a shared hold on the cache that keeps Prune out until it is closed.
