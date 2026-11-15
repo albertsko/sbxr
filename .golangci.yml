@@ -125,6 +125,7 @@ linters:
       - path: _test\.go$
         linters:
           - dupl
+          - goconst
           - errcheck
           - exhaustruct_v5
           - gocognit

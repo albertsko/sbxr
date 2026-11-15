@@ -72,17 +72,27 @@ func (h *dnsHandler) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	defer cancel()
 
 	m := h.answer(ctx, r)
+	fit(m, r, w.LocalAddr().Network() == "udp")
+	_ = w.WriteMsg(m)
+}
 
+// fit truncates the reply m to the size the guest can receive.
+// A query with EDNS gets an OPT record back, as RFC 6891 requires.
+func fit(m, r *dns.Msg, udp bool) {
 	size := dns.MaxMsgSize
-	if w.LocalAddr().Network() == "udp" {
+	if udp {
 		size = dns.MinMsgSize
-		if opt := r.IsEdns0(); opt != nil {
-			size = int(opt.UDPSize())
+	}
+
+	if opt := r.IsEdns0(); opt != nil {
+		m.SetEdns0(dns.DefaultMsgSize, false)
+
+		if udp {
+			size = int(max(opt.UDPSize(), dns.MinMsgSize))
 		}
 	}
 
 	m.Truncate(size)
-	_ = w.WriteMsg(m)
 }
 
 func (h *dnsHandler) answer(ctx context.Context, r *dns.Msg) *dns.Msg {
@@ -152,16 +162,13 @@ func (h *dnsHandler) forward(ctx context.Context, q dns.Question, m *dns.Msg) {
 	req.SetQuestion(q.Name, q.Qtype)
 	req.SetEdns0(dns.DefaultMsgSize, false)
 
-	for _, ns := range h.nameservers {
-		resp, _, err := h.udp.ExchangeContext(ctx, req, ns)
-		if err != nil {
-			continue
-		}
+	// Each nameserver gets an equal share of the query budget, so a dead first nameserver does not use all of it.
+	share := dnsTimeout / time.Duration(max(len(h.nameservers), 1))
 
-		if resp.Truncated {
-			if full, _, err := h.tcp.ExchangeContext(ctx, req, ns); err == nil {
-				resp = full
-			}
+	for _, ns := range h.nameservers {
+		resp, ok := h.exchange(ctx, req, ns, share)
+		if !ok {
+			continue
 		}
 
 		m.Answer = resp.Answer
@@ -173,6 +180,24 @@ func (h *dnsHandler) forward(ctx context.Context, q dns.Question, m *dns.Msg) {
 	}
 
 	m.Rcode = dns.RcodeServerFailure
+}
+
+func (h *dnsHandler) exchange(ctx context.Context, req *dns.Msg, ns string, timeout time.Duration) (*dns.Msg, bool) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	resp, _, err := h.udp.ExchangeContext(ctx, req, ns)
+	if err != nil {
+		return nil, false
+	}
+
+	if resp.Truncated {
+		if full, _, err := h.tcp.ExchangeContext(ctx, req, ns); err == nil {
+			resp = full
+		}
+	}
+
+	return resp, true
 }
 
 func aRecord(name string, a netip.Addr) *dns.A {

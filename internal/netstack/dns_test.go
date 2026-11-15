@@ -416,3 +416,76 @@ func TestDNSForwardWithoutNameserver(t *testing.T) {
 		t.Errorf("rcode = %s, want SERVFAIL", dns.RcodeToString[m.Rcode])
 	}
 }
+
+func TestDNSForwardSkipsDeadNameserver(t *testing.T) {
+	t.Parallel()
+
+	var lc net.ListenConfig
+
+	// A UDP socket that never answers holds the first nameserver until its share of the budget ends.
+	dead, err := lc.ListenPacket(t.Context(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() { _ = dead.Close() })
+
+	live, _ := fakeNameserver(t)
+
+	q := new(dns.Msg)
+	q.SetQuestion("example.org.", dns.TypeTXT)
+
+	m := newDNSHandler(t.Context(), nil, nil, []string{dead.LocalAddr().String(), live}).answer(t.Context(), q)
+	if m.Rcode != dns.RcodeSuccess || len(m.Answer) == 0 {
+		t.Errorf("rcode = %s with %d answers, want an answer from the second nameserver", dns.RcodeToString[m.Rcode], len(m.Answer))
+	}
+}
+
+func TestDNSReplyFitsTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		udp       bool
+		edns      bool
+		truncated bool
+	}{
+		{name: "udp without edns", udp: true, edns: false, truncated: true},
+		{name: "udp with edns", udp: true, edns: true, truncated: false},
+		{name: "tcp", udp: false, edns: false, truncated: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := new(dns.Msg)
+			r.SetQuestion("big.test.", dns.TypeTXT)
+
+			if tt.edns {
+				r.SetEdns0(4096, false)
+			}
+
+			m := new(dns.Msg)
+			m.SetReply(r)
+
+			// About 1000 bytes: above 512, below 4096.
+			for range 4 {
+				m.Answer = append(m.Answer, &dns.TXT{
+					Hdr: dns.RR_Header{Name: "big.test.", Rrtype: dns.TypeTXT, Class: dns.ClassINET},
+					Txt: []string{strings.Repeat("x", 250)},
+				})
+			}
+
+			fit(m, r, tt.udp)
+
+			if m.Truncated != tt.truncated {
+				t.Errorf("truncated = %v, want %v", m.Truncated, tt.truncated)
+			}
+
+			if got := m.IsEdns0() != nil; got != tt.edns {
+				t.Errorf("reply has OPT = %v, want %v", got, tt.edns)
+			}
+		})
+	}
+}
