@@ -32,6 +32,15 @@ type Machine struct {
 	LogLevel uint32 `json:"logLevel"`
 	// Net, when set, attaches the VM to the network of the run. Without it the VM has no network device.
 	Net *Net `json:"net,omitempty"`
+	// Volumes are host directories that the VM gets as virtio-fs devices.
+	Volumes []Volume `json:"volumes,omitempty"`
+}
+
+// Volume is a host directory shared with the guest. The guest mounts it by its tag.
+type Volume struct {
+	Tag      string `json:"tag"`
+	Host     string `json:"host"`
+	ReadOnly bool   `json:"readOnly"`
 }
 
 // NetFD is the VM process fd of the network socket, the last entry of exec.Cmd.ExtraFiles after the lifeline, the cache hold, and the run lock.

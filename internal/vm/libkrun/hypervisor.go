@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 
+	"github.com/albertsko/sbxr/internal/guestmount"
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
@@ -38,5 +39,21 @@ func (h Hypervisor) Start(m vm.Machine) error {
 		netDev = &Net{FD: m.Net.FD, MAC: [6]byte(mac)}
 	}
 
-	return Enter(dir, Config{Root: m.Root, CPUs: uint8(m.CPUs), MemoryMiB: m.MemoryMiB, Net: netDev, LogLevel: m.LogLevel})
+	volumes := make([]Volume, 0, len(m.Volumes))
+	for _, v := range m.Volumes {
+		volumes = append(volumes, Volume{Tag: v.Tag, Host: v.Host, ReadOnly: v.ReadOnly})
+	}
+
+	var helper []byte
+
+	if len(volumes) > 0 {
+		helper, err = guestmount.Binary()
+		if err != nil {
+			return err //nolint:wrapcheck // The error names the helper.
+		}
+	}
+
+	return Enter(dir, Config{
+		Root: m.Root, CPUs: uint8(m.CPUs), MemoryMiB: m.MemoryMiB, Net: netDev, Volumes: volumes, MountHelper: helper, LogLevel: m.LogLevel,
+	})
 }
