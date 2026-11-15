@@ -28,6 +28,7 @@ import (
 	bootAPI "github.com/containerd/containerd/api/runtime/bootstrap/v1"
 	sandboxAPI "github.com/containerd/containerd/api/runtime/sandbox/v1"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v3"
+	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/ttrpc"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -66,6 +67,7 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.StringVar(&f.bundle, "bundle", "", "bundle path")
 	fs.BoolVar(&f.debug, "debug", false, "debug logs")
 	fs.String("publish-binary", "", "containerd binary (unused)")
+	info := fs.Bool("info", false, "print the runtime info protobuf")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -73,12 +75,14 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	var err error
 
-	switch fs.Arg(0) {
-	case "start":
+	switch {
+	case *info:
+		err = printInfo(stdout)
+	case fs.Arg(0) == "start":
 		err = start(f, stdin, stdout)
-	case "delete":
+	case fs.Arg(0) == "delete":
 		err = deleteAction(f, stdout)
-	case "serve":
+	case fs.Arg(0) == "serve":
 		err = serve(f)
 	default:
 		err = fmt.Errorf("unknown action %q", fs.Arg(0))
@@ -91,6 +95,20 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	return 0
+}
+
+// printInfo answers containerd's runtime introspection.
+func printInfo(stdout io.Writer) error {
+	data, err := proto.Marshal(&types.RuntimeInfo{Name: "io.containerd.sbxr.v1"})
+	if err == nil {
+		_, err = stdout.Write(data)
+	}
+
+	if err != nil {
+		return fmt.Errorf("runtime info: %w", err)
+	}
+
+	return nil
 }
 
 // start launches the shim daemon for a sandbox and prints how to reach it.
