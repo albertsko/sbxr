@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -90,6 +91,43 @@ func TestUnpackAppliesLayers(t *testing.T) {
 		if got := overrideStat(t, at(root, name)); got != want {
 			t.Errorf("override stat of %s = %q, want %q", name, got, want)
 		}
+	}
+}
+
+// TestUnpackWhiteoutsKeepTheirOwnLayer checks that whiteouts remove only lower layers, in either entry order.
+func TestUnpackWhiteoutsKeepTheirOwnLayer(t *testing.T) {
+	t.Parallel()
+
+	lower := []entry{file("foo", "old"), file("opq/old", "old"), file("opq/sub/old", "old"), file("dir/old", "old")}
+	upper := []entry{
+		file("foo", "new"), file(".wh.foo", ""),
+		file("opq/sub/new", "new"), file("opq/.wh..wh..opq", ""),
+		file("dir/new", "new"), file(".wh.dir", ""),
+	}
+	reversed := slices.Clone(upper)
+	slices.Reverse(reversed)
+
+	for name, top := range map[string][]entry{"entry first": upper, "whiteout first": reversed} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			root, err := unpack(t, hostImage(t, layer(t, lower...), layer(t, top...)))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, name := range []string{"foo", "opq/sub/new", "dir/new"} {
+				if got := readFile(t, at(root, name)); got != "new" {
+					t.Errorf("%s = %q, want new", name, got)
+				}
+			}
+
+			for _, name := range []string{"opq/old", "opq/sub/old", "dir/old"} {
+				if exists(at(root, name)) {
+					t.Errorf("%s exists, want the whiteout to remove it", name)
+				}
+			}
+		})
 	}
 }
 

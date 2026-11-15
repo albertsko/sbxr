@@ -188,13 +188,14 @@ func (l layerApplier) apply(layer v1.Layer, count func(int)) error {
 			}
 		}
 
+		// Whiteouts remove only what lower layers wrote, never entries of this layer.
 		switch {
-		case opaque:
+		case opaque || whiteout && written[name]:
 			err = l.clearLower(name, written)
 		case whiteout:
 			err = l.root.RemoveAll(name)
 		default:
-			written[name] = true
+			markWritten(written, name)
 			err = l.entry(name, hdr, tr)
 		}
 
@@ -352,10 +353,17 @@ func (l layerApplier) mkdirParents(dir string) error {
 	return l.setMeta(dir, rootMeta)
 }
 
-// clearLower removes entries under dir that this layer did not write.
+// markWritten records name and its parent directories as written by the current layer.
+func markWritten(written map[string]bool, name string) {
+	for ; name != "." && !written[name]; name = path.Dir(name) {
+		written[name] = true
+	}
+}
+
+// clearLower removes entries under dir that this layer did not write. A dir that is not a directory stays.
 func (l layerApplier) clearLower(dir string, written map[string]bool) error {
 	entries, err := fs.ReadDir(l.root.FS(), dir)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ENOTDIR) {
 		return nil
 	}
 
