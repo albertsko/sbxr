@@ -16,8 +16,10 @@ import (
 	"time"
 )
 
-// K8s is the k8s-p1 target. It runs each workload as a pod with runtimeClassName sbxr in a kind cluster.
+// K8s is the k8s-p1 or k8s-p2 target. It runs each workload as a pod with runtimeClassName sbxr in a kind cluster.
 type K8s struct {
+	// Phase is the installed sbxr phase, 1 or 2.
+	Phase int
 	// Context is the kubectl context of the cluster.
 	Context string
 	// Node is the kind node container, where the cleanup check looks for VM processes.
@@ -30,15 +32,20 @@ type K8s struct {
 	pods map[string]string // Pod name to UID.
 }
 
-// Capabilities returns the k8s-p1 capabilities from PRD "Test contract".
+// Capabilities returns the k8s-p1 or k8s-p2 capabilities from PRD "Test contract".
 func (k *K8s) Capabilities() []Capability {
-	return []Capability{Net, Publish, DNS, MemoryLimit, Probes}
+	caps := []Capability{Net, Publish, DNS, MemoryLimit, Probes}
+	if k.Phase == 2 {
+		caps = append(caps, Exec, GracefulStop)
+	}
+
+	return caps
 }
 
 // Run creates a pod for w, waits until it ends or cannot start, and deletes it.
 func (k *K8s) Run(ctx context.Context, w Workload) (Result, error) {
 	if w.Interactive || w.TTY || w.InterruptAfter != "" {
-		return Result{}, errors.New("k8s-p1 has no stdin, tty, or signals")
+		return Result{}, errors.New("the k8s targets have no stdin, tty, or signals")
 	}
 
 	name := "s-" + strings.ToLower(rand.Text()[:10])
@@ -91,7 +98,9 @@ func (k *K8s) wait(ctx context.Context, name string) (Result, error) {
 
 		var state struct {
 			Terminated *struct {
-				ExitCode int `json:"exitCode"`
+				ExitCode int    `json:"exitCode"`
+				Reason   string `json:"reason"`
+				Message  string `json:"message"`
 			} `json:"terminated"`
 			Waiting *struct {
 				Reason  string `json:"reason"`
@@ -107,6 +116,9 @@ func (k *K8s) wait(ctx context.Context, name string) (Result, error) {
 		}
 
 		switch {
+		case state.Terminated != nil && state.Terminated.Reason == "StartError":
+			// Phase 2 reports a command that cannot run as a start error, like runc.
+			return startError(state.Terminated.Message), nil
 		case state.Terminated != nil:
 			logs, err := k.Kubectl(ctx, nil, "-n", k.Namespace, "logs", name)
 			if err != nil {
@@ -127,6 +139,18 @@ func (k *K8s) wait(ctx context.Context, name string) (Result, error) {
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
+}
+
+// startError maps a start error to the error class of a command that does not exist or cannot run.
+func startError(msg string) Result {
+	switch {
+	case strings.Contains(msg, "not found") || strings.Contains(msg, "No such file"):
+		return Result{Stdout: "", Stderr: msg, ExitCode: 127, Class: NotFound}
+	case strings.Contains(msg, "ermission denied"):
+		return Result{Stdout: "", Stderr: msg, ExitCode: 126, Class: NotExecutable}
+	}
+
+	return Result{Stdout: "", Stderr: msg, ExitCode: 125, Class: InvalidSpec}
 }
 
 // CheckClean reports pods of this target that still exist and processes that remain in their cgroups on the node.

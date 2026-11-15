@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Creates or reuses the kind cluster for mise run test:kind, then installs sbxr with a locally built installer image.
 # Usage: scripts/kind-up.sh
-# Environment: SBXR_KIND_CLUSTER (default sbxr), SBXR_NODE_IMAGE (an installer image that is already built; default: build one).
+# Environment: SBXR_KIND_CLUSTER (default sbxr), SBXR_NODE_IMAGE (an installer image that is already built; default: build one),
+# SBXR_PHASE (1 or 2, default 2), SBXR_UPGRADE_FROM (a phase to install first and then upgrade from, default none).
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
 cluster=${SBXR_KIND_CLUSTER:-sbxr}
+phase=${SBXR_PHASE:-2}
 node=$cluster-control-plane
 kubectl=(kubectl --context "kind-$cluster")
 tmp=$(mktemp -d)
@@ -45,12 +47,25 @@ printf 'FROM scratch\nCOPY dnsgo /dnsgo\nENTRYPOINT ["/dnsgo"]\n' >"$tmp/Dockerf
 docker build -q -f "$tmp/Dockerfile.dnsgo" -t sbxr-test/dnsgo:1 "$tmp" >/dev/null
 kind load docker-image --name "$cluster" "$tag" sbxr-test/{busybox,alpine,debian,dnsgo}:1
 
-scripts/node-manifests.sh "$tag" "$tmp"
-"${kubectl[@]}" apply -f "$tmp/sbxr-install.yaml"
-"${kubectl[@]}" -n sbxr-system rollout status ds/sbxr-node --timeout=8m
-if ! "${kubectl[@]}" wait node --all --for=jsonpath='{.metadata.labels.sbxr\.dev/ready}'=true --timeout=10s; then
-	"${kubectl[@]}" get node -o jsonpath='{.items[*].metadata.annotations.sbxr\.dev/preflight}{"\n"}' >&2
-	"${kubectl[@]}" -n sbxr-system logs ds/sbxr-node >&2
-	exit 1
+# install installs or upgrades to phase $1 and waits until the node is ready for it.
+install() {
+	scripts/node-manifests.sh "$tag" "$tmp/phase$1" "$1"
+	"${kubectl[@]}" apply -f "$tmp/phase$1/sbxr-install.yaml"
+	if [[ $1 == 2 ]]; then
+		# Phase 2 needs neither phase 1 policy.
+		"${kubectl[@]}" delete --ignore-not-found validatingadmissionpolicy,validatingadmissionpolicybinding sbxr-warn
+		"${kubectl[@]}" delete --ignore-not-found mutatingadmissionpolicy,mutatingadmissionpolicybinding sbxr-dns-use-vc
+	fi
+	"${kubectl[@]}" -n sbxr-system rollout status ds/sbxr-node --timeout=8m
+	if ! "${kubectl[@]}" wait node --all --for=jsonpath='{.metadata.labels.sbxr\.dev/ready}'=true --timeout=10s; then
+		"${kubectl[@]}" get node -o jsonpath='{.items[*].metadata.annotations.sbxr\.dev/preflight}{"\n"}' >&2
+		"${kubectl[@]}" -n sbxr-system logs ds/sbxr-node >&2
+		exit 1
+	fi
+}
+
+if [[ -n ${SBXR_UPGRADE_FROM:-} ]]; then
+	install "$SBXR_UPGRADE_FROM"
 fi
+install "$phase"
 "${kubectl[@]}" create namespace sbxr-test --dry-run=client -o yaml | "${kubectl[@]}" apply -f -
