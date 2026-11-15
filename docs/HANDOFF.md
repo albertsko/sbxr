@@ -34,7 +34,7 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - The fake VM runs `internal/netstack/guestsim`, a small gvisor guest stack with DHCP, so the network scenarios run without a hypervisor. Its busybox has `wget`, `nc`, and `nslookup`.
 - The connection caps have no scenario, because the fake busybox has no loops or background jobs. The netstack tests cover them: `TestTCPCap`, `TestUDPCap`, and `TestCloseAtCaps` (guest connections past the cap fail, and the stack keeps working and closes at once).
 - `-v` shares host directories as virtio-fs devices. A small static helper (`cmd/sbxr-mount`, embedded through `internal/guestmount` by `go generate`) mounts them in the guest before the workload, because the `libkrun` init cannot. See PRD "Workload config". Build with `mise run build`, or run `go generate ./internal/guestmount` first, because a bare `go build` embeds whatever helper is on disk.
-- Distribution (S6): goreleaser builds the release archives on `v*` tags. The formula `albertsko/homebrew-tap/Formula/sbxr.rb` installs `sbxr_darwin_arm64` and signs it, and has a placeholder version (`v0.0.0`) until the first release. No release tag exists yet. The Linux setup block lives in `internal/preflight/setup.go` and the README, and a test keeps them equal. The `install` workflow installs a goreleaser snapshot on fresh `ubuntu-latest` and `macos-15` runners (PRD "CI contract").
+- Distribution (S6): goreleaser builds the release archives on `v*` tags. The formula `albertsko/homebrew-tap/Formula/sbxr.rb` installs `sbxr_darwin_arm64` and signs it, and has a placeholder version (`v0.0.0`) until the first release. The Linux setup block lives in `internal/preflight/setup.go` and the README, and a test keeps them equal. The `install` workflow installs a goreleaser snapshot on fresh `ubuntu-latest` and `macos-15` runners (PRD "CI contract").
 - Packages:
   - `internal/spec`: run input validation, no I/O.
   - `internal/krunconfig`: the config writer.
@@ -61,7 +61,7 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - **Node distributions.** The installer runs in CI only on kind. k3s, RKE2, k0s, and kubeadm-style nodes are untested end to end. Assumption A4 covers only their drop-in imports.
 - **arm64 hosts.** No CI runner for arm64 has KVM. `test:hv` passes in a local Ubuntu 24.04 arm64 VM with nested KVM, but no job runs it. Phase 1 and phase 2 have not run on an arm64 node, and only the release workflow builds the arm64 node image.
 - **PRD assumptions A1, A6, and A9** are still open, and open question Q1 (upstream `libkrun` bug reports) waits for the project owner. See PRD "Assumptions and Open Questions".
-- **Known limits that stay:** the rare `hvc0` console race can still lose guest output under heavy host load (PRD "Workload config"), terminal resizes reach the guest only on Linux (`libkrun` 1.19.8), and the phase 1 and phase 2 limits in [kubernetes.md](kubernetes.md).
+- **Known limits that stay:** the rare `hvc0` console race can still lose guest output under heavy host load (PRD "Workload config"), terminal resizes reach the guest only on Linux (`libkrun` 1.19.8), a bundle upgrade breaks exec, probes, and graceful stop in running phase 2 pods until they are recreated (the old guest root is not kept), and the phase 1 and phase 2 limits in [kubernetes.md](kubernetes.md).
 
 ## Development environment
 

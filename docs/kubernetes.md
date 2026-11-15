@@ -4,7 +4,7 @@
 
 ## Requirements
 
-- Kubernetes 1.36 or later. Phase 1 needs it for its DNS policy, which uses `MutatingAdmissionPolicy` at `admissionregistration.k8s.io/v1`, and older versions do not serve that API by default. CI tests Kubernetes 1.37 in kind.
+- Kubernetes 1.36 or later, the supported minimum for both phases. Phase 1's DNS policy uses `MutatingAdmissionPolicy` at `admissionregistration.k8s.io/v1`, which older versions do not serve by default. CI tests Kubernetes 1.37 in kind.
 - Nodes with containerd 2.2 or later, glibc 2.35 or later, Linux 5.19 or later, `/dev/kvm`, and `/dev/net/tun`.
 - `iptables` and `nsenter` on the node for `kubectl port-forward`.
 - A `kubelet` id range, so that pods with user namespaces (`hostUsers: false`) and `sbxr` pod VMs never share host ids. Without it, the kubelet may give such pods any host id. The kubelet reads the range with `getsubids kubelet` and `getsubids -g kubelet` at start, and so does preflight. The range must follow the kubelet's own rules for the default 65536 ids per pod:

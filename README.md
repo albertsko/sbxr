@@ -4,7 +4,7 @@
 
 ## Status
 
-All planned build steps are done, and the first release is pending, so the install commands below work only after it. `sbxr run`, `sbxr doctor`, and `sbxr prune` work with real VMs on macOS arm64 and on Linux with KVM, without root, and with images pulled from registries. `--net`, `--allow-lan`, and `-p` give the VM a guarded userspace network, and `-v` shares host directories. On Kubernetes, the RuntimeClass `sbxr` runs one VM per pod (phase 2, the default install) or one VM per container (phase 1). See [docs/kubernetes.md](docs/kubernetes.md) for the cluster install, [docs/PRD.md](docs/PRD.md) for the requirements, and [docs/HANDOFF.md](docs/HANDOFF.md) for the current state and open work.
+Feature-complete for the first release, which is pending, so the install commands below work only after it. `sbxr run`, `sbxr doctor`, and `sbxr prune` work with real VMs on macOS arm64 and on Linux with KVM, without root, and with images pulled from registries. `--net`, `--allow-lan`, and `-p` give the VM a guarded userspace network, and `-v` shares host directories. On Kubernetes, the RuntimeClass `sbxr` runs one VM per pod (phase 2, the default install) or one VM per container (phase 1). See [docs/kubernetes.md](docs/kubernetes.md) for the cluster install, [docs/PRD.md](docs/PRD.md) for the requirements, and [docs/HANDOFF.md](docs/HANDOFF.md) for the current state and open work.
 
 ## Usage
 
