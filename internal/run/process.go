@@ -105,15 +105,10 @@ func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) 
 	defer stdout.close()
 	defer stderr.close()
 
-	// A gone stdout reader stops the VM, like SIGPIPE stops a Unix pipeline. Stderr write errors are ignored.
-	broken := make(chan struct{})
-	breakOnce := sync.OnceFunc(func() { close(broken) })
+	// Stderr write errors are ignored.
+	pipe := newPipeBreak()
 
-	outPipe, outDone, err := relay(stdout, func(err error) {
-		if errors.Is(err, syscall.EPIPE) {
-			breakOnce()
-		}
-	})
+	outPipe, outDone, err := relay(stdout, pipe.onError)
 	if err != nil {
 		return err
 	}
@@ -156,16 +151,8 @@ func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) 
 		}()
 	}
 
-	exited := make(chan struct{})
-	defer close(exited)
-
-	go func() {
-		select {
-		case <-broken:
-			_ = cmd.Process.Kill() // The VM process may have exited already.
-		case <-exited:
-		}
-	}()
+	stopWatch := pipe.watch(cmd.Process)
+	defer stopWatch()
 
 	err = cmd.Wait()
 
@@ -176,16 +163,68 @@ func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) 
 		}
 	}
 
-	select {
-	case <-broken:
-		return errBrokenPipe
-	default:
-		return err //nolint:wrapcheck // start inspects the exec error.
-	}
+	return pipe.result(err)
 }
 
 // errBrokenPipe means that the reader of the user's stdout went away, so the runner stopped the VM.
 var errBrokenPipe = errors.New("stdout reader is gone")
+
+// pipeBreak stops the VM process when a write to the user's stdout fails with EPIPE, like SIGPIPE stops a Unix pipeline.
+type pipeBreak struct {
+	broken chan struct{}
+	once   sync.Once
+}
+
+func newPipeBreak() *pipeBreak {
+	return &pipeBreak{broken: make(chan struct{}), once: sync.Once{}}
+}
+
+// onError takes the error of a write to the user's stdout.
+func (p *pipeBreak) onError(err error) {
+	if errors.Is(err, syscall.EPIPE) {
+		p.once.Do(func() { close(p.broken) })
+	}
+}
+
+// watch kills proc when the pipe breaks, until stop is called.
+func (p *pipeBreak) watch(proc *os.Process) (stop func()) {
+	exited := make(chan struct{})
+
+	go func() {
+		select {
+		case <-p.broken:
+			_ = proc.Kill() // The VM process may have exited already.
+		case <-exited:
+		}
+	}()
+
+	return func() { close(exited) }
+}
+
+// result returns errBrokenPipe when the pipe broke, else err.
+func (p *pipeBreak) result(err error) error {
+	select {
+	case <-p.broken:
+		return errBrokenPipe
+	default:
+		return err
+	}
+}
+
+// errorWriter passes the errors of its writes to onError.
+type errorWriter struct {
+	w       io.Writer
+	onError func(error)
+}
+
+func (e errorWriter) Write(b []byte) (int, error) {
+	n, err := e.w.Write(b)
+	if err != nil {
+		e.onError(err)
+	}
+
+	return n, err //nolint:wrapcheck // This is a plain write.
+}
 
 // relay returns the write end of a new pipe and copies everything from its read end to w.
 // Write errors go to onError and do not stop the copy, so that the VM never blocks on output. done closes at the end of the pipe.
@@ -285,6 +324,7 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 
 	marker := rand.Text()
 	out := &guardedWriter{w: r.Stdout, closed: atomic.Bool{}}
+	pipe := newPipeBreak()
 	copied := make(chan struct{})
 
 	defer out.close()
@@ -292,8 +332,11 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 	go func() {
 		defer close(copied)
 
-		copyUntil(out, ptmx, []byte(marker))
+		copyUntil(errorWriter{w: out, onError: pipe.onError}, ptmx, []byte(marker))
 	}()
+
+	stopWatch := pipe.watch(cmd.Process)
+	defer stopWatch()
 
 	err = cmd.Wait()
 
@@ -311,7 +354,7 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 	case <-ctx.Done():
 	}
 
-	return err //nolint:wrapcheck // start inspects the exec error.
+	return pipe.result(err)
 }
 
 // copyUntil copies src to dst until it reads marker, which it drops.

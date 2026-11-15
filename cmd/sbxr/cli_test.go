@@ -930,6 +930,43 @@ func TestGoneStdoutReaderStopsTheRun(t *testing.T) {
 	}
 }
 
+func TestGoneStdoutReaderStopsATTYRun(t *testing.T) {
+	t.Parallel()
+
+	environ := env(t)
+	cacheDir := cacheDirOf(environ)
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tm := startOnTerminal(t, environ, pw, "run", "-q", "-t", busybox, "yes")
+	_ = pw.Close()
+
+	lines := bufio.NewReader(pr)
+
+	for range 5 {
+		_, err = lines.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_ = pr.Close()
+
+	if code := waitExit(t, tm.cmd); code != 141 || strings.Contains(tm.output(), "sbxr:") {
+		t.Errorf("sbxr run -t yes = %d, terminal %q; want 141 and no sbxr error", code, tm.output())
+	}
+
+	waitForNoProcess(t, cacheDir)
+
+	err = scenario.CheckClean(cacheDir)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 // TestGoneReaderOfDebugOutputStopsTheRun closes a pipe that carries both stdout and the debug logs on stderr.
 // A later log write must not kill the runner before it cleans up.
 func TestGoneReaderOfDebugOutputStopsTheRun(t *testing.T) {
@@ -1001,6 +1038,7 @@ func TestReaderGoneAfterCtrlCWithStalledOutput(t *testing.T) {
 	}
 
 	// Nobody reads the pipe, so the copy of the output blocks once the pipe buffer is full.
+	// The sleeps are best effort: the test passes but cannot prove that the copy was blocked at the signal.
 	time.Sleep(500 * time.Millisecond)
 
 	err = cmd.Process.Signal(syscall.SIGINT)
