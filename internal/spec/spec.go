@@ -5,6 +5,7 @@ package spec
 
 import (
 	"fmt"
+	"math"
 	"net/netip"
 	"path"
 	"strconv"
@@ -51,7 +52,6 @@ type Input struct {
 
 	Interactive bool
 	TTY         bool
-	Quiet       bool
 }
 
 // EnvFile is the content of one --env-file.
@@ -80,7 +80,6 @@ type Spec struct {
 
 	Interactive bool
 	TTY         bool
-	Quiet       bool
 }
 
 // Volume is a host directory shared with the guest.
@@ -99,9 +98,8 @@ type Port struct {
 
 // User is the guest user from -u.
 type User struct {
-	UID    uint32
-	GID    uint32
-	HasGID bool
+	UID uint32
+	GID uint32 // 0 when -u has no group.
 }
 
 // Parse validates in and returns the run request.
@@ -172,7 +170,6 @@ func Parse(in Input, hostCPUs int) (Spec, error) {
 		Pull:        pull,
 		Interactive: in.Interactive,
 		TTY:         in.TTY,
-		Quiet:       in.Quiet,
 	}, nil
 }
 
@@ -247,8 +244,11 @@ func parseEnv(flags []string, files []EnvFile) ([]string, error) {
 
 	for _, f := range files {
 		for i, line := range strings.Split(string(f.Data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
+			// Values stay unchanged, except for the CR of a CRLF line end.
+			line = strings.TrimSuffix(line, "\r")
+
+			trimmed := strings.TrimLeft(line, " \t")
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 				continue
 			}
 
@@ -387,11 +387,16 @@ func checkWorkdir(dir string) error {
 		return nil
 	}
 
+	err := checkValue("-w", dir)
+	if err != nil {
+		return err
+	}
+
 	if !path.IsAbs(dir) {
 		return &Error{Source: "-w", Value: dir, Problem: "must be absolute", Fix: "for example /" + strings.TrimLeft(dir, "./")}
 	}
 
-	return checkValue("-w", dir)
+	return nil
 }
 
 func parseUser(raw string) (*User, error) {
@@ -399,27 +404,36 @@ func parseUser(raw string) (*User, error) {
 		return nil, nil //nolint:nilnil // No -u means the image user.
 	}
 
-	bad := &Error{Source: "-u", Value: raw, Problem: "must be UID or UID:GID with decimal numbers", Fix: "for example -u 1000:1000"}
+	bad := &Error{Source: "-u", Value: raw, Problem: "must be UID or UID:GID with decimal numbers below 4294967295", Fix: "for example -u 1000:1000"}
 
 	uidRaw, gidRaw, hasGID := strings.Cut(raw, ":")
 
-	uid, err := strconv.ParseUint(uidRaw, 10, 32)
-	if err != nil {
+	uid, ok := ParseID(uidRaw)
+	if !ok {
 		return nil, bad
 	}
 
-	u := &User{UID: uint32(uid), GID: 0, HasGID: hasGID}
+	gid := uint32(0)
 
 	if hasGID {
-		gid, err := strconv.ParseUint(gidRaw, 10, 32)
-		if err != nil {
+		gid, ok = ParseID(gidRaw)
+		if !ok {
 			return nil, bad
 		}
-
-		u.GID = uint32(gid)
 	}
 
-	return u, nil
+	return &User{UID: uid, GID: gid}, nil
+}
+
+// ParseID parses a decimal user or group ID.
+// It rejects 4294967295, because setuid and setgid treat it as -1.
+func ParseID(raw string) (uint32, bool) {
+	id, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil || id == math.MaxUint32 {
+		return 0, false
+	}
+
+	return uint32(id), true
 }
 
 func checkEntrypoint(entrypoint *string) error {

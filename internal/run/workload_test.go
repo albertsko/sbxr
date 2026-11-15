@@ -78,13 +78,15 @@ func TestWorkload(t *testing.T) {
 	}
 }
 
-func TestWorkloadRejectsImageUserName(t *testing.T) {
+func TestWorkloadRejectsUnsupportedImageUser(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := Workload(spec.Spec{}, ImageConfig{User: "nobody", Cmd: []string{"sh"}})
+	for _, u := range []string{"nobody", "1000:staff", "4294967295", "0:4294967295"} {
+		_, _, err := Workload(spec.Spec{}, ImageConfig{User: u, Cmd: []string{"sh"}})
 
-	want := `image user "nobody": user names are not supported yet; pass -u UID[:GID]`
-	if err == nil || err.Error() != want {
-		t.Errorf("Workload() error = %v, want %q", err, want)
+		want := `image user "` + u + `": only numeric UID[:GID] below 4294967295 is supported yet; pass -u UID[:GID]`
+		if err == nil || err.Error() != want {
+			t.Errorf("Workload() error = %v, want %q", err, want)
+		}
 	}
 }

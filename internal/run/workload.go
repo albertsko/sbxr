@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	"github.com/albertsko/sbxr/internal/krunconfig"
@@ -116,21 +115,23 @@ func user(flag *spec.User, image string) (uint32, uint32, error) {
 		return 0, 0, nil
 	}
 
-	uidRaw, gidRaw, _ := strings.Cut(image, ":")
+	bad := &spec.Error{Source: "image user", Value: image, Problem: "only numeric UID[:GID] below 4294967295 is supported yet", Fix: "pass -u UID[:GID]"}
 
-	uid, err := strconv.ParseUint(uidRaw, 10, 32)
-	if err != nil {
-		return 0, 0, &spec.Error{Source: "image user", Value: image, Problem: "user names are not supported yet", Fix: "pass -u UID[:GID]"}
+	uidRaw, gidRaw, hasGID := strings.Cut(image, ":")
+
+	uid, ok := spec.ParseID(uidRaw)
+	if !ok {
+		return 0, 0, bad
 	}
 
-	if gidRaw == "" {
-		return uint32(uid), 0, nil
+	gid := uint32(0)
+
+	if hasGID {
+		gid, ok = spec.ParseID(gidRaw)
+		if !ok {
+			return 0, 0, bad
+		}
 	}
 
-	gid, err := strconv.ParseUint(gidRaw, 10, 32)
-	if err != nil {
-		return 0, 0, &spec.Error{Source: "image user", Value: image, Problem: "group names are not supported yet", Fix: "pass -u UID:GID"}
-	}
-
-	return uint32(uid), uint32(gid), nil
+	return uid, gid, nil
 }
