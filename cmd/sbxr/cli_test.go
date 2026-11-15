@@ -1037,15 +1037,18 @@ func TestReaderGoneAfterCtrlCWithStalledOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Nobody reads the pipe, so the copy of the output blocks once the pipe buffer is full.
-	// The sleeps are best effort: the test passes but cannot prove that the copy was blocked at the signal.
-	time.Sleep(500 * time.Millisecond)
+	// The first line proves that the runner handles signals. Then nobody reads, so the output copy blocks on the full pipe.
+	_, err = bufio.NewReader(pr).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	err = cmd.Process.Signal(syscall.SIGINT)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// The reader goes away after the runner handled the signal. The wait is best effort, an earlier close ends with 141.
 	time.Sleep(100 * time.Millisecond)
 
 	_ = pr.Close()
