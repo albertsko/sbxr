@@ -20,12 +20,14 @@ type procIO struct {
 	stdin  *net.UnixConn
 	copies sync.WaitGroup
 	files  []io.Closer
+	// outputs are the stdout and stderr FIFOs. containerd waits for their EOF before it deletes the process.
+	outputs []*os.File
 }
 
 // connectIO opens the FIFOs that containerd created and one stream to the guest for each.
 // FIFOs open read-write, so opening never blocks and the stdin copy ends only through CloseIO.
 func connectIO(streamSock, container, exec, stdin, stdout, stderr string, terminal bool) (*procIO, error) {
-	p := &procIO{stdin: nil, copies: sync.WaitGroup{}, files: nil}
+	p := &procIO{stdin: nil, copies: sync.WaitGroup{}, files: nil, outputs: nil}
 
 	if terminal {
 		stderr = "" // A terminal carries both output streams.
@@ -69,7 +71,13 @@ func (p *procIO) connect(streamSock string, h podvm.Header, fifo string) error {
 		return nil
 	}
 
-	p.copies.Go(func() { _, _ = io.Copy(f, conn) })
+	p.outputs = append(p.outputs, f)
+
+	// The shim holds the only write end of the FIFO, so closing it gives containerd EOF.
+	p.copies.Go(func() {
+		_, _ = io.Copy(f, conn)
+		_ = f.Close()
+	})
 
 	return nil
 }
@@ -112,6 +120,10 @@ func (p *procIO) drain(timeout time.Duration) {
 	select {
 	case <-done:
 	case <-time.After(timeout):
+		// A child of the process still holds the output open. containerd must not wait for it.
+		for _, f := range p.outputs {
+			_ = f.Close()
+		}
 	}
 }
 
