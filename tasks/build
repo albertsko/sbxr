@@ -10,7 +10,8 @@ name="$(_name_of "$(go list -m)")"
 
 mkdir -p bin
 
-go build -o "bin/$name" "./cmd/$name"
+# cgo stays off, like the release, so that the binary that the hv tests run matches it.
+CGO_ENABLED=0 go build -o "bin/$name" "./cmd/$name"
 
 # Hardened runtime would strip the DYLD_* variables that libkrun needs, so do not add --options runtime.
 if [[ "$(uname -s)" == Darwin ]]; then

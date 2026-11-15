@@ -4,7 +4,7 @@
 
 ## Status
 
-Early development. The CLI, input validation, and the test harness work against a fake VM. Real VMs, image pull, networking, and the Kubernetes RuntimeClass come next. See [docs/PRD.md](docs/PRD.md) for the requirements and [docs/HANDOFF.md](docs/HANDOFF.md) for the build plan.
+Early development. `sbxr run`, `sbxr doctor`, and `sbxr prune` work with real VMs on macOS arm64 and on Linux with KVM, without root, and with images pulled from registries. Networking (`--net`, `-p`), volumes (`-v`), and the Kubernetes RuntimeClass come next. See [docs/PRD.md](docs/PRD.md) for the requirements and [docs/HANDOFF.md](docs/HANDOFF.md) for the build plan.
 
 ## Build and test
 
