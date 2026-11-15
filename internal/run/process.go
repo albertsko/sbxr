@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 
@@ -72,8 +73,16 @@ func (r *Runner) start(ctx context.Context, s spec.Spec, dir string) (int, error
 		return ExitSetup, fmt.Errorf("vm process: %w", context.Cause(ctx))
 	case isExit && exit.Exited():
 		return exit.ExitCode(), nil
+	case isExit:
+		// The VM process ignores terminal signals, so a signal death means that something else killed it or the VMM crashed.
+		status, _ := exit.Sys().(syscall.WaitStatus)
+
+		return ExitSetup, &spec.Error{
+			Source:  "vm",
+			Problem: fmt.Sprintf("the VM process was killed by signal %d", int(status.Signal())),
+			Fix:     "run again with --debug and report a bug",
+		}
 	default:
-		// This includes a VM process that a signal ended, which means that the VMM crashed.
 		return ExitSetup, &spec.Error{Source: "vm", Problem: err.Error()}
 	}
 }
@@ -122,13 +131,18 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 	}
 
 	// validate ensures that the user's stdin is a terminal with -i -t.
+	restore := func() {}
+
 	if interactive {
 		state, err := term.MakeRaw(int(r.Stdin.Fd()))
 		if err != nil {
 			return fmt.Errorf("set terminal raw mode: %w", err)
 		}
 
-		defer term.Restore(int(r.Stdin.Fd()), state) //nolint:errcheck // Nothing is left to do when the restore fails.
+		restore = sync.OnceFunc(func() {
+			_ = term.Restore(int(r.Stdin.Fd()), state) // Nothing is left to do when the restore fails.
+		})
+		defer restore()
 	}
 
 	err = cmd.Start()
@@ -160,6 +174,9 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 	}()
 
 	err = cmd.Wait()
+
+	// The user's terminal leaves raw mode before the drain, so that Ctrl-C during a stalled drain is a SIGINT that ends it.
+	restore()
 
 	// The marker follows all VM output through the terminal, so the copy ends exactly after that output.
 	// The write can block while a slow reader holds the output back, so it runs on its own.

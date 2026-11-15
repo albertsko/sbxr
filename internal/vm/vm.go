@@ -63,8 +63,9 @@ func Child(args []string, h Hypervisor, stderr io.Writer) int {
 
 	watchLifeline(runDir)
 
-	// The VM process shares the runner's process group. Terminal interrupts end the run only through the runner.
-	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT)
+	// The VM process shares the runner's process group. Terminal interrupts and a closed terminal end the run only through the runner,
+	// which then stops the VM and removes the run state. If the runner is gone, the lifeline cleans up.
+	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGHUP)
 
 	err := child(args, h)
 

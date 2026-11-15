@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -614,6 +615,154 @@ func TestCtrlCReachesAWorkloadThatDoesNotReadStdin(t *testing.T) {
 
 	if _, code, _ := tm.wait(); code != 130 {
 		t.Errorf("exit code = %d, want 130", code)
+	}
+}
+
+func TestClosedTerminalStopsTheRun(t *testing.T) {
+	t.Parallel()
+
+	environ := env(t)
+	cacheDir := cacheDirOf(environ)
+
+	tm := startOnTerminal(t, environ, nil, "run", busybox, "sh", "-c", "echo ready; sleep 30")
+	tm.waitForOutput("ready")
+
+	// A closed terminal sends SIGHUP to its foreground process group, which holds the runner and the VM process.
+	// The test sends it directly, because the output reader of the test keeps the terminal from hanging up.
+	err := syscall.Kill(-tm.cmd.Process.Pid, syscall.SIGHUP)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, code, _ := tm.wait(); code != 129 {
+		t.Errorf("exit code = %d, want 129", code)
+	}
+
+	waitForNoProcess(t, cacheDir)
+
+	err = scenario.CheckClean(cacheDir)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
+	t.Parallel()
+
+	environ := env(t)
+	cacheDir := cacheDirOf(environ)
+	word := strings.Repeat("x", 100000)
+
+	// Nobody reads this pipe, so the output copy stalls once the pipe buffer is full.
+	stdout, unread, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	defer unread.Close()
+
+	tm := startOnTerminal(t, environ, unread, "run", "-it", busybox, "sh", "-c", "echo "+word+" "+word+"; sleep 30")
+
+	for deadline := time.Now().Add(10 * time.Second); !tm.raw(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the terminal never became raw")
+		}
+	}
+
+	// The first Ctrl-C reaches the guest, which ends the workload. The stalled drain then keeps the runner waiting.
+	time.Sleep(300 * time.Millisecond)
+	tm.write("\x03")
+
+	for deadline := time.Now().Add(10 * time.Second); tm.raw(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the terminal stayed raw after the VM exited")
+		}
+	}
+
+	// The terminal is back in cooked mode, so the second Ctrl-C is a SIGINT to the runner.
+	tm.write("\x03")
+
+	done := make(chan int, 1)
+
+	go func() {
+		_, code, _ := tm.wait()
+		done <- code
+	}()
+
+	select {
+	case code := <-done:
+		if code != 130 {
+			t.Errorf("exit code = %d, want 130", code)
+		}
+	case <-time.After(10 * time.Second):
+		_ = tm.cmd.Process.Kill()
+
+		t.Fatal("sbxr ignored Ctrl-C while the output reader stalled")
+	}
+
+	waitForNoProcess(t, cacheDir)
+
+	err = scenario.CheckClean(cacheDir)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestKilledVMProcessIsAnSbxrError(t *testing.T) {
+	t.Parallel()
+
+	environ := env(t)
+	cacheDir := cacheDirOf(environ)
+
+	cmd := exec.CommandContext(t.Context(), bin, "run", busybox, "sh", "-c", "echo ready; sleep 30")
+	cmd.Env = environ
+
+	var stderr bytes.Buffer
+
+	cmd.Stderr = &stderr
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = cmd.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = io.ReadFull(stdout, make([]byte, len("ready\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := exec.CommandContext(t.Context(), "pgrep", "-f", "__vm "+cacheDir).Output()
+	if err != nil {
+		t.Fatalf("find the VM process: %v", err)
+	}
+
+	pid, err := strconv.Atoi(strings.Fields(string(out))[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = syscall.Kill(pid, syscall.SIGKILL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = cmd.Wait() // The exit code below shows the outcome.
+
+	want := "sbxr: vm: the VM process was killed by signal 9; run again with --debug and report a bug\n"
+	if code := cmd.ProcessState.ExitCode(); code != 125 || stderr.String() != want {
+		t.Errorf("sbxr run = %d, stderr %q; want 125 and %q", code, stderr.String(), want)
+	}
+
+	waitForNoProcess(t, cacheDir)
+
+	err = scenario.CheckClean(cacheDir)
+	if err != nil {
+		t.Error(err)
 	}
 }
 
