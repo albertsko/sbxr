@@ -4,7 +4,6 @@ package libkrun
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/albertsko/sbxr/internal/hv"
+	"github.com/albertsko/sbxr/internal/krunconfig"
 )
 
 // The test binary re-executes itself as the VM process when these variables are set.
@@ -169,7 +169,14 @@ func buildGuest(t *testing.T) string {
 func runVM(t *testing.T, libDir, guest string, onLine func(string), args ...string) (string, int) {
 	t.Helper()
 
-	root := newRoot(t, guest, args)
+	cfg := krunconfig.Config{UID: 0, GID: 0, WorkingDir: "/", Env: []string{"PATH=/"}, Args: append([]string{"/guest"}, args...)}
+
+	return runConfig(t, libDir, newRoot(t, guest, cfg), onLine)
+}
+
+// runConfig boots root in a new VM process.
+func runConfig(t *testing.T, libDir, root string, onLine func(string)) (string, int) {
+	t.Helper()
 
 	cmd := exec.CommandContext(t.Context(), os.Args[0])
 	cmd.Env = slices.Concat(os.Environ(), Env(libDir), []string{vmRootEnv + "=" + root, vmLibDirEnv + "=" + libDir})
@@ -191,6 +198,8 @@ func runVM(t *testing.T, libDir, guest string, onLine func(string), args ...stri
 	var out strings.Builder
 
 	lines := bufio.NewScanner(stdout)
+	lines.Buffer(nil, 1<<20)
+
 	for lines.Scan() {
 		out.WriteString(lines.Text() + "\n")
 
@@ -215,32 +224,36 @@ func runVM(t *testing.T, libDir, guest string, onLine func(string), args ...stri
 	return out.String(), 0
 }
 
-// newRoot writes a guest root with the workload at /guest and a minimal /.krun_config.json.
-func newRoot(t *testing.T, guest string, args []string) string {
+// newRoot writes a guest root with the workload at /guest, the working directory of cfg, and cfg as /.krun_config.json.
+func newRoot(t *testing.T, guest string, cfg krunconfig.Config) string {
 	t.Helper()
 
-	root := t.TempDir()
+	dir := t.TempDir()
 
 	bin, err := os.ReadFile(guest)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(root, "guest"), bin, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "guest"), bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	argv, err := json.Marshal(append([]string{"/guest"}, args...))
+	if err := os.MkdirAll(filepath.Join(dir, cfg.WorkingDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer root.Close()
 
-	config := `{"uid":"0","gid":"0","WorkingDir":"/","Env":["PATH=/"],"Entrypoint":[],"args":` + string(argv) + `}`
-	if err := os.WriteFile(filepath.Join(root, ".krun_config.json"), []byte(config), 0o644); err != nil {
+	if err := krunconfig.Write(root, cfg); err != nil {
 		t.Fatal(err)
 	}
 
-	return root
+	return dir
 }
 
 // listen starts a TCP listener on 127.0.0.1 and returns its address.

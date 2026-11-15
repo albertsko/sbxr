@@ -424,26 +424,9 @@ func splitList(s string) []string {
 	return strings.Split(s, listSep)
 }
 
+// FuzzMarshal checks Marshal against the guest init parser copy.
+// The seed corpus is in testdata/fuzz/FuzzMarshal. The hv tests of internal/vm/libkrun also boot it through the real guest init.
 func FuzzMarshal(f *testing.F) {
-	join := func(items ...string) string { return strings.Join(items, listSep) }
-
-	f.Add(uint32(1000), uint32(1000), "/home/app", join("PATH=/bin", "HOME=/home/app"), join("sh", "-c", "echo hi"))
-	f.Add(uint32(0), uint32(0), "/", join("PATH=/bin", `Q="x"`), join(`"`, `\`, `\"`, `\\"`))
-	f.Add(uint32(1), uint32(2), "/a\tb\nc", join("PATH=/bin", "T=a\tb\nc"), join("tab\there", "new\nline"))
-	f.Add(uint32(65534), uint32(65534), "/é/日本", join("PATH=/bin", "NAME=é😀"), join("é", "日本", "😀"))
-	f.Add(uint32(1000), uint32(1000), "/uid", join("PATH=/bin", "uid=gid"), join("uid", "gid", "Env", "args", "Cmd", "Cwd"))
-	f.Add(uint32(1000), uint32(1000), "/", join("PATH=/bin", "U=\\u00e9"), join(`\u00e9`, `\u0041`, `\ud83d\ude00`))
-	f.Add(uint32(1000), uint32(1000), "/", join("PATH=/bin", "KRUN_INIT=/bin/sh"), join("id"))
-	f.Add(uint32(1000), uint32(1000), "/", join("PATH=/bin", "HOSTNAME=evil"), join("id"))
-	f.Add(uint32(1000), uint32(1000), "/", join("PATH=/bin", "krun_init=x"), join("ARGS", "ENV"))
-	f.Add(uint32(1000), uint32(1000), "/", join("PATH=/a", "PATH=/b"), join("x"))
-	f.Add(uint32(1000), uint32(1000), "relative", "PATH=/bin", "x")
-	f.Add(uint32(1000), uint32(1000), "/", "HOME=/", "x")
-	f.Add(uint32(1000), uint32(1000), "/", "PATH=/bin", "")
-	f.Add(uint32(1000), uint32(1000), "/", "PATH=/bin", "a\x1bb")
-	f.Add(uint32(1000), uint32(1000), "/", "PATH=/bin", "\xff")
-	f.Add(uint32(1<<32-1), uint32(0), "/", "PATH=/bin", "x")
-
 	f.Fuzz(func(t *testing.T, uid, gid uint32, workdir, env, args string) {
 		checkMarshal(t, Config{UID: uid, GID: gid, WorkingDir: workdir, Env: splitList(env), Args: splitList(args)})
 	})

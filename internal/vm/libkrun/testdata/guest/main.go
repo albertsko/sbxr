@@ -5,9 +5,11 @@
 //	guest echo WORD...
 //	guest exit CODE
 //	guest net LISTEN_ADDR DIAL_ADDR...
+//	guest report ARG...
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -25,7 +27,22 @@ func main() {
 		os.Exit(code)
 	case "net":
 		probe(os.Args[2], os.Args[3:])
+	case "report":
+		report(os.Args[2:])
 	}
+}
+
+// report prints the arguments, env, ids, and working directory as one JSON object.
+func report(args []string) {
+	cwd, _ := os.Getwd()
+
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"args": args,
+		"env":  os.Environ(),
+		"uid":  os.Getuid(),
+		"gid":  os.Getgid(),
+		"cwd":  cwd,
+	})
 }
 
 // probe listens so the host can try to reach the guest, then tries to reach the host.
