@@ -87,16 +87,18 @@ func mountSystem() error {
 	mounts := []struct {
 		src, dst, fstype string
 		flags            uintptr
+		data             string
 	}{
-		{tmpfs, "/run", tmpfs, unix.MS_NOSUID | unix.MS_NODEV},
-		{tmpfs, "/tmp", tmpfs, unix.MS_NOSUID | unix.MS_NODEV},
-		{podvm.ShareTag, podvm.GuestShare, "virtiofs", 0},
+		{tmpfs, "/run", tmpfs, unix.MS_NOSUID | unix.MS_NODEV, ""},
+		{tmpfs, "/tmp", tmpfs, unix.MS_NOSUID | unix.MS_NODEV, ""},
+		{"shm", podvm.GuestShm, tmpfs, unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC, "mode=1777,size=" + podvm.GuestShmSize},
+		{podvm.ShareTag, podvm.GuestShare, "virtiofs", 0, ""},
 	}
 
 	for _, m := range mounts {
 		err := os.MkdirAll(m.dst, 0o755) //nolint:gosec // System directories of the guest.
 		if err == nil {
-			err = unix.Mount(m.src, m.dst, m.fstype, m.flags, "")
+			err = unix.Mount(m.src, m.dst, m.fstype, m.flags, m.data)
 		}
 
 		if err != nil {

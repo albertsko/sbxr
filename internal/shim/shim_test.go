@@ -60,7 +60,7 @@ func TestGuestSpec(t *testing.T) {
 		{"no hostname, the pod's UTS namespace has it", s.Hostname == ""},
 		{"no AppArmor profile", s.Process.ApparmorProfile == ""},
 		{"volume source in the bundle", dests["/data"].Source == "/run/sbxr/shared/c1/mounts/1"},
-		{"/dev/shm is a guest tmpfs", dests["/dev/shm"].Type == "tmpfs"},
+		{"/dev/shm is the pod's shm", dests["/dev/shm"].Source == "/run/sbxr/shm" && dests["/dev/shm"].Type == "bind"},
 		{"resolv.conf from the pod share", dests["/etc/resolv.conf"].Source == "/run/sbxr/shared/resolv.conf"},
 		{"hostname from the pod share", dests["/etc/hostname"].Source == "/run/sbxr/shared/hostname"},
 		{"guest cgroup", s.Linux.CgroupsPath == "/sbxr/c1"},
@@ -124,5 +124,45 @@ func TestCgroupPath(t *testing.T) {
 		if got := cgroupPath(in); got != want {
 			t.Errorf("cgroupPath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestPodShm checks that the containers of a pod share one /dev/shm, as they share the pod's IPC namespace,
+// while a volume that the pod mounts at /dev/shm stays that volume.
+func TestPodShm(t *testing.T) {
+	t.Parallel()
+
+	shm := func(s *specs.Spec) specs.Mount {
+		for _, m := range s.Mounts {
+			if m.Destination == "/dev/shm" {
+				return m
+			}
+		}
+
+		return specs.Mount{}
+	}
+
+	// containerd's default spec gives each container its own tmpfs.
+	defaultShm := specs.Mount{Destination: "/dev/shm", Type: "tmpfs", Source: "shm", Options: []string{"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"}}
+
+	sources := make([]string, 0, 2)
+
+	for _, id := range []string{"web", "sidecar"} {
+		s := &specs.Spec{Root: &specs.Root{Path: "/rootfs"}, Mounts: []specs.Mount{defaultShm}}
+		guestSpec(s, id, "/run/sbxr/shared/"+id)
+		sources = append(sources, shm(s).Source)
+	}
+
+	if sources[0] != "/run/sbxr/shm" || sources[1] != sources[0] {
+		t.Errorf("/dev/shm sources %q, want both the pod's shm", sources)
+	}
+
+	volume := &specs.Spec{Root: &specs.Root{Path: "/rootfs"}, Mounts: []specs.Mount{
+		{Destination: "/dev/shm", Type: "bind", Source: "/var/lib/kubelet/pods/1/volumes/kubernetes.io~empty-dir/shm", Options: []string{"rbind"}},
+	}}
+
+	shares := guestSpec(volume, "c1", "/run/sbxr/shared/c1")
+	if len(shares) != 1 || shm(volume).Source != "/run/sbxr/shared/c1/mounts/0" {
+		t.Errorf("shares %+v, /dev/shm %+v; want the volume shared", shares, shm(volume))
 	}
 }

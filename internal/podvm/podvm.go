@@ -29,6 +29,13 @@ const ShareTag = "sbxr"
 // GuestShare is where the agent mounts the pod share.
 const GuestShare = "/run/sbxr/shared"
 
+// GuestShm is the pod's shared memory in the guest. Every container mounts it at /dev/shm, as with a pod's IPC namespace.
+// Kubernetes passes no shm size, so it has containerd's default of 64 MiB.
+const (
+	GuestShm     = "/run/sbxr/shm"
+	GuestShmSize = "65536k"
+)
+
 // PodFile is the name of the pod config in the pod share.
 const PodFile = "pod.json"
 

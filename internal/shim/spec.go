@@ -6,6 +6,7 @@ import (
 	"path"
 	"slices"
 	"strconv"
+	"strings"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
@@ -33,14 +34,16 @@ func guestSpec(s *specs.Spec, id, guestBundle string) []share {
 
 	for i := range s.Mounts {
 		m := &s.Mounts[i]
-		if !isBind(*m) {
+
+		// The containers of a pod share its IPC namespace, so they share one /dev/shm: the pod's tmpfs in the guest.
+		// A volume that the pod mounts at /dev/shm stays a volume.
+		if isPodShm(*m) {
+			*m = specs.Mount{Destination: devShm, Type: bindType, Source: podvm.GuestShm, Options: []string{"rbind", "nosuid", "nodev", "noexec"}}
+
 			continue
 		}
 
-		// The pod's /dev/shm comes from the host. In the guest each container gets its own.
-		if m.Destination == "/dev/shm" {
-			*m = specs.Mount{Destination: "/dev/shm", Type: "tmpfs", Source: "shm", Options: []string{"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"}}
-
+		if !isBind(*m) {
 			continue
 		}
 
@@ -81,7 +84,20 @@ func guestSpec(s *specs.Spec, id, guestBundle string) []share {
 	return shares
 }
 
-const bindType = "bind"
+const (
+	bindType = "bind"
+	devShm   = "/dev/shm"
+)
+
+// isPodShm reports whether m is a container's own /dev/shm: the tmpfs of containerd's default spec, or the bind of the
+// shm that containerd's own sandbox controller creates under its sandboxes directory.
+func isPodShm(m specs.Mount) bool {
+	if m.Destination != devShm {
+		return false
+	}
+
+	return m.Type == "tmpfs" || (isBind(m) && strings.Contains(m.Source, "/sandboxes/") && path.Base(m.Source) == "shm")
+}
 
 func isBind(m specs.Mount) bool {
 	return m.Type == bindType || slices.Contains(m.Options, bindType) || slices.Contains(m.Options, "rbind")

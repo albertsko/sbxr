@@ -14,12 +14,12 @@ import (
 
 // phase2Tests check the PRD "Kubernetes, phase 2" criteria.
 var phase2Tests = map[string]func(*testing.T, *kind){
-	"two containers share one VM and localhost": testOneVMPerPod,
-	"the guest owns the pod IP":                 testPodIP,
-	"kubectl exec and exec probes":              testExec,
-	"deletion sends SIGTERM":                    testGracefulStop,
-	"a missing command is a start error":        testStartError,
-	"a VM that cannot boot is stopped":          testBootFailure,
+	"two containers share one VM, localhost, and /dev/shm": testOneVMPerPod,
+	"the guest owns the pod IP":                            testPodIP,
+	"kubectl exec and exec probes":                         testExec,
+	"deletion sends SIGTERM":                               testGracefulStop,
+	"a missing command is a start error":                   testStartError,
+	"a VM that cannot boot is stopped":                     testBootFailure,
 }
 
 func testOneVMPerPod(t *testing.T, k *kind) {
@@ -35,16 +35,18 @@ spec:
     - name: web
       image: sbxr-test/busybox:1
       imagePullPolicy: IfNotPresent
-      command: [sh, -c, "mkdir /www && echo local-ok >/www/index.html && exec httpd -f -p 127.0.0.1:8080 -h /www"]
+      command: [sh, -c, "echo shm-ok >/dev/shm/web && mkdir /www && echo local-ok >/www/index.html && exec httpd -f -p 127.0.0.1:8080 -h /www"]
     - name: client
       image: sbxr-test/busybox:1
       imagePullPolicy: IfNotPresent
-      command: [sh, -c, "until wget -qO- http://127.0.0.1:8080; do sleep 0.2; done; exec sleep 600"]
+      command: [sh, -c, "until wget -qO- http://127.0.0.1:8080; do sleep 0.2; done; cat /dev/shm/web; exec sleep 600"]
 `)
 	defer k.run("", "-n", k.Namespace, "delete", "pod", "two", "--wait")
 
 	k.run("", "-n", k.Namespace, "wait", "pod/two", "--for=condition=Ready", "--timeout=60s")
 	waitLog(k, "two", "client", "local-ok")
+	// The containers share the pod's IPC namespace, so they share /dev/shm too.
+	waitLog(k, "two", "client", "shm-ok")
 
 	uid := k.run("", "-n", k.Namespace, "get", "pod", "two", "-o", "jsonpath={.metadata.uid}")
 	if n := k.node(`grep -lsE "pod(` + uid + `|` + strings.ReplaceAll(uid, "-", "_") + `)" /proc/[0-9]*/cgroup | wc -l`); n != "1" {
