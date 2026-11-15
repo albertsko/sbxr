@@ -32,7 +32,7 @@ func Reserved(p string) string {
 
 // MountPoint walks the guest path p inside root, the directory that holds the guest root, like the kernel resolves it.
 // It follows each symlink and creates each missing component as a directory, so `..` and symlinks after it apply to real directories.
-// It returns the resolved guest path, which the mount must use. It fails when the result is reserved,
+// It returns the resolved guest path, which the mount must use. It fails when the result is the guest root or reserved,
 // and it never creates a directory in a reserved path.
 func MountPoint(root, p string) (string, error) {
 	rest := strings.Split(p, "/")
@@ -85,6 +85,10 @@ func MountPoint(root, p string) (string, error) {
 
 			rest = append(strings.Split(target, "/"), rest...)
 		}
+	}
+
+	if cur == "/" {
+		return "", fmt.Errorf("%s resolves to the guest root", p)
 	}
 
 	if r := Reserved(cur); r != "" {

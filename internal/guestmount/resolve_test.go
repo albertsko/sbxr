@@ -101,6 +101,8 @@ func TestMountPointRejects(t *testing.T) {
 		{in: "/.sbxr-mount/x", want: "reserved path " + guestmount.Path},
 		{in: "/escape", want: "reserved path /proc"},
 		{in: "/escape2/x", want: "reserved path /proc"},
+		{in: "/root-link", want: "resolves to the guest root"},
+		{in: "/data/up", want: "resolves to the guest root"},
 		{in: "/loop/x", err: syscall.ELOOP},
 		{in: "/data/file/x", err: syscall.ENOTDIR},
 	}
