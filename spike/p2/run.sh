@@ -136,7 +136,9 @@ mkdir -p $W/ctr-id
 mount --bind -o "X-mount.idmap=b:0:$BASE:65536" $C $W/ctr-id
 mount -t overlay overlay -o lowerdir=$W/ctr-id/lower,upperdir=$W/ctr-id/upper,workdir=$W/ctr-id/work $S/c1/rootfs
 ls -ln $S/c1/rootfs/data || result "U4 idmapped bind of container overlay FAIL"
-guest 'ls -ln /mnt/shared/c1/rootfs/data' 'echo new >/mnt/shared/c1/rootfs/data/new && chown 1000:1000 /mnt/shared/c1/rootfs/data/new && ls -ln /mnt/shared/c1/rootfs/data/new' | tee $W/u4.txt
+findmnt -o TARGET,FSTYPE,OPTIONS $S/c1/rootfs; dmesg | tail -5
+touch $S/c1/rootfs/data/hostnew && ls -ln $S/c1/rootfs/data/hostnew $C/upper/data/hostnew
+guest 'touch /mnt/shared/plain && ls -ln /mnt/shared/plain; cat /proc/mounts | grep shared' 'ls -ln /mnt/shared/c1/rootfs/data' 'echo new >/mnt/shared/c1/rootfs/data/new && chown 1000:1000 /mnt/shared/c1/rootfs/data/new && ls -ln /mnt/shared/c1/rootfs/data/new' | tee $W/u4.txt
 echo "host upper:"
 ls -ln $C/upper/data || true
 if grep -q ' 1000 *42 ' $W/u4.txt && [ "$(stat -c %u $C/upper/data/new 2>/dev/null)" = 1000 ]; then result "U4 share after boot with real ownership PASS"; else result "U4 share after boot with real ownership FAIL"; fi
