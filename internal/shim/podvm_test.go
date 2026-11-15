@@ -5,6 +5,8 @@ package shim
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -22,6 +24,7 @@ import (
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/albertsko/sbxr/internal/podvm"
 	"github.com/albertsko/sbxr/internal/subid"
 )
 
@@ -417,4 +420,59 @@ func readTestFile(t *testing.T, path string) string {
 	}
 
 	return string(data)
+}
+
+// TestConnectIORollsBack checks that a failed stream closes the streams and FIFOs that were already open.
+func TestConnectIORollsBack(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	stdin, stdout := filepath.Join(dir, "stdin"), filepath.Join(dir, "stdout")
+
+	for _, fifo := range []string{stdin, stdout} {
+		if err := unix.Mkfifo(fifo, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var guestEnd *net.UnixConn
+
+	dial := func(h podvm.Header) (*net.UnixConn, error) {
+		if h.Kind != podvm.Stdin {
+			return nil, errors.New("the guest is gone")
+		}
+
+		fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+		if err != nil {
+			return nil, fmt.Errorf("socketpair: %w", err)
+		}
+
+		ends := [2]*net.UnixConn{}
+
+		for i, fd := range fds {
+			f := os.NewFile(uintptr(fd), "stream")
+			c, err := net.FileConn(f)
+			_ = f.Close()
+
+			if err != nil {
+				return nil, fmt.Errorf("stream: %w", err)
+			}
+
+			ends[i], _ = c.(*net.UnixConn)
+		}
+
+		guestEnd = ends[1]
+
+		return ends[0], nil
+	}
+
+	if _, err := connectIO(dial, "c1", "", stdin, stdout, "", false); err == nil {
+		t.Fatal("connectIO with a failing stream succeeded")
+	}
+
+	_ = guestEnd.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := guestEnd.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Errorf("guest end of the stdin stream: %v, want EOF after the rollback", err)
+	}
 }
