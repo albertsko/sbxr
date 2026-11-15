@@ -318,6 +318,11 @@ func hvCacheDir(t *testing.T) string {
 	dir := filepath.Join(t.TempDir(), "cache")
 
 	t.Cleanup(func() {
+		// Only image work, which runs inside the user namespace, creates the images directory.
+		if _, err := os.Stat(filepath.Join(dir, "images")); err != nil {
+			return
+		}
+
 		cmd := exec.CommandContext(context.Background(), bin, "prune", "--force")
 		cmd.Env = hvEnv(dir)
 

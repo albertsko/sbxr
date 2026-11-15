@@ -20,6 +20,8 @@ import (
 //
 // So a run directory whose lock is free or missing belongs to a run whose processes died.
 // A free .new-* file is stale once it is older than newLockAge, because a run locks and renames it at once.
+// The age comes from the file mtime. If a run stalls longer than that between creating and locking the file,
+// or the clock jumps, a sweep can remove it. The run then fails to rename the file and stops with an error. No run state is lost.
 const (
 	lockSuffix = ".lock"
 	newPrefix  = ".new-"
