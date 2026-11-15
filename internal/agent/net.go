@@ -10,6 +10,7 @@ import (
 	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 
+	"github.com/albertsko/sbxr/internal/podnet"
 	"github.com/albertsko/sbxr/internal/podvm"
 )
 
@@ -55,21 +56,8 @@ func setupPod(p podvm.Pod) error {
 	}
 
 	for _, r := range p.Routes {
-		route := &netlink.Route{LinkIndex: link.Attrs().Index}
-		if r.Dst.IsValid() {
-			route.Dst = ipNet(r.Dst)
-		}
-
-		if r.Gateway.IsValid() {
-			route.Gw = net.IP(r.Gateway.AsSlice())
-		}
-
-		if r.OnLink {
-			route.Flags = int(netlink.FLAG_ONLINK)
-		}
-
 		// A CNI plugin such as ptp replaces the connected route of the address with a route through the gateway. Replace does too.
-		if err := netlink.RouteReplace(route); err != nil {
+		if err := netlink.RouteReplace(podnet.Route(link.Attrs().Index, r)); err != nil {
 			return fmt.Errorf("add route %+v: %w", r, err)
 		}
 	}

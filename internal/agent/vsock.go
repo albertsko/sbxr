@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -14,8 +15,9 @@ import (
 
 // vsockListener accepts vsock connections. The net package does not support AF_VSOCK.
 type vsockListener struct {
-	fd   int
-	port uint32
+	fd     int
+	port   uint32
+	closed atomic.Bool
 }
 
 func listenVsock(port uint32) (*vsockListener, error) {
@@ -35,7 +37,7 @@ func listenVsock(port uint32) (*vsockListener, error) {
 		return nil, fmt.Errorf("listen on vsock port %d: %w", port, err)
 	}
 
-	return &vsockListener{fd: fd, port: port}, nil
+	return &vsockListener{fd: fd, port: port, closed: atomic.Bool{}}, nil
 }
 
 func (l *vsockListener) Accept() (net.Conn, error) {
@@ -43,6 +45,14 @@ func (l *vsockListener) Accept() (net.Conn, error) {
 		fd, _, err := unix.Accept4(l.fd, unix.SOCK_CLOEXEC|unix.SOCK_NONBLOCK)
 		if errors.Is(err, unix.EINTR) || errors.Is(err, unix.ECONNABORTED) {
 			continue
+		}
+
+		if l.closed.Load() {
+			if err == nil {
+				_ = unix.Close(fd)
+			}
+
+			return nil, net.ErrClosed
 		}
 
 		if err != nil {
@@ -54,7 +64,15 @@ func (l *vsockListener) Accept() (net.Conn, error) {
 	}
 }
 
-func (l *vsockListener) Close() error { return unix.Close(l.fd) } //nolint:wrapcheck // Closing a listener.
+// Close stops the listener. Shutdown wakes a blocked Accept, which close alone does not. The descriptor stays open,
+// so that its number cannot go to another file while Accept still uses it.
+func (l *vsockListener) Close() error {
+	if l.closed.Swap(true) {
+		return net.ErrClosed
+	}
+
+	return unix.Shutdown(l.fd, unix.SHUT_RDWR) //nolint:wrapcheck // Closing a listener.
+}
 
 func (l *vsockListener) Addr() net.Addr { return vsockAddr(l.port) }
 

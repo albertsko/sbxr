@@ -5,6 +5,9 @@ package agent
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -34,6 +38,8 @@ import (
 type service struct {
 	reaper *reaper
 	log    *slog.Logger
+	// crun is the crun binary, and root its state directory, which also holds the agent's files of each process.
+	crun, root string
 
 	mu         sync.Mutex
 	containers map[string]*container
@@ -47,11 +53,15 @@ type container struct {
 }
 
 func newService(r *reaper, log *slog.Logger) *service {
-	return &service{reaper: r, log: log, mu: sync.Mutex{}, containers: map[string]*container{}}
+	return &service{reaper: r, log: log, crun: crunPath, root: crunRoot, mu: sync.Mutex{}, containers: map[string]*container{}}
 }
 
 func (s *service) Create(_ context.Context, req *taskAPI.CreateTaskRequest) (*taskAPI.CreateTaskResponse, error) {
-	if err := os.MkdirAll(crunRoot, 0o700); err != nil {
+	if err := validIDs(req.GetID(), ""); err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(s.root, 0o700); err != nil {
 		return nil, fmt.Errorf("create crun root: %w", err)
 	}
 
@@ -62,6 +72,8 @@ func (s *service) Create(_ context.Context, req *taskAPI.CreateTaskRequest) (*ta
 
 	pid, err := s.startProcess(p, []string{"create", "--bundle", req.GetBundle()}, req.GetID(), "")
 	if err != nil {
+		s.removeFiles(req.GetID(), "")
+
 		return nil, status.Error(codes.FailedPrecondition, err.Error()) //nolint:wrapcheck // A ttrpc status carries the message to containerd.
 	}
 
@@ -76,13 +88,13 @@ func (s *service) Create(_ context.Context, req *taskAPI.CreateTaskRequest) (*ta
 
 // startProcess runs a crun create or exec command and returns the new process's pid.
 func (s *service) startProcess(p *process, args []string, id, execID string) (int, error) {
-	pidFile := filepath.Join(crunRoot, id+"-"+execID+".pid")
-	args = append(args, "--pid-file", pidFile)
+	files := s.files(id, execID)
+	args = append(args, "--pid-file", files.pid)
 
 	var consoleDone chan error
 
 	if p.terminal {
-		sock := filepath.Join(crunRoot, "console-"+id+"-"+execID+".sock")
+		sock := files.console
 		_ = os.Remove(sock)
 
 		l, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
@@ -95,9 +107,9 @@ func (s *service) startProcess(p *process, args []string, id, execID string) (in
 
 		go func() {
 			f, err := receiveConsole(l)
-			p.console = f
-
 			consoleDone <- err
+
+			p.setConsole(f)
 		}()
 
 		args = append(args, "--console-socket", sock)
@@ -113,8 +125,12 @@ func (s *service) startProcess(p *process, args []string, id, execID string) (in
 	closeNull()
 	p.started()
 
-	if err == nil && consoleDone != nil {
-		err = <-consoleDone
+	if consoleDone != nil {
+		if err == nil {
+			err = <-consoleDone
+		} else {
+			p.setConsole(nil) // crun never connected, so attached streams end.
+		}
 	}
 
 	if err != nil {
@@ -123,7 +139,7 @@ func (s *service) startProcess(p *process, args []string, id, execID string) (in
 		return 0, err
 	}
 
-	pid, err := readPid(pidFile)
+	pid, err := readPid(files.pid)
 	if err != nil {
 		return 0, err
 	}
@@ -155,10 +171,10 @@ func (s *service) Start(_ context.Context, req *taskAPI.StartRequest) (*taskAPI.
 		return &taskAPI.StartResponse{Pid: uint32(pid)}, nil //nolint:gosec // Pids fit.
 	}
 
-	spec := execSpecPath(req.GetID(), req.GetExecID())
-
-	pid, err := s.startProcess(p, []string{"exec", "--detach", "--process", spec}, req.GetID(), req.GetExecID())
+	pid, err := s.startProcess(p, []string{"exec", "--detach", "--process", s.files(req.GetID(), req.GetExecID()).spec}, req.GetID(), req.GetExecID())
 	if err != nil {
+		s.removeFiles(req.GetID(), req.GetExecID())
+
 		return nil, status.Error(codes.FailedPrecondition, err.Error()) //nolint:wrapcheck // See Create.
 	}
 
@@ -166,23 +182,34 @@ func (s *service) Start(_ context.Context, req *taskAPI.StartRequest) (*taskAPI.
 }
 
 func (s *service) Exec(_ context.Context, req *taskAPI.ExecProcessRequest) (*emptypb.Empty, error) {
+	if err := validIDs(req.GetID(), req.GetExecID()); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	c, ok := s.containers[req.GetID()]
+	exists := ok && c.execs[req.GetExecID()] != nil
 	s.mu.Unlock()
 
 	if !ok {
 		return nil, notFound(req.GetID(), "")
 	}
 
-	// The spec is a runtime-spec Process encoded as JSON.
-	err := os.WriteFile(execSpecPath(req.GetID(), req.GetExecID()), req.GetSpec().GetValue(), 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("write exec spec: %w", err)
+	if exists {
+		return nil, status.Errorf(codes.AlreadyExists, "exec %s already exists", req.GetExecID())
 	}
 
 	p, err := newProcess(req.GetTerminal(), req.GetStdin() != "", req.GetStdout() != "", req.GetStderr() != "")
 	if err != nil {
 		return nil, err
+	}
+
+	// The spec is a runtime-spec Process encoded as JSON.
+	err = os.WriteFile(s.files(req.GetID(), req.GetExecID()).spec, req.GetSpec().GetValue(), 0o600)
+	if err != nil {
+		p.closeAll()
+
+		return nil, fmt.Errorf("write exec spec: %w", err)
 	}
 
 	s.mu.Lock()
@@ -192,8 +219,39 @@ func (s *service) Exec(_ context.Context, req *taskAPI.ExecProcessRequest) (*emp
 	return &emptypb.Empty{}, nil
 }
 
-func execSpecPath(id, execID string) string {
-	return filepath.Join(crunRoot, id+"-"+execID+".json")
+// processFiles are the agent's files of one process in the crun root.
+type processFiles struct{ spec, pid, console string }
+
+func (s *service) files(id, execID string) processFiles {
+	base := filepath.Join(s.root, id+"-"+execID)
+
+	// A socket path must stay under 108 bytes, and the ids are up to 64 bytes each.
+	sum := sha256.Sum256([]byte(id + "/" + execID))
+
+	return processFiles{spec: base + ".json", pid: base + ".pid", console: filepath.Join(s.root, hex.EncodeToString(sum[:8])+".sock")}
+}
+
+// removeFiles removes the agent's files of a process, so that repeated exec probes leave nothing behind.
+func (s *service) removeFiles(id, execID string) {
+	f := s.files(id, execID)
+	for _, path := range []string{f.spec, f.pid, f.console} {
+		_ = os.Remove(path)
+	}
+}
+
+// validIDs rejects ids that would leave the crun root as file names.
+func validIDs(id, execID string) error {
+	for _, v := range []string{id, execID} {
+		if strings.ContainsAny(v, "/\x00") || v == "." || v == ".." {
+			return status.Errorf(codes.InvalidArgument, "id %q is not valid", v)
+		}
+	}
+
+	if id == "" {
+		return status.Error(codes.InvalidArgument, "empty container id") //nolint:wrapcheck // ttrpc status.
+	}
+
+	return nil
 }
 
 func (s *service) Wait(ctx context.Context, req *taskAPI.WaitRequest) (*taskAPI.WaitResponse, error) {
@@ -247,6 +305,8 @@ func (s *service) Delete(_ context.Context, req *taskAPI.DeleteRequest) (*taskAP
 	if err != nil {
 		return nil, err
 	}
+
+	s.removeFiles(req.GetID(), req.GetExecID())
 
 	if req.GetExecID() != "" {
 		s.mu.Lock()
@@ -338,15 +398,13 @@ func (s *service) ResizePty(_ context.Context, req *taskAPI.ResizePtyRequest) (*
 		return nil, err
 	}
 
-	if p.console == nil {
+	if !p.terminal {
 		return &emptypb.Empty{}, nil
 	}
 
-	ws := &unix.Winsize{Row: uint16(req.GetHeight()), Col: uint16(req.GetWidth())} //nolint:gosec // Terminal sizes fit.
-
-	err = unix.IoctlSetWinsize(int(p.console.Fd()), unix.TIOCSWINSZ, ws)
+	err = p.resize(winsize{rows: uint16(req.GetHeight()), cols: uint16(req.GetWidth())}) //nolint:gosec // Terminal sizes fit.
 	if err != nil {
-		return nil, fmt.Errorf("resize terminal: %w", err)
+		return nil, err
 	}
 
 	return &emptypb.Empty{}, nil
@@ -426,6 +484,10 @@ func (s *service) find(id, execID string) (*container, *process, error) {
 func (s *service) serveStreams(l net.Listener) {
 	for {
 		conn, err := l.Accept()
+		if errors.Is(err, net.ErrClosed) {
+			return
+		}
+
 		if err != nil {
 			s.log.Error("stream accept", "error", err)
 

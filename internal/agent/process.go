@@ -24,13 +24,20 @@ const (
 	crunRoot = "/run/crun"
 )
 
+// winsize is a terminal size.
+type winsize struct{ rows, cols uint16 }
+
 // process is a container's init process or an exec process, with the host's end of its stdio.
 type process struct {
 	terminal bool
 	// stdin, stdout, and stderr are the agent's pipe ends. Each is nil when the host did not ask for the stream.
 	stdin, stdout, stderr *os.File
-	// console is the pseudo-terminal master of a terminal process.
-	console *os.File
+	// console is the pseudo-terminal master of a terminal process. It is set once, before consoleReady closes.
+	console      *os.File
+	consoleReady chan struct{}
+	consoleOnce  sync.Once
+	// size is a terminal size that arrived before the console.
+	size *winsize
 	// child holds the process's own stdio ends until crun has started it.
 	child [3]*os.File
 
@@ -45,6 +52,7 @@ func newProcess(terminal, stdin, stdout, stderr bool) (*process, error) {
 	p := &process{}
 	p.terminal = terminal
 	p.done = make(chan struct{})
+	p.consoleReady = make(chan struct{})
 
 	if terminal {
 		return p, nil
@@ -162,9 +170,57 @@ func (p *process) closeAll() {
 	}
 }
 
+// setConsole records the console of a terminal process, or nil when it did not start, and applies a waiting resize.
+func (p *process) setConsole(f *os.File) {
+	p.consoleOnce.Do(func() {
+		p.mu.Lock()
+		p.console = f
+		size := p.size
+		p.mu.Unlock()
+
+		if f != nil && size != nil {
+			_ = setSize(f, *size)
+		}
+
+		close(p.consoleReady)
+	})
+}
+
+// resize sets the terminal size now, or when the console arrives.
+func (p *process) resize(size winsize) error {
+	p.mu.Lock()
+	console := p.console
+	p.size = &size
+	p.mu.Unlock()
+
+	if console == nil {
+		return nil
+	}
+
+	return setSize(console, size)
+}
+
+func setSize(f *os.File, size winsize) error {
+	err := unix.IoctlSetWinsize(int(f.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: size.rows, Col: size.cols})
+	if err != nil {
+		return fmt.Errorf("resize terminal: %w", err)
+	}
+
+	return nil
+}
+
 // attach connects one stream from the host to the process.
+// The host opens the streams before it starts the process, so a terminal stream waits for the console.
 func (p *process) attach(kind string, conn net.Conn, in io.Reader) {
 	defer conn.Close() //nolint:errcheck // The stream ends either way.
+
+	if p.terminal {
+		<-p.consoleReady
+
+		if p.console == nil {
+			return
+		}
+	}
 
 	switch {
 	case kind == "stdin" && p.terminal:
@@ -183,7 +239,7 @@ func (p *process) attach(kind string, conn net.Conn, in io.Reader) {
 
 // crunCmd runs one crun command with stdio and returns crun's own error message when it fails.
 func (s *service) crunCmd(stdio [3]*os.File, args ...string) error {
-	log, err := os.CreateTemp(crunRoot, "log-*")
+	log, err := os.CreateTemp(s.root, "log-*")
 	if err != nil {
 		return fmt.Errorf("create crun log: %w", err)
 	}
@@ -191,8 +247,8 @@ func (s *service) crunCmd(stdio [3]*os.File, args ...string) error {
 	defer os.Remove(log.Name()) //nolint:errcheck // Temporary file.
 	defer log.Close()           //nolint:errcheck // Read-only use below.
 
-	full := append([]string{"--root", crunRoot, "--cgroup-manager", "cgroupfs", "--log", log.Name()}, args...)
-	cmd := newCmd(crunPath, full, stdio)
+	full := append([]string{"--root", s.root, "--cgroup-manager", "cgroupfs", "--log", log.Name()}, args...)
+	cmd := newCmd(s.crun, full, stdio)
 
 	exited, err := s.reaper.start(cmd)
 	if err != nil {
