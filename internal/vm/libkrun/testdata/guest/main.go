@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func main() {
@@ -45,7 +47,7 @@ func report(args []string) {
 	})
 }
 
-// probe listens so the host can try to reach the guest, then tries to reach the host.
+// probe listens so the host can try to reach the guest, then tries to reach the host over TCP and vsock.
 func probe(listenAddr string, dialAddrs []string) {
 	ln, err := net.Listen("tcp4", listenAddr)
 	if err != nil {
@@ -67,7 +69,24 @@ func probe(listenAddr string, dialAddrs []string) {
 		fmt.Println("dial ok", addr)
 	}
 
+	if vsockDial(1024) != nil {
+		fmt.Println("vsock dial failed")
+	} else {
+		fmt.Println("vsock dial ok")
+	}
+
 	// Give the host time to dial the listener.
 	time.Sleep(3 * time.Second)
 	ln.Close()
+}
+
+// vsockDial connects to a port of the host (CID 2) over vsock.
+func vsockDial(port uint32) error {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+
+	return unix.Connect(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_HOST, Port: port})
 }

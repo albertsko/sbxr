@@ -94,8 +94,8 @@ func TestVM(t *testing.T) {
 		}
 
 		out, code := runVM(t, libDir, guest, onLine, "net", "0.0.0.0:"+guestPort, hostAddr)
-		if code != 0 || out != "listening\ndial failed "+hostAddr+"\n" {
-			t.Errorf("exit code %d, stdout %q, want 0 and a failed dial to %s", code, out, hostAddr)
+		if want := "listening\ndial failed " + hostAddr + "\nvsock dial failed\n"; code != 0 || out != want {
+			t.Errorf("exit code %d, stdout %q, want 0 and %q", code, out, want)
 		}
 
 		if len(reached) > 0 {

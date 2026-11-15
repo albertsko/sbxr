@@ -234,7 +234,7 @@ Delivery has two phases:
 ### Workload config
 
 - The workload command, env, working directory, uid, and gid reach the guest through a config file, `/.krun_config.json`, that `sbxr` writes into the per-run root. The kernel command line is not used, because it breaks on quotes and non-ASCII text and lets values override the file.
-- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device (with `--net`), disable the implicit vsock device, make the virtual terminal `tty0` the kernel console (only when no stdio stream is a terminal), start.
+- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device (with `--net`), disable the implicit vsock device, add a vsock device without TSI features and without port map (it carries only the host time sync to the guest init on macOS), make the virtual terminal `tty0` the kernel console (only when no stdio stream is a terminal), start.
 - The `tty0` kernel console works around a `libkrun` 1.19.8 race. The default console `hvc0` appears only after a virtio handshake with the VM process. Under host load, the guest kernel starts the init before `hvc0` exists, the init starts with closed stdio, and its redirect to the `krun-stdout` port then leaves the workload without stdout (EBADF, about 1 in 4 runs with 16 parallel VMs on an M4 Pro Mac). `tty0` registers at boot on every architecture and shows nothing, so the init always has stdio. A rarer second race remains: when the guest init looks for the named ports before the handshake names them, the workload writes to the console, and its output is lost (about 1 in 80 runs at that load, none in 200 runs with 8 parallel VMs). With `-t`, the console is the workload's terminal, so it stays `hvc0` and only the first race applies. `libkrun` main fixed the closed-stdio case in its new init (upstream issue 749). `sbxr` never calls the functions that set the exec command, working directory, resource limits, or port map, and never passes a NULL env list.
 - The guest init parser treats any string as a possible key and takes the first match. The writer therefore follows this contract:
   - Keys appear once each, in this order: `uid`, `gid`, `WorkingDir`, `Env`, `Entrypoint` (always empty), `args`.
@@ -370,7 +370,7 @@ When the `userns` check fails and the AppArmor restriction is on, `sbxr doctor` 
 
 ### Networking (CLI)
 
-- Default: no network. The VM has no network device and no vsock device, so socket forwarding (TSI) is off and the guest can neither connect out nor listen on the host.
+- Default: no network. The VM has no network device, and its vsock device has no TSI features and no port map, so socket forwarding (TSI) is off and the guest can neither connect out nor listen on the host. A real-VM test checks TCP in both directions and a vsock connection to the host.
 - `--net`: the guest gets a virtio-net device connected to a userspace network stack inside the `sbxr` parent process. The guest configures itself with DHCP and uses the stack's gateway for DNS. No helper binary and no socket file are involved.
 - `libkrun` socket forwarding (TSI) is never used for CLI networking, because it exposes every guest listener on all host interfaces and cannot be limited.
 - Egress policy, enforced by `sbxr` for every new TCP connection and UDP flow:

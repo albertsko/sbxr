@@ -62,6 +62,7 @@ type api struct {
 	setEnv               func(ctx uint32, envp unsafe.Pointer) int32
 	addNetUnixgram       func(ctx uint32, path unsafe.Pointer, fd int32, mac *byte, features, flags uint32) int32
 	disableImplicitVsock func(ctx uint32) int32
+	addVsock             func(ctx uint32, tsiFeatures uint32) int32
 	setKernelConsole     func(ctx uint32, id string) int32
 	startEnter           func(ctx uint32) int32
 }
@@ -88,6 +89,7 @@ func load(dir string) (*api, error) {
 		{"krun_set_env", &a.setEnv},
 		{"krun_add_net_unixgram", &a.addNetUnixgram},
 		{"krun_disable_implicit_vsock", &a.disableImplicitVsock},
+		{"krun_add_vsock", &a.addVsock},
 		{"krun_set_kernel_console", &a.setKernelConsole},
 		{"krun_start_enter", &a.startEnter},
 	}
@@ -154,8 +156,14 @@ func Enter(dir string, cfg Config) error {
 		}
 	}
 
-	// Without a vsock device the guest has no socket forwarding (TSI), so without a network device it has no network at all.
+	// The implicit vsock device would forward guest sockets to the host (TSI). The explicit one has no TSI features
+	// and no port map, so without a network device the guest has no network at all. It still carries the host's
+	// time sync messages to the guest init (macOS).
 	if err := check("krun_disable_implicit_vsock", krun.disableImplicitVsock(ctx)); err != nil {
+		return err
+	}
+
+	if err := check("krun_add_vsock", krun.addVsock(ctx, 0)); err != nil {
 		return err
 	}
 
