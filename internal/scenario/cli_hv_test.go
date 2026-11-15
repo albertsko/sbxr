@@ -161,6 +161,14 @@ func TestHVInteractiveShell(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	exited := make(chan struct{})
+
+	go func() {
+		_ = cmd.Wait() // The exit code below shows the outcome.
+
+		close(exited)
+	}()
+
 	type step struct {
 		input, want string
 		resize      *pty.Winsize
@@ -181,17 +189,22 @@ func TestHVInteractiveShell(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			time.Sleep(200 * time.Millisecond) // The resize travels through sbxr to the guest.
 		}
 
-		_, err = io.WriteString(ptmx, step.input)
-		if err != nil {
-			t.Fatal(err)
-		}
+		// The input repeats until the output appears, because a resize reaches the guest a moment later.
+		for !strings.Contains(out.String(), step.want) {
+			_, err = io.WriteString(ptmx, step.input)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-		if !out.waitFor(ctx, step.want) {
-			t.Fatalf("after %q, output %q does not contain %q", step.input, out.String(), step.want)
+			select {
+			case <-ctx.Done():
+				t.Fatalf("after %q, output %q does not contain %q", step.input, out.String(), step.want)
+			case <-exited:
+				t.Fatalf("sbxr exited before the output %q contained %q", out.String(), step.want)
+			case <-time.After(300 * time.Millisecond):
+			}
 		}
 	}
 
@@ -200,7 +213,11 @@ func TestHVInteractiveShell(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = cmd.Wait() // The exit code below shows the outcome.
+	select {
+	case <-exited:
+	case <-ctx.Done():
+		t.Fatal("sbxr did not exit")
+	}
 
 	if code := cmd.ProcessState.ExitCode(); code != 7 {
 		t.Errorf("exit code = %d, want 7 (output %q)", code, out.String())
@@ -225,19 +242,6 @@ func (b *syncBuffer) String() string {
 	defer b.mu.Unlock()
 
 	return b.buf.String()
-}
-
-// waitFor waits until the buffer contains want.
-func (b *syncBuffer) waitFor(ctx context.Context, want string) bool {
-	for !strings.Contains(b.String(), want) {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-
-	return true
 }
 
 // sbxr runs bin and returns the combined output and the exit code.

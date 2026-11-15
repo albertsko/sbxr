@@ -31,6 +31,8 @@ func TestVMRunsTheFuzzSeedCorpus(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	booted := 0
+
 	for _, e := range entries {
 		cfg, err := readSeed(filepath.Join(corpusDir, e.Name()))
 		if err != nil {
@@ -44,6 +46,8 @@ func TestVMRunsTheFuzzSeedCorpus(t *testing.T) {
 		if _, err := krunconfig.Marshal(cfg); err != nil {
 			continue
 		}
+
+		booted++
 
 		t.Run(e.Name(), func(t *testing.T) {
 			t.Parallel()
@@ -79,6 +83,10 @@ func TestVMRunsTheFuzzSeedCorpus(t *testing.T) {
 				t.Errorf("guest env %q, want %q", got.Env, guestEnv(cfg.Env))
 			}
 		})
+	}
+
+	if booted == 0 {
+		t.Fatalf("no seed in %s passes Marshal, so the test checks nothing", corpusDir)
 	}
 }
 
