@@ -55,6 +55,8 @@ type Backend struct {
 	Isolate func(args []string, stdin, stdout, stderr *os.File) (int, error)
 	// VMEnv is added to the environment of the VM process.
 	VMEnv []string
+	// MountHelper returns the guest mount helper for -v.
+	MountHelper func() ([]byte, error)
 }
 
 // exitError ends the command with code. A nil err prints nothing.

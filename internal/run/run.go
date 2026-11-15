@@ -78,6 +78,8 @@ type Runner struct {
 	Checks []preflight.Check
 	// Network starts the network of a run with --net.
 	Network func(ctx context.Context, cfg NetworkConfig) (Network, error)
+	// MountHelper returns the guest mount helper (see internal/guestmount). The runner calls it to fail early when a build cannot mount volumes.
+	MountHelper func() ([]byte, error)
 	// Isolate, when set, runs the rest of the run in another process and returns its exit code.
 	// On Linux, it runs the same command again inside a user namespace.
 	Isolate func(stdin, stdout, stderr *os.File) (int, error)
@@ -199,11 +201,7 @@ func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
 		return err //nolint:wrapcheck // The preflight error is a complete user message.
 	}
 
-	if len(s.Volumes) > 0 {
-		return &spec.Error{Source: "-v", Problem: "volumes are not supported yet"}
-	}
-
-	return nil
+	return r.checkVolumes(s.Volumes)
 }
 
 // workload resolves and checks the guest init config before any run state exists.
@@ -252,12 +250,14 @@ func (r *Runner) configure(s spec.Spec, cfg krunconfig.Config, dir, rootPath str
 	}
 	defer root.Close() //nolint:errcheck // The root is only read and written through Write.
 
+	cfg, volumes := withVolumes(s.Volumes, cfg)
+
 	err = krunconfig.Write(root, cfg)
 	if err != nil {
 		return fmt.Errorf("write workload config: %w", err)
 	}
 
-	m := vm.Machine{Root: rootPath, CPUs: s.CPUs, MemoryMiB: s.MemoryMiB, LogLevel: r.VMLogLevel, Net: nil}
+	m := vm.Machine{Root: rootPath, CPUs: s.CPUs, MemoryMiB: s.MemoryMiB, LogLevel: r.VMLogLevel, Net: nil, Volumes: volumes}
 	if network != nil {
 		m.Net = &vm.Net{FD: vm.NetFD, MAC: network.GuestMAC().String()}
 	}

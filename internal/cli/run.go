@@ -100,6 +100,13 @@ func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string, quiet bo
 		in.EnvFiles = append(in.EnvFiles, spec.EnvFile{Path: path, Data: data})
 	}
 
+	wd, err := os.Getwd()
+	if err != nil {
+		return 0, fmt.Errorf("find the working directory: %w", err)
+	}
+
+	in.Dir = wd
+
 	s, err := spec.Parse(in, runtime.NumCPU())
 	if err != nil {
 		return 0, err //nolint:wrapcheck // spec errors are complete user messages.
@@ -120,18 +127,19 @@ func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string, quiet bo
 	defer a.stdout.hide()
 
 	r := &run.Runner{
-		Images:     nil,
-		Checks:     a.backend.Checks(dir),
-		Network:    startNetwork,
-		Isolate:    nil,
-		Exe:        exe,
-		VMEnv:      a.backend.VMEnv,
-		VMLogLevel: vmLogLevel(a.level),
-		RunsDir:    run.RunsDir(dir),
-		Log:        a.log,
-		Stdin:      os.Stdin,
-		Stdout:     os.Stdout,
-		Stderr:     os.Stderr,
+		Images:      nil,
+		Checks:      a.backend.Checks(dir),
+		Network:     startNetwork,
+		MountHelper: a.backend.MountHelper,
+		Isolate:     nil,
+		Exe:         exe,
+		VMEnv:       a.backend.VMEnv,
+		VMLogLevel:  vmLogLevel(a.level),
+		RunsDir:     run.RunsDir(dir),
+		Log:         a.log,
+		Stdin:       os.Stdin,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
 	}
 
 	if a.backend.Isolate != nil {

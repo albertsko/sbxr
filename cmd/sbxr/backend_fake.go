@@ -26,5 +26,7 @@ func backend() cli.Backend {
 		},
 		Isolate: nil,
 		VMEnv:   nil,
+		// The fake guest init runs the helper as an applet of its busybox.
+		MountHelper: func() ([]byte, error) { return []byte(fake.Marker), nil },
 	}
 }
