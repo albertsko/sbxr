@@ -1,7 +1,7 @@
 // Package krunconfig writes /.krun_config.json, the workload config that the libkrun guest init reads.
 //
 // The guest init parser treats any string as a possible key, takes the first match, and ignores the whole file above
-// MaxTokens tokens. Marshal therefore writes a fixed key order and rejects every value the parser would misread.
+// maxTokens tokens. Marshal therefore writes a fixed key order and rejects every value the parser would misread.
 package krunconfig
 
 import (
@@ -19,9 +19,9 @@ import (
 // FileName is the config path inside the guest root, relative to the root.
 const FileName = ".krun_config.json"
 
-// MaxTokens is the token limit of the guest init parser.
+// maxTokens is the token limit of the guest init parser.
 // Above it the guest init ignores the file and starts a root shell.
-const MaxTokens = 16384
+const maxTokens = 16384
 
 // fixedTokens counts the object, the six keys, the uid, gid, and WorkingDir strings, and the three arrays.
 const fixedTokens = 13
@@ -38,7 +38,8 @@ type Config struct {
 }
 
 // Error describes an invalid value.
-// The caller adds the source and the value.
+// CheckValue and CheckEnvName return it without the source and value, which the caller adds.
+// Marshal wraps it with the source and value.
 type Error struct {
 	Problem string
 	Fix     string
@@ -149,8 +150,8 @@ func validate(c Config) error {
 		}
 	}
 
-	if n := fixedTokens + len(c.Env) + len(c.Args); n > MaxTokens {
-		limit := strconv.Itoa(MaxTokens - fixedTokens)
+	if n := fixedTokens + len(c.Env) + len(c.Args); n > maxTokens {
+		limit := strconv.Itoa(maxTokens - fixedTokens)
 
 		return invalid("too many arguments and env entries", "use at most "+limit+" in total")
 	}
@@ -247,6 +248,7 @@ func writeString(b *strings.Builder, s string) {
 // Write replaces FileName in root with the config for c.
 // An existing entry, such as a symlink or directory from the image, is removed first.
 // The new file is created exclusively, so it never follows a symlink.
+// Mode 0600 keeps env values private on the host, and the guest init reads the file as root.
 func Write(root *os.Root, c Config) error {
 	data, err := Marshal(c)
 	if err != nil {
@@ -258,7 +260,7 @@ func Write(root *os.Root, c Config) error {
 		return fmt.Errorf("remove old config: %w", err)
 	}
 
-	f, err := root.OpenFile(FileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := root.OpenFile(FileName, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("create config: %w", err)
 	}

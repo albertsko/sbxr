@@ -16,6 +16,9 @@ import (
 
 const badName = "not a valid variable name"
 
+// configTokens counts the fixed tokens of a config file: the object, 6 keys, 3 strings, and 3 arrays.
+const configTokens = 13
+
 func validConfig() Config {
 	return Config{
 		UID:        1000,
@@ -52,7 +55,7 @@ func TestMarshalFormat(t *testing.T) {
 func TestMarshalRejects(t *testing.T) {
 	t.Parallel()
 
-	tooMany := make([]string, MaxTokens-fixedTokens-len(validConfig().Env)+1)
+	tooMany := make([]string, jsmnMaxTokens-configTokens-len(validConfig().Env)+1)
 	for i := range tooMany {
 		tooMany[i] = "x"
 	}
@@ -107,7 +110,7 @@ func TestTokenLimit(t *testing.T) {
 	t.Parallel()
 
 	c := validConfig()
-	c.Args = make([]string, MaxTokens-fixedTokens-len(c.Env))
+	c.Args = make([]string, jsmnMaxTokens-configTokens-len(c.Env))
 
 	for i := range c.Args {
 		c.Args[i] = "x"
@@ -116,6 +119,10 @@ func TestTokenLimit(t *testing.T) {
 	data, err := Marshal(c)
 	if err != nil {
 		t.Fatalf("Marshal() at the limit error = %v", err)
+	}
+
+	if n := newJsmnParser().parse(data, make([]jsmnTok, 2*jsmnMaxTokens)); n != jsmnMaxTokens {
+		t.Fatalf("config at the writer limit has %d tokens, want %d", n, jsmnMaxTokens)
 	}
 
 	if res := guestInit(data); !res.parsed || len(res.argv) != len(c.Args) {
@@ -281,7 +288,7 @@ func meetsContract(c Config) bool {
 		names[m[1]] = true
 	}
 
-	if !names["PATH"] || len(c.Args) == 0 || 13+len(c.Env)+len(c.Args) > 16384 {
+	if !names["PATH"] || len(c.Args) == 0 || configTokens+len(c.Env)+len(c.Args) > jsmnMaxTokens {
 		return false
 	}
 
@@ -507,8 +514,8 @@ func TestWrite(t *testing.T) {
 			}
 
 			info, err := os.Lstat(filepath.Join(rootDir, FileName))
-			if err != nil || !info.Mode().IsRegular() {
-				t.Fatalf("config is not a regular file: %v, %v", info, err)
+			if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				t.Fatalf("config is not a regular file with mode 0600: %v, %v", info, err)
 			}
 
 			want, _ := Marshal(c)
