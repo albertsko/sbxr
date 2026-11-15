@@ -297,9 +297,6 @@ func checkEnv(source, kv string) error {
 	return nil
 }
 
-// reservedGuestPaths are guest paths that the guest init, the kernel, or sbxr own. A volume cannot be at or under them.
-var reservedGuestPaths = []string{"/dev", "/proc", "/sys", guestmount.Path, "/" + krunconfig.FileName, "/init.krun"}
-
 func parseVolumes(raw []string, dir string) ([]Volume, error) {
 	volumes := make([]Volume, 0, len(raw))
 	seen := map[string]bool{}
@@ -329,10 +326,8 @@ func parseVolumes(raw []string, dir string) ([]Volume, error) {
 			return nil, &Error{Source: "-v", Value: v, Problem: "the guest path must be absolute and not /", Fix: "for example /work"}
 		}
 
-		for _, r := range reservedGuestPaths {
-			if guest == r || strings.HasPrefix(guest, r+"/") {
-				return nil, &Error{Source: "-v", Value: v, Problem: "the guest path " + r + " is reserved", Fix: "choose another guest path"}
-			}
+		if r := guestmount.Reserved(guest); r != "" {
+			return nil, &Error{Source: "-v", Value: v, Problem: "the guest path " + r + " is reserved", Fix: "choose another guest path"}
 		}
 
 		if seen[guest] {

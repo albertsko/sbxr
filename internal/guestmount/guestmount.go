@@ -90,6 +90,16 @@ func Decode(argv []string) (Args, error) {
 	return a, nil
 }
 
+// Check reports whether this build has the helper, without reading it.
+func Check() error {
+	_, err := fs.Stat(helper, helperDir+"/"+FileName)
+	if errors.Is(err, fs.ErrNotExist) {
+		return ErrMissing
+	}
+
+	return err //nolint:wrapcheck // An embedded file system fails only for a missing file.
+}
+
 // Binary returns the helper for linux on the host architecture, which is also the guest architecture.
 func Binary() ([]byte, error) {
 	data, err := helper.ReadFile(helperDir + "/" + FileName)

@@ -52,15 +52,31 @@ func main() {
 
 	fmt.Printf("Couldn't execute '%s' inside the vm: %s\n", a.Argv[0], strerror(err))
 
-	if errors.Is(err, unix.ENOENT) {
-		os.Exit(127)
-	}
-
-	os.Exit(126)
+	os.Exit(exitCode(err))
 }
 
+// exitCode is the init exit code for a failed exec: 127 for a missing file, else 126.
+func exitCode(err error) int {
+	if errors.Is(err, unix.ENOENT) {
+		return 127
+	}
+
+	return 126
+}
+
+// mount mounts m on its guest path with symlinks resolved, so that an image symlink cannot put a volume over a reserved path.
+// Earlier volumes are mounted already, so symlinks inside them count too.
 func mount(m guestmount.Mount) error {
-	if err := os.MkdirAll(m.Path, 0o755); err != nil { //nolint:gosec // Workload users other than root must reach the mount point.
+	target, err := guestmount.Resolve("/", m.Path)
+	if err != nil {
+		return err //nolint:wrapcheck // The caller names the mount.
+	}
+
+	if r := guestmount.Reserved(target); r != "" {
+		return fmt.Errorf("%s resolves to %s, which is under the reserved path %s", m.Path, target, r)
+	}
+
+	if err := os.MkdirAll(target, 0o755); err != nil { //nolint:gosec // Workload users other than root must reach the mount point.
 		return err //nolint:wrapcheck // The caller names the mount.
 	}
 
@@ -69,7 +85,7 @@ func mount(m guestmount.Mount) error {
 		flags |= unix.MS_RDONLY
 	}
 
-	return unix.Mount(m.Tag, m.Path, "virtiofs", flags, "") //nolint:wrapcheck // The caller names the mount.
+	return unix.Mount(m.Tag, target, "virtiofs", flags, "") //nolint:wrapcheck // The caller names the mount.
 }
 
 // execvp runs argv like glibc execvp: through PATH for a bare name, a file in an unknown format through /bin/sh,
