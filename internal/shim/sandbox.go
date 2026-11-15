@@ -181,7 +181,7 @@ func (s *service) boot(ctx context.Context, sb *sandbox) error {
 		// The VM process may have failed already. Its log says why.
 		select {
 		case <-sb.vm.done:
-			return fmt.Errorf("the VM stopped at once: %w; %s", sb.vm.exit, tail(filepath.Join(sb.dir, "vm.log")))
+			return fmt.Errorf("the VM stopped at once (%v); %s", vmExit(sb.vm), tail(filepath.Join(sb.dir, "vm.log")))
 		case <-time.After(time.Second):
 			return fmt.Errorf("open VM user namespace: %w", err)
 		}
@@ -223,7 +223,7 @@ func (s *service) connectAgent(ctx context.Context, sb *sandbox) error {
 
 		select {
 		case <-sb.vm.done:
-			return fmt.Errorf("the VM stopped before the guest agent started: %w; %s", sb.vm.exit, tail(filepath.Join(sb.dir, "vm.log")))
+			return fmt.Errorf("the VM stopped before the guest agent started (%v); %s", vmExit(sb.vm), tail(filepath.Join(sb.dir, "vm.log")))
 		case <-ctx.Done():
 			return ctx.Err() //nolint:wrapcheck // containerd gave up.
 		case <-time.After(200 * time.Millisecond):
@@ -365,6 +365,15 @@ func (s *service) ShutdownSandbox(_ context.Context, req *sandboxAPI.ShutdownSan
 	time.AfterFunc(100*time.Millisecond, func() { s.shutdown() })
 
 	return &sandboxAPI.ShutdownSandboxResponse{}, nil
+}
+
+// vmExit describes how the VM process ended.
+func vmExit(vm *vmProcess) string {
+	if vm.exit == nil {
+		return "exit status 0"
+	}
+
+	return vm.exit.Error()
 }
 
 // makeTraversable creates dir and lets every user pass through it and its parents up to /run/sbxr.

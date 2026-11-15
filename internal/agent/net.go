@@ -68,7 +68,8 @@ func setupPod(p podvm.Pod) error {
 			route.Flags = int(netlink.FLAG_ONLINK)
 		}
 
-		if err := netlink.RouteAdd(route); err != nil {
+		// A CNI plugin such as ptp replaces the connected route of the address with a route through the gateway. Replace does too.
+		if err := netlink.RouteReplace(route); err != nil {
 			return fmt.Errorf("add route %+v: %w", r, err)
 		}
 	}
