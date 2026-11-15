@@ -91,7 +91,6 @@ linters:
         - 'gvisor\.dev/gvisor/.+'
         - 'github\.com/containers/gvisor-tap-vsock/.+'
         - 'github\.com/miekg/dns\..+'
-        - 'net\.(IPAddr|UDPAddr|Resolver)'
 
     gocritic:
       enabled-tags:

@@ -81,7 +81,7 @@ func Start(ctx context.Context, f *os.File, mac net.HardwareAddr) (*Guest, error
 		return nil, err
 	}
 
-	g.resolver = &net.Resolver{PreferGo: true, Dial: g.dialDNS}
+	g.resolver = &net.Resolver{PreferGo: true, StrictErrors: false, Dial: g.dialDNS}
 
 	return g, nil
 }
@@ -305,7 +305,7 @@ func (g *Guest) dhcp(ctx context.Context, mac net.HardwareAddr) (*dhcpv4.DHCPv4,
 }
 
 func exchange(conn *gonet.UDPConn, msg *dhcpv4.DHCPv4, want dhcpv4.MessageType) (*dhcpv4.DHCPv4, error) {
-	server := &net.UDPAddr{IP: net.IPv4bcast, Port: dhcpv4.ServerPort}
+	server := &net.UDPAddr{IP: net.IPv4bcast, Port: dhcpv4.ServerPort, Zone: ""}
 	if _, err := conn.WriteTo(msg.ToBytes(), server); err != nil {
 		return nil, fmt.Errorf("guest dhcp: %w", err)
 	}
