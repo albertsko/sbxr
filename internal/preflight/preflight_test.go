@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/albertsko/sbxr/internal/preflight"
@@ -70,5 +71,18 @@ func TestCache(t *testing.T) {
 				t.Errorf("Cache(%q) fix = %q, want a fix only on failure", tt.dir, res.Fix)
 			}
 		})
+	}
+}
+
+func TestREADMEHasLinuxSetup(t *testing.T) {
+	t.Parallel()
+
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(readme), "```sh\n"+preflight.LinuxSetup+"```\n") {
+		t.Errorf("README.md has no sh block equal to preflight.LinuxSetup:\n%s", preflight.LinuxSetup)
 	}
 }

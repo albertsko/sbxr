@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
 
 	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
@@ -67,6 +68,7 @@ func writeJSON(w io.Writer, report preflight.Report) error {
 }
 
 // writeReport prints one line per check, the fix of each failed check, and a combined fix script.
+// On Linux, a failed report ends with the setup block for a fresh machine.
 func writeReport(w io.Writer, report preflight.Report) error {
 	pass := lipgloss.NewStyle().Foreground(lipgloss.Green).Render("pass")
 	fail := lipgloss.NewStyle().Foreground(lipgloss.Red).Render("fail")
@@ -94,6 +96,10 @@ func writeReport(w io.Writer, report preflight.Report) error {
 		for _, fix := range report.Fixes() {
 			printf("%s\n", fix)
 		}
+	}
+
+	if !report.OK && runtime.GOOS == "linux" {
+		printf("\nSetup on a fresh Ubuntu 24.04 machine with Homebrew on Linux:\n%s", preflight.LinuxSetup)
 	}
 
 	return errors.Join(errs...)

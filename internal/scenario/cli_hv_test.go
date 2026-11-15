@@ -23,6 +23,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 
+	"github.com/albertsko/sbxr/internal/preflight"
 	"github.com/albertsko/sbxr/internal/scenario"
 )
 
@@ -117,6 +118,9 @@ func TestHVAppArmorNeedsInstallPath(t *testing.T) {
 	}
 
 	out, code := sbxr(t, bin, hvEnv(hvCacheDir(t)), "doctor")
+
+	// The setup block at the end installs to /usr/local/bin, so only the report above it counts.
+	out, _ = strings.CutSuffix(out, preflight.LinuxSetup)
 	if code != 1 || !strings.Contains(out, "fail  userns") || !strings.Contains(out, "install sbxr to /usr/local/bin") || strings.Contains(out, "apparmor_parser") {
 		t.Errorf("sbxr doctor = %d, %q; want a userns failure that asks for /usr/local/bin and prints no profile command", code, out)
 	}
