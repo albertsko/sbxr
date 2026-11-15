@@ -86,6 +86,10 @@ func (sb *sandbox) dialStream(h podvm.Header) (*net.UnixConn, error) {
 
 // CreateSandbox claims the pod's ids and creates its directory. StartSandbox boots the VM.
 func (s *service) CreateSandbox(_ context.Context, req *sandboxAPI.CreateSandboxRequest) (*sandboxAPI.CreateSandboxResponse, error) {
+	if err := podvm.ValidID(req.GetSandboxID()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "sandbox "+err.Error()) //nolint:wrapcheck // ttrpc status.
+	}
+
 	cfg, err := parsePodConfig(req.GetOptions().GetValue())
 	if err != nil {
 		return nil, err

@@ -35,6 +35,8 @@ import (
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"github.com/albertsko/sbxr/internal/podvm"
 )
 
 // service implements the containerd sandbox and task APIs for one pod.
@@ -192,8 +194,8 @@ func start(f flags, stdin io.Reader, stdout io.Writer) error {
 
 // deleteAction cleans up after a shim that died, and reports the pod as killed.
 func deleteAction(f flags, stdout io.Writer) error {
-	if f.id == "" || f.id != filepath.Base(f.id) {
-		return fmt.Errorf("sandbox id %q is not valid", f.id)
+	if err := podvm.ValidID(f.id); err != nil {
+		return fmt.Errorf("sandbox %w", err)
 	}
 
 	dir := filepath.Join(podsDir, f.id)

@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -239,16 +238,15 @@ func (s *service) removeFiles(id, execID string) {
 	}
 }
 
-// validIDs rejects ids that would leave the crun root as file names.
+// validIDs rejects ids that would leave the crun root as file names. An init process has no exec id.
 func validIDs(id, execID string) error {
-	for _, v := range []string{id, execID} {
-		if strings.ContainsAny(v, "/\x00") || v == "." || v == ".." {
-			return status.Errorf(codes.InvalidArgument, "id %q is not valid", v)
-		}
+	err := podvm.ValidID(id)
+	if err == nil && execID != "" {
+		err = podvm.ValidID(execID)
 	}
 
-	if id == "" {
-		return status.Error(codes.InvalidArgument, "empty container id") //nolint:wrapcheck // ttrpc status.
+	if err != nil {
+		return status.Error(codes.InvalidArgument, err.Error()) //nolint:wrapcheck // ttrpc status.
 	}
 
 	return nil

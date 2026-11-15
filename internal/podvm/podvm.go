@@ -138,3 +138,13 @@ func ReadHeader(r *bufio.Reader) (Header, error) {
 
 	return Header{}, errors.New("stream header " + strconv.Quote(line) + " is not valid")
 }
+
+// ValidID reports whether id can name a file: it is not empty, not "." or "..", and has no slash or NUL.
+// Container, exec, and sandbox ids become file names on the host and in the guest.
+func ValidID(id string) error {
+	if id == "" || id == "." || id == ".." || strings.ContainsAny(id, "/\x00") {
+		return fmt.Errorf("id %q is not valid", id)
+	}
+
+	return nil
+}

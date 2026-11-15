@@ -50,3 +50,13 @@ func TestPodRoundTrip(t *testing.T) {
 		t.Errorf("ReadPod = %+v, %v; want %+v", got, err, want)
 	}
 }
+
+func TestValidID(t *testing.T) {
+	t.Parallel()
+
+	for id, ok := range map[string]bool{"c1": true, "a.b-c_d": true, "": false, ".": false, "..": false, "a/b": false, "../x": false, "a\x00b": false} {
+		if err := podvm.ValidID(id); (err == nil) != ok {
+			t.Errorf("ValidID(%q) = %v, want ok %v", id, err, ok)
+		}
+	}
+}

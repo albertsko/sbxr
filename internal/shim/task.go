@@ -80,8 +80,8 @@ func (s *service) Create(ctx context.Context, req *taskAPI.CreateTaskRequest) (*
 	}
 
 	id := req.GetID()
-	if id == "" || id != filepath.Base(id) {
-		return nil, status.Errorf(codes.InvalidArgument, "container id %q is not valid", id)
+	if err := podvm.ValidID(id); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "container "+err.Error()) //nolint:wrapcheck // ttrpc status.
 	}
 
 	guestBundle := filepath.Join(podvm.GuestShare, id)
