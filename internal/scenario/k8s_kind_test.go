@@ -77,11 +77,11 @@ func TestKind(t *testing.T) {
 		"admission policies":                         testAdmission,
 		"deletion stops the VM within the grace":     testDeletion,
 		"agent-sandbox Sandbox":                      testAgentSandbox,
+		"overhead covers the VM":                     testOverhead,
 	}
 
 	if phase == 1 {
 		tests["one VM per app container"] = testVMPerContainer
-		tests["overhead covers the VM"] = testOverhead
 	} else {
 		maps.Copy(tests, phase2Tests)
 	}
@@ -465,9 +465,16 @@ func testOverhead(t *testing.T, k *kind) {
 			time.Sleep(time.Second)
 		}
 
-		id := strings.TrimPrefix(k.run("", "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.status.containerStatuses[0].containerID}"), "containerd://")
-		current, _ := strconv.Atoi(k.node(fmt.Sprintf(`pid=$(crictl inspect -o go-template --template '{{.info.pid}}' %s)
-cat /sys/fs/cgroup$(cut -d: -f3 /proc/$pid/cgroup)/memory.current`, id)))
+		// Phase 1 runs the VM in the container cgroup. Phase 2 runs it in the sbxr-vm cgroup under the pod cgroup.
+		script := `cat /sys/fs/cgroup$(cut -d: -f3 /proc/$(crictl inspect -o go-template --template '{{.info.pid}}' ` +
+			strings.TrimPrefix(k.run("", "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.status.containerStatuses[0].containerID}"), "containerd://") +
+			`)/cgroup)/memory.current`
+		if k.Phase == 2 {
+			uid := strings.ReplaceAll(k.run("", "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.metadata.uid}"), "-", "_")
+			script = `cat /sys/fs/cgroup/kubepods.slice/*/*pod` + uid + `.slice/sbxr-vm/memory.current`
+		}
+
+		current, _ := strconv.Atoi(k.node(script))
 
 		used := (guest["MemTotal"] - guest["MemFree"]) / 1024
 		vmm := current>>20 - used

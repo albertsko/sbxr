@@ -146,7 +146,7 @@ func startError(msg string) Result {
 	switch {
 	case strings.Contains(msg, "not found") || strings.Contains(msg, "No such file"):
 		return Result{Stdout: "", Stderr: msg, ExitCode: 127, Class: NotFound}
-	case strings.Contains(msg, "ermission denied"):
+	case strings.Contains(msg, "ermission denied") || strings.Contains(msg, "not executable"):
 		return Result{Stdout: "", Stderr: msg, ExitCode: 126, Class: NotExecutable}
 	}
 
