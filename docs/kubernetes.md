@@ -7,13 +7,21 @@
 - Kubernetes 1.36 or later. The DNS policy uses `MutatingAdmissionPolicy` at `admissionregistration.k8s.io/v1`, which older versions do not serve by default.
 - Nodes with containerd 2.2 or later, glibc 2.35 or later, Linux 5.19 or later, `/dev/kvm`, and `/dev/net/tun`.
 - `iptables` and `nsenter` on the node for `kubectl port-forward`.
-- A `kubelet` id range, so that pods with user namespaces (`hostUsers: false`) and `sbxr` pod VMs never share host ids. Without it, the kubelet may give such pods any host id. On each node, create the `kubelet` user, install `getsubids` (Debian and Ubuntu package `uidmap`), add one equal `kubelet` entry to `/etc/subuid` and `/etc/subgid`, and restart the kubelet. The installer then reserves an `sbxr` range next to it:
+- A `kubelet` id range, so that pods with user namespaces (`hostUsers: false`) and `sbxr` pod VMs never share host ids. Without it, the kubelet may give such pods any host id. The kubelet reads the range with `getsubids kubelet` and `getsubids -g kubelet` at start, and so does preflight. The range must follow the kubelet's own rules for the default 65536 ids per pod:
+  - The `kubelet` user exists, and `getsubids` is installed (Debian and Ubuntu package `uidmap`).
+  - `getsubids` reports one range for uids and the same range for gids.
+  - The first id is a multiple of 65536 and at least 65536.
+  - The length is `maxPods × 65536`, or more in steps of 65536, where `maxPods` is the kubelet's pod limit (the node's `status.capacity.pods`, 110 by default).
+
+  For example, on a node with the default 110 pods:
 
   ```sh
   useradd --system --no-create-home --shell /usr/sbin/nologin kubelet
-  echo kubelet:65536:7208960 | tee -a /etc/subuid /etc/subgid
+  echo kubelet:65536:7208960 | tee -a /etc/subuid /etc/subgid   # 7208960 = 110 × 65536
   systemctl restart kubelet
   ```
+
+  Restart the kubelet after you add or change the range. Preflight cannot tell whether the running kubelet has read it.
 
 - One of these node distributions:
   - kubeadm-style nodes whose `/etc/containerd/config.toml` imports `/etc/containerd/conf.d/*.toml`.
@@ -82,7 +90,10 @@ spec:
 
 ## Upgrade from phase 1
 
-Apply the new `sbxr-install.yaml` and wait for the rollout as in "Install". Each node switches when its containerd restarts. Recreate running `sbxr` pods afterwards, so that they move to phase 2. Then delete the two phase 1 policies, which `kubectl apply` keeps:
+1. Configure the `kubelet` id range on every node and restart the kubelet, as in "Requirements". A node without a valid range fails phase 2 preflight: the installer writes the reason to `sbxr.dev/preflight` and removes `sbxr.dev/ready`, so no new `sbxr` pod is scheduled there. Its phase 1 drop-in and bundle stay, so `sbxr` pods that already run there keep running.
+2. Apply the new `sbxr-install.yaml` and wait for the rollout as in "Install". Each node switches when its containerd restarts.
+3. Recreate running `sbxr` pods, so that they move to phase 2.
+4. Delete the two phase 1 policies, which `kubectl apply` keeps:
 
 ```sh
 kubectl delete --ignore-not-found validatingadmissionpolicy,validatingadmissionpolicybinding sbxr-warn
