@@ -77,10 +77,13 @@ type facts struct {
 	dbus    bool   // The D-Bus system socket exists.
 	kernel  string // Output of "uname -r", for example "6.8.0-1015-azure".
 	tun     bool   // /dev/net/tun exists.
-	// subuid and subgid are /etc/subuid and /etc/subgid. kubelet reports whether the kubelet reads its entries:
-	// the kubelet user exists and getsubids is installed.
+	// subuid and subgid are /etc/subuid and /etc/subgid.
 	subuid, subgid string
-	kubelet        bool
+	// kubeletUser reports whether the kubelet user exists. kubeletUIDs and kubeletGIDs are the output of
+	// "getsubids kubelet" and "getsubids -g kubelet", empty when getsubids failed. The kubelet reads its range the same way.
+	kubeletUser              bool
+	kubeletUIDs, kubeletGIDs string
+	maxPods                  int // The node's pod capacity.
 }
 
 var (
@@ -95,19 +98,43 @@ var (
 // Without a kubelet entry, the kubelet gives pods with user namespaces (hostUsers: false) random ids from almost the
 // whole id space, so any range could overlap them. With one, it uses only that entry, and the sbxr range stays apart.
 func podIDs(f facts) (subid.Range, bool, error) {
-	_, err := subid.Find(f.subuid, f.subgid, "kubelet")
-	if !f.kubelet || err != nil {
-		return subid.Range{}, false, errors.Join(errors.New("the kubelet may give pods with user namespaces any host id, "+
-			"which can overlap sbxr pod VMs: create the kubelet user, install getsubids, and add one equal kubelet entry to "+
-			"/etc/subuid and /etc/subgid (see docs/kubernetes.md)"), err)
+	kubelet, err := kubeletRange(f)
+	if err != nil {
+		return subid.Range{}, false, fmt.Errorf("kubelet id range: %w; the kubelet may give pods with user namespaces "+
+			"any host id, which can overlap sbxr pod VMs (see the requirements in docs/kubernetes.md)", err)
 	}
 
-	r, isNew, err := subid.Choose(f.subuid, f.subgid)
+	r, isNew, err := subid.Choose(f.subuid, f.subgid, kubelet)
 	if err != nil {
 		return r, false, fmt.Errorf("pod VM ids: %w", err)
 	}
 
 	return r, isNew, nil
+}
+
+// kubeletRange returns the range that the kubelet uses, and checks it against the kubelet's own rules for the default
+// 65536 ids per pod: the first id is a multiple of 65536 and at least 65536, and the length is a multiple of 65536
+// that covers maxPods pods.
+func kubeletRange(f facts) (subid.Range, error) {
+	if !f.kubeletUser {
+		return subid.Range{}, errors.New("the kubelet user does not exist")
+	}
+
+	uids, errU := subid.ParseGetsubids(f.kubeletUIDs)
+	gids, errG := subid.ParseGetsubids(f.kubeletGIDs)
+
+	switch {
+	case errU != nil || errG != nil:
+		return subid.Range{}, fmt.Errorf("getsubids kubelet: %w", errors.Join(errU, errG))
+	case uids != gids:
+		return subid.Range{}, fmt.Errorf("the kubelet uid range %s and gid range %s differ", uids, gids)
+	case uids.First < subid.PerPod || uids.First%subid.PerPod != 0 || uids.Count%subid.PerPod != 0:
+		return subid.Range{}, fmt.Errorf("the kubelet range %s does not start and end on a multiple of %d above the host ids", uids, subid.PerPod)
+	case uids.Count/subid.PerPod < f.maxPods:
+		return subid.Range{}, fmt.Errorf("the kubelet range %s holds %d pods, fewer than the node's %d", uids, uids.Count/subid.PerPod, f.maxPods)
+	}
+
+	return uids, nil
 }
 
 // preflight returns the drop-in for d and phase, or the reason why the node is not supported.

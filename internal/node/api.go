@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +23,8 @@ type Node struct {
 	RuntimeHandlers []string
 	// Heartbeat is when the kubelet last posted the node status, from the Ready condition.
 	Heartbeat time.Time
+	// MaxPods is the node's pod capacity, the kubelet's maxPods.
+	MaxPods int
 }
 
 // API reads and patches the installer's own Node object.
@@ -74,6 +77,9 @@ func (c *client) Node(ctx context.Context) (Node, error) {
 			RuntimeHandlers []struct {
 				Name string `json:"name"`
 			} `json:"runtimeHandlers"`
+			Capacity struct {
+				Pods string `json:"pods"`
+			} `json:"capacity"`
 		} `json:"status"`
 	}
 
@@ -87,7 +93,9 @@ func (c *client) Node(ctx context.Context) (Node, error) {
 		return Node{}, fmt.Errorf("decode node: %w", err)
 	}
 
-	n := Node{RuntimeVersion: obj.Status.NodeInfo.ContainerRuntimeVersion, RuntimeHandlers: nil, Heartbeat: time.Time{}}
+	maxPods, _ := strconv.Atoi(obj.Status.Capacity.Pods)
+
+	n := Node{RuntimeVersion: obj.Status.NodeInfo.ContainerRuntimeVersion, RuntimeHandlers: nil, Heartbeat: time.Time{}, MaxPods: maxPods}
 	for _, h := range obj.Status.RuntimeHandlers {
 		n.RuntimeHandlers = append(n.RuntimeHandlers, h.Name)
 	}

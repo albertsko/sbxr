@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/albertsko/sbxr/internal/subid"
 )
 
 const dropInPath = "/etc/containerd/conf.d/sbxr.toml"
@@ -59,7 +62,7 @@ func (f *fakeNode) Node(context.Context) (Node, error) {
 		heartbeat = time.Unix(1, 0)
 	}
 
-	return Node{RuntimeVersion: "containerd://2.3.4", RuntimeHandlers: slices.Clone(f.handlers), Heartbeat: heartbeat}, nil
+	return Node{RuntimeVersion: "containerd://2.3.4", RuntimeHandlers: slices.Clone(f.handlers), Heartbeat: heartbeat, MaxPods: 110}, nil
 }
 
 func (f *fakeNode) Patch(_ context.Context, labels, annotations map[string]*string) error {
@@ -102,8 +105,18 @@ func (f *fakeNode) host(_ context.Context, args ...string) (string, error) {
 		return "glibc 2.39\n", nil
 	case "uname -r":
 		return "6.8.0-1015-azure\n", nil
-	case "test -c /dev/net/tun", "getent passwd kubelet", "sh -c command -v getsubids":
+	case "test -c /dev/net/tun", "getent passwd kubelet":
 		return "", nil
+	case "getsubids kubelet", "getsubids -g kubelet":
+		// getsubids prints the kubelet entry of the file, or fails without one.
+		file := map[bool]string{true: "/etc/subgid", false: "/etc/subuid"}[strings.Contains(strings.Join(args, " "), "-g")]
+		data, _ := os.ReadFile(f.root + file)
+
+		for _, r := range subid.Parse(string(data)) {
+			if r.Name == "kubelet" {
+				return fmt.Sprintf("0: kubelet %d %d\n", r.First, r.Count), nil
+			}
+		}
 	case "/opt/sbxr/bin/krun --version":
 		if !f.krunFails {
 			return "crun version 1.31\n+SYSTEMD +SELINUX +LIBKRUN\n", nil
@@ -876,12 +889,19 @@ func TestInstallPhase2(t *testing.T) {
 
 	// Without a kubelet range, kubelet pods with user namespaces could get any id.
 	err := in.Install(t.Context())
-	if err != nil || !strings.Contains(f.annotations[PreflightAnnotation], "add one equal kubelet entry") {
+	if err != nil || !strings.Contains(f.annotations[PreflightAnnotation], "kubelet id range: getsubids kubelet") {
 		t.Fatalf("install without a kubelet range: %v, annotations %v", err, f.annotations)
 	}
 
 	write(t, f.root+"/etc/subuid", "kubelet:65536:7208960\n")
 	write(t, f.root+"/etc/subgid", "kubelet:65536:7208960")
+
+	// shadow's tools keep the file mode, and a lock of a process that is gone is stale.
+	if err := os.Chmod(f.root+"/etc/subgid", 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	write(t, f.root+"/etc/subuid.lock", "999999999")
 
 	err = in.Install(t.Context())
 	if err != nil {
@@ -892,6 +912,10 @@ func TestInstallPhase2(t *testing.T) {
 		if got := read(t, f.root+name); got != "kubelet:65536:7208960\nsbxr:7274496:33554432\n" {
 			t.Errorf("%s = %q, want the sbxr range after the kubelet range", name, got)
 		}
+	}
+
+	if st, err := os.Stat(f.root + "/etc/subgid"); err != nil || st.Mode().Perm() != 0o600 || exists(f.root+"/etc/subuid.lock") {
+		t.Errorf("subgid mode %v, %v, lock left %v; want the mode kept and the lock gone", st.Mode(), err, exists(f.root+"/etc/subuid.lock"))
 	}
 
 	dropIn := read(t, f.root+dropInPath)

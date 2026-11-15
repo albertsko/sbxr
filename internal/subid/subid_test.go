@@ -54,3 +54,18 @@ func TestFind(t *testing.T) {
 		t.Errorf("Find without a subuid entry: %v", err)
 	}
 }
+
+func TestChooseAvoidsReservedRanges(t *testing.T) {
+	t.Parallel()
+
+	// A kubelet range from NSS is not in the files, but getsubids reports it.
+	kubelet, err := subid.ParseGetsubids("0: kubelet 65536 7208960\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r, isNew, err := subid.Choose("", "", kubelet)
+	if err != nil || !isNew || r.First != 65536+7208960 {
+		t.Errorf("Choose = %s, %v, %v; want the range after the kubelet range", r, isNew, err)
+	}
+}

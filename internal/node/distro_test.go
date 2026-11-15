@@ -156,3 +156,38 @@ func TestRuncSystemdCgroup(t *testing.T) {
 		}
 	}
 }
+
+func TestKubeletRange(t *testing.T) {
+	t.Parallel()
+
+	const ok = "0: kubelet 65536 7208960\n"
+
+	tests := []struct {
+		name       string
+		uids, gids string
+		maxPods    int
+		reason     string // Empty when the range is fine.
+	}{
+		{name: "110 pods", uids: ok, gids: ok, maxPods: 110},
+		{name: "no getsubids or entry", uids: "", gids: "", maxPods: 110, reason: "want one range"},
+		{name: "too small for maxPods", uids: ok, gids: ok, maxPods: 250, reason: "holds 110 pods, fewer than the node's 250"},
+		{name: "unaligned start", uids: "0: kubelet 100000 7208960", gids: "0: kubelet 100000 7208960", maxPods: 110, reason: "multiple of 65536"},
+		{name: "uids and gids differ", uids: ok, gids: "0: kubelet 131072 7208960", maxPods: 110, reason: "differ"},
+		{name: "two ranges", uids: ok + ok, gids: ok, maxPods: 110, reason: "want one range"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := kubeletRange(facts{kubeletUser: true, kubeletUIDs: tt.uids, kubeletGIDs: tt.gids, maxPods: tt.maxPods})
+			if (tt.reason == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tt.reason)) {
+				t.Errorf("kubeletRange: %v, want %q", err, tt.reason)
+			}
+		})
+	}
+
+	if _, err := kubeletRange(facts{kubeletUser: false, kubeletUIDs: ok, kubeletGIDs: ok}); err == nil {
+		t.Error("kubeletRange without the kubelet user: no error")
+	}
+}

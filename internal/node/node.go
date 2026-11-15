@@ -129,16 +129,13 @@ func (in *Installer) Install(ctx context.Context) error {
 // reserveIDs adds r to /etc/subuid and /etc/subgid, so no other user and no kubelet pod gets these ids.
 func (in *Installer) reserveIDs(r subid.Range) error {
 	for _, name := range []string{"/etc/subuid", "/etc/subgid"} {
-		data, err := os.ReadFile(in.HostRoot + name)
-		if err != nil {
-			return fmt.Errorf("reserve ids: %w", err)
-		}
+		err := in.editSubids(name, func(data []byte) []byte {
+			if len(data) > 0 && !bytes.HasSuffix(data, []byte("\n")) {
+				data = append(data, '\n')
+			}
 
-		if len(data) > 0 && !bytes.HasSuffix(data, []byte("\n")) {
-			data = append(data, '\n')
-		}
-
-		err = writeFile(in.HostRoot+name, append(data, r.String()+"\n"...))
+			return append(data, r.String()+"\n"...)
+		})
 		if err != nil {
 			return fmt.Errorf("reserve ids: %w", err)
 		}
@@ -149,30 +146,48 @@ func (in *Installer) reserveIDs(r subid.Range) error {
 	return nil
 }
 
+// editSubids rewrites the subordinate id file name with edit, under shadow's lock. A missing file counts as empty.
+func (in *Installer) editSubids(name string, edit func([]byte) []byte) error {
+	path := in.HostRoot + name
+
+	unlock, err := lockShadow(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", name, err)
+	}
+
+	if out := edit(data); !bytes.Equal(out, data) {
+		return writeFile(path, out)
+	}
+
+	return nil
+}
+
 // releaseIDs removes the sbxr entries from /etc/subuid and /etc/subgid.
 func (in *Installer) releaseIDs() error {
 	for _, name := range []string{"/etc/subuid", "/etc/subgid"} {
-		data, err := os.ReadFile(in.HostRoot + name)
-		if errors.Is(err, fs.ErrNotExist) {
+		if _, err := os.Stat(in.HostRoot + name); errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 
+		err := in.editSubids(name, func(data []byte) []byte {
+			var kept []byte
+
+			for line := range strings.Lines(string(data)) {
+				if !strings.HasPrefix(line, subid.Name+":") {
+					kept = append(kept, line...)
+				}
+			}
+
+			return kept
+		})
 		if err != nil {
 			return fmt.Errorf("release ids: %w", err)
-		}
-
-		var kept []byte
-
-		for line := range strings.Lines(string(data)) {
-			if !strings.HasPrefix(line, subid.Name+":") {
-				kept = append(kept, line...)
-			}
-		}
-
-		if len(kept) != len(data) {
-			if err := writeFile(in.HostRoot+name, kept); err != nil {
-				return fmt.Errorf("release ids: %w", err)
-			}
 		}
 	}
 
@@ -397,22 +412,26 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *su
 	glibc, _ := in.Host(ctx, "getconf", "GNU_LIBC_VERSION")
 	kernel, _ := in.Host(ctx, "uname", "-r")
 	_, kubeletErr := in.Host(ctx, "getent", "passwd", "kubelet")
-	_, getsubidsErr := in.Host(ctx, "sh", "-c", "command -v getsubids")
+	kubeletUIDs := in.hostOutput(ctx, "getsubids", "kubelet")
+	kubeletGIDs := in.hostOutput(ctx, "getsubids", "-g", "kubelet")
 	subuid, _ := os.ReadFile(in.HostRoot + "/etc/subuid")
 	subgid, _ := os.ReadFile(in.HostRoot + "/etc/subgid")
 
 	f := facts{
-		kvm:     kvmErr == nil,
-		glibc:   glibc,
-		runtime: n.RuntimeVersion,
-		config:  string(config),
-		systemd: runcSystemdCgroup(append([]string{string(config)}, in.imported(string(config), d)...)...),
-		dbus:    dbusErr == nil,
-		kernel:  kernel,
-		tun:     tunErr == nil,
-		subuid:  string(subuid),
-		subgid:  string(subgid),
-		kubelet: kubeletErr == nil && getsubidsErr == nil,
+		kvm:         kvmErr == nil,
+		glibc:       glibc,
+		runtime:     n.RuntimeVersion,
+		config:      string(config),
+		systemd:     runcSystemdCgroup(append([]string{string(config)}, in.imported(string(config), d)...)...),
+		dbus:        dbusErr == nil,
+		kernel:      kernel,
+		tun:         tunErr == nil,
+		subuid:      string(subuid),
+		subgid:      string(subgid),
+		kubeletUser: kubeletErr == nil,
+		kubeletUIDs: kubeletUIDs,
+		kubeletGIDs: kubeletGIDs,
+		maxPods:     n.MaxPods,
 	}
 
 	dropIn, err := preflight(d, f, in.Phase)
@@ -434,6 +453,16 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *su
 	}
 
 	return d, unit, dropIn, &r, nil
+}
+
+// hostOutput runs a host command and returns its output, or nothing when it fails.
+func (in *Installer) hostOutput(ctx context.Context, args ...string) string {
+	out, err := in.Host(ctx, args...)
+	if err != nil {
+		return ""
+	}
+
+	return out
 }
 
 // runtimeNode reads the node once the kubelet knows the container runtime version.
