@@ -267,6 +267,15 @@ func testUpgradeKeepsPods(t *testing.T, k *kind) {
 		t.Error(err)
 	}
 
+	// The pod's shim, which runs from the retired bundle too, ends when the kubelet removes the sandbox, about a minute later.
+	for i := 0; k.node("crictl pods -q --label io.kubernetes.pod.uid="+uid) != ""; i++ {
+		if i == 180 {
+			t.Fatal("the kubelet did not remove the sandbox within 3 minutes")
+		}
+
+		time.Sleep(time.Second)
+	}
+
 	reinstall()
 
 	if retired := k.node("ls /opt/sbxr.old 2>/dev/null | wc -l"); retired != "0" {

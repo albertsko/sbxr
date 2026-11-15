@@ -92,7 +92,7 @@ spec:
 
 Apply the `sbxr-install.yaml` of the new release and wait for the rollout as in "Install". Running pods need no drain: they keep working, with `kubectl exec`, exec probes, and graceful stop.
 
-The installer moves the previous bundle to `/opt/sbxr.old/<time>` instead of removing it. A running phase 2 VM keeps its guest root and its agent's `crun` there, and older shims and phase 1 VMs keep their binaries and libraries. Each install, and uninstall, removes the retired bundles that no process uses any more, so a retired bundle goes at the first install after its last pod is deleted. New pods use the new bundle.
+The installer moves the previous bundle to `/opt/sbxr.old/<time>` instead of removing it. A running phase 2 VM keeps its guest root and its agent's `crun` there, and older shims and phase 1 VMs keep their binaries and libraries. Each install, and uninstall, removes the retired bundles that no process uses any more, so a retired bundle goes at the first install after the kubelet removed the sandboxes of its last pods, which it does about a minute after their deletion. New pods use the new bundle.
 
 ## Upgrade from phase 1
 
