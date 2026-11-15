@@ -674,8 +674,8 @@ func TestClosedTerminalStopsTheRun(t *testing.T) {
 	pid := tm.cmd.Process.Pid
 
 	pgid, err := syscall.Getpgid(pid)
-	if err != nil || pgid != pid || pgid == syscall.Getpgrp() {
-		t.Fatalf("run pid %d has process group %d (%v), the test has %d; want its own group", pid, pgid, err, syscall.Getpgrp())
+	if err != nil || pgid != pid {
+		t.Fatalf("run pid %d has process group %d (%v); want its own group", pid, pgid, err)
 	}
 
 	err = syscall.Kill(-pid, syscall.SIGHUP)
