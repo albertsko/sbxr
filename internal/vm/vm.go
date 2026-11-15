@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 )
 
 // ChildArg is the hidden first argument that selects the child mode.
@@ -60,6 +62,9 @@ func Child(args []string, h Hypervisor, stderr io.Writer) int {
 	}
 
 	watchLifeline(runDir)
+
+	// The VM process shares the runner's process group. Terminal interrupts end the run only through the runner.
+	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT)
 
 	err := child(args, h)
 

@@ -3,7 +3,6 @@ package fake
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -143,7 +142,7 @@ func sleep(args []string, stdio Stdio) int {
 // stty supports only `stty size`. It prints the rows and columns of the console, which is stdout here,
 // because the fake console replaces stdin with a pipe.
 func stty(args []string, stdio Stdio) int {
-	f, ok := stdio.Out.(*os.File)
+	f, ok := stdio.Out.(interface{ Fd() uintptr })
 	if len(args) != 1 || args[0] != "size" || !ok {
 		sayln(stdio.Err, "stty: only 'stty size' is supported")
 

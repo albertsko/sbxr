@@ -85,6 +85,8 @@ type app struct {
 // Main runs the sbxr command line with args and returns the process exit code.
 func Main(args []string, version string, b Backend) int {
 	// Without a terminal on stdout, no output has colors, including stderr.
+	// fang and lipgloss read NO_COLOR from the environment at render time and take no color profile option.
+	// The guest never sees it, because the guest env comes only from the image and the run flags.
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		_ = os.Setenv("NO_COLOR", "1") // Setenv fails only on invalid names.
 	}
