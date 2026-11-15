@@ -211,16 +211,17 @@ func (g *guest) stat(args []string, stdio Stdio) int {
 		return 1
 	}
 
-	var nlink uint64
+	// The link count type differs between platforms.
+	nlink := "0"
 	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		nlink = uint64(st.Nlink)
+		nlink = fmt.Sprint(st.Nlink)
 	}
 
 	out := strings.NewReplacer(
 		"%u", strconv.FormatUint(uid, 10),
 		"%g", strconv.FormatUint(gid, 10),
 		"%a", strconv.FormatUint(mode&0o7777, 8),
-		"%h", strconv.FormatUint(nlink, 10),
+		"%h", nlink,
 	).Replace(args[1])
 
 	return lines(stdio, out)
