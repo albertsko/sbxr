@@ -19,6 +19,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 
 	"github.com/albertsko/sbxr/internal/scenario"
 )
@@ -106,6 +107,7 @@ func sbxrOnTerminal(t *testing.T, environ []string, args ...string) (string, int
 type terminal struct {
 	t     *testing.T
 	ptmx  *os.File
+	tty   *os.File
 	cmd   *exec.Cmd
 	start time.Time
 
@@ -116,6 +118,13 @@ type terminal struct {
 // startOnTerminal starts the binary with stdin, stderr, and stdout on a new pseudo-terminal.
 // A non-nil stdout replaces the terminal as stdout.
 func startOnTerminal(t *testing.T, environ []string, stdout io.Writer, args ...string) *terminal {
+	t.Helper()
+
+	return startOnTerminalWith(t, environ, stdout, nil, args...)
+}
+
+// startOnTerminalWith is startOnTerminal with a setup function that changes the terminal before the start.
+func startOnTerminalWith(t *testing.T, environ []string, stdout io.Writer, setup func(tty *os.File), args ...string) *terminal {
 	t.Helper()
 
 	ptmx, tty, err := pty.Open()
@@ -134,6 +143,10 @@ func startOnTerminal(t *testing.T, environ []string, stdout io.Writer, args ...s
 		t.Fatal(err)
 	}
 
+	if setup != nil {
+		setup(tty)
+	}
+
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	t.Cleanup(cancel)
 
@@ -147,7 +160,7 @@ func startOnTerminal(t *testing.T, environ []string, stdout io.Writer, args ...s
 		cmd.Stdout = stdout
 	}
 
-	tm := &terminal{t: t, ptmx: ptmx, cmd: cmd, start: time.Now()}
+	tm := &terminal{t: t, ptmx: ptmx, tty: tty, cmd: cmd, start: time.Now()}
 
 	go func() {
 		buf := make([]byte, 4096)
@@ -178,6 +191,13 @@ func (tm *terminal) output() string {
 	defer tm.mu.Unlock()
 
 	return tm.out.String()
+}
+
+// raw reports whether the terminal has line editing off.
+func (tm *terminal) raw() bool {
+	termios, err := unix.IoctlGetTermios(int(tm.tty.Fd()), getTermios)
+
+	return err == nil && termios.Lflag&unix.ICANON == 0
 }
 
 // waitForOutput waits until the terminal output contains text.
@@ -466,6 +486,133 @@ func TestCtrlCWithInteractiveTTYStopsTheWorkload(t *testing.T) {
 	out, code, _ := tm.wait()
 	if code != 130 || strings.Contains(out, "sbxr:") {
 		t.Errorf("sbxr run -it then Ctrl-C = %d, %q; want 130 and no sbxr error", code, out)
+	}
+}
+
+func TestCtrlCRightAfterRawModeStopsTheWorkload(t *testing.T) {
+	t.Parallel()
+
+	tm := startOnTerminal(t, env(t), nil, "run", "-it", scenario.Busybox, "sleep", "30")
+
+	// The runner sets the user's terminal raw just before it starts the VM process.
+	for deadline := time.Now().Add(10 * time.Second); !tm.raw(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the terminal never became raw")
+		}
+	}
+
+	tm.write("\x03")
+
+	if _, code, _ := tm.wait(); code != 130 {
+		t.Errorf("exit code = %d, want 130", code)
+	}
+}
+
+func TestCtrlCReachesAWorkloadThatDoesNotReadStdin(t *testing.T) {
+	t.Parallel()
+
+	tm := startOnTerminal(t, env(t), nil, "run", "-it", scenario.Busybox, "sh", "-c", "echo ready; sleep 30")
+	tm.waitForOutput("ready")
+	tm.write(strings.Repeat("x", 100))
+	tm.write("\x03")
+
+	if _, code, _ := tm.wait(); code != 130 {
+		t.Errorf("exit code = %d, want 130", code)
+	}
+}
+
+func TestRunWithTOSTOP(t *testing.T) {
+	t.Parallel()
+
+	// With TOSTOP, a background process group that writes to the terminal is stopped.
+	tostop := func(tty *os.File) {
+		termios, err := unix.IoctlGetTermios(int(tty.Fd()), getTermios)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		termios.Lflag |= unix.TOSTOP
+
+		err = unix.IoctlSetTermios(int(tty.Fd()), setTermios, termios)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, args := range [][]string{{"run", scenario.Busybox, "echo", "hi"}, {"run", "-t", scenario.Busybox, "echo", "hi"}} {
+		out, code, _ := startOnTerminalWith(t, env(t), nil, tostop, args...).wait()
+		if code != 0 || !strings.Contains(out, "hi") {
+			t.Errorf("sbxr %q = %d, %q; want 0 and hi", args, code, out)
+		}
+	}
+}
+
+func TestSIGTERMWithAStalledTTYReader(t *testing.T) {
+	t.Parallel()
+
+	environ := env(t)
+	cacheDir := strings.TrimPrefix(environ[2], "SBXR_CACHE_DIR=")
+	word := strings.Repeat("x", 100000)
+
+	cmd := exec.CommandContext(t.Context(), bin, "run", "-t", scenario.Busybox, "echo", word, word)
+	cmd.Env = environ
+
+	// Nobody reads this pipe, so the output copy stalls once the pipe buffer is full.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+
+	err = cmd.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The run directory exists once the runner handles signals. Then the output fills the pipe.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		runs, _ := os.ReadDir(filepath.Join(cacheDir, "runs"))
+		if len(runs) > 0 {
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("the run never started")
+		}
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	err = cmd.Process.Signal(syscall.SIGTERM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+
+	go func() {
+		_ = cmd.Wait() // The exit code below shows the outcome.
+
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+
+		t.Fatal("sbxr ignored SIGTERM while the output reader stalled")
+	}
+
+	if code := cmd.ProcessState.ExitCode(); code != 143 {
+		t.Errorf("exit code = %d, want 143", code)
+	}
+
+	waitForNoProcess(t, cacheDir)
+
+	err = scenario.CheckClean(cacheDir)
+	if err != nil {
+		t.Error(err)
 	}
 }
 
