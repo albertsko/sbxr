@@ -51,7 +51,8 @@ type vmProcess struct {
 
 // startVM starts the VM process for the pod directory dir: in the pod network namespace and in cgroup, as root of a new
 // user namespace that maps subid.PerPod ids from uid, with /dev/kvm access through its group when the device needs one.
-func startVM(dir, libDir, netnsPath string, uid int, cgroup, log *os.File) (*vmProcess, error) {
+// bundle becomes descriptor pinnedFD in the VM process.
+func startVM(dir, libDir, netnsPath string, uid int, bundle, cgroup, log *os.File) (*vmProcess, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("find shim binary: %w", err)
@@ -60,6 +61,7 @@ func startVM(dir, libDir, netnsPath string, uid int, cgroup, log *os.File) (*vmP
 	cmd := exec.Command(self, VMArg, dir) //nolint:noctx // The VM lives as long as the pod, not a request.
 	cmd.Env = libkrun.Env(libDir)
 	cmd.Stdout, cmd.Stderr = log, log
+	cmd.ExtraFiles = []*os.File{bundle} // Descriptor 3, which is pinnedFD.
 
 	idmap := []syscall.SysProcIDMap{{ContainerID: 0, HostID: uid, Size: subid.PerPod}}
 	gidmap := idmap

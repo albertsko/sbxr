@@ -33,30 +33,76 @@ import (
 
 // Install paths from the node installer.
 const (
-	defaultBundle = "/opt/sbxr"
-	runDir        = "/run/sbxr"
-	podsDir       = runDir + "/pods"
+	runDir  = "/run/sbxr"
+	podsDir = runDir + "/pods"
 )
 
-// bundleOf returns the node bundle of the shim binary exe, which is <bundle>/bin/containerd-shim-sbxr-v1.
-// After an upgrade, a shim that started before it lives in a retired copy of the bundle and keeps using that copy's
-// libraries and guest root, so its VM matches it.
-func bundleOf(exe string) string {
-	if filepath.Base(filepath.Dir(exe)) != "bin" {
-		return defaultBundle
+// pinnedBundle is the node bundle in the VM process: the shim passes its bundle directory as this descriptor, and the
+// VM process names every bundle path through it, so a later rename of the bundle does not change what it loads.
+const (
+	pinnedFD     = 3
+	pinnedBundle = "/proc/self/fd/3"
+)
+
+// pinBundle opens the node bundle of this shim's own binary, <bundle>/bin/containerd-shim-sbxr-v1. An upgrade can
+// rename the bundle at any time, so it checks that the directory it opened holds the running binary, and tries again.
+func pinBundle() (*os.File, error) {
+	var err error
+
+	for range 3 {
+		var exe string
+
+		exe, err = os.Executable()
+		if err != nil {
+			return nil, fmt.Errorf("find shim binary: %w", err)
+		}
+
+		var self unix.Stat_t
+
+		err = unix.Stat("/proc/self/exe", &self)
+		if err != nil {
+			return nil, fmt.Errorf("stat shim binary: %w", err)
+		}
+
+		var f *os.File
+
+		f, err = openBundle(exe, self)
+		if err == nil {
+			return f, nil
+		}
 	}
 
-	return filepath.Dir(filepath.Dir(exe))
+	return nil, err
 }
 
-// shimBundle returns the node bundle of this shim.
-func shimBundle() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return defaultBundle
+// openBundle opens the bundle directory of exe with O_PATH and checks that its binary is self.
+func openBundle(exe string, self unix.Stat_t) (*os.File, error) {
+	bin := filepath.Dir(exe)
+	if filepath.Base(bin) != "bin" {
+		return nil, fmt.Errorf("shim binary %s is not in a bundle", exe)
 	}
 
-	return bundleOf(exe)
+	dir := filepath.Dir(bin)
+
+	fd, err := unix.Open(dir, unix.O_PATH|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open bundle %s: %w", dir, err)
+	}
+
+	var st unix.Stat_t
+
+	err = unix.Fstatat(fd, filepath.Join("bin", filepath.Base(exe)), &st, unix.AT_SYMLINK_NOFOLLOW)
+	if err == nil && (st.Dev != self.Dev || st.Ino != self.Ino) {
+		err = errors.New("it holds another shim binary now")
+	}
+
+	if err != nil {
+		_ = unix.Close(fd)
+
+		return nil, fmt.Errorf("open bundle %s: %w", dir, err)
+	}
+
+	return os.NewFile(uintptr(fd), dir), nil
 }
 
 // Paths in a pod directory.
@@ -271,9 +317,14 @@ func (s *service) boot(ctx context.Context, sb *sandbox) error {
 
 // startPodVM writes the VM config and starts the VM process in the pod cgroup.
 func (s *service) startPodVM(sb *sandbox, guest podnet.Guest) (*vmProcess, error) {
-	bundle := shimBundle()
+	bundle, err := pinBundle()
+	if err != nil {
+		return nil, err
+	}
+	defer bundle.Close() //nolint:errcheck // The VM process has its own copy.
+
 	m := machine{
-		LibDir: filepath.Join(bundle, "lib"), GuestRoot: filepath.Join(bundle, "guest"), Share: sb.dir.join(shareDir),
+		LibDir: pinnedBundle + "/lib", GuestRoot: pinnedBundle + "/guest", Share: sb.dir.join(shareDir),
 		ControlSocket: sb.dir.join(controlSocket), StreamSocket: sb.dir.join(streamSocket),
 		TAP: podnet.TAP, MAC: guest.MAC.String(),
 		CPUs: vmCPUs(sb.config), MemoryMiB: vmMemoryMiB(sb.config), LogLevel: 0,
@@ -302,7 +353,7 @@ func (s *service) startPodVM(sb *sandbox, guest podnet.Guest) (*vmProcess, error
 	}
 	defer cgroup.Close() //nolint:errcheck // Only needed to start the VM process.
 
-	return startVM(sb.dir.path, m.LibDir, sb.netns, sb.uid, cgroup, log)
+	return startVM(sb.dir.path, m.LibDir, sb.netns, sb.uid, bundle, cgroup, log)
 }
 
 // connectAgent waits until the guest agent answers, or the boot timeout passes, or the VM exits.

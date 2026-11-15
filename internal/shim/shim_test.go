@@ -3,10 +3,15 @@
 package shim
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -167,16 +172,60 @@ func TestPodShm(t *testing.T) {
 	}
 }
 
-func TestBundleOf(t *testing.T) {
+func TestOpenBundle(t *testing.T) {
 	t.Parallel()
 
-	for exe, want := range map[string]string{
-		"/opt/sbxr/bin/containerd-shim-sbxr-v1":                               "/opt/sbxr",
-		"/opt/sbxr.old/20261115T195118.213163000/bin/containerd-shim-sbxr-v1": "/opt/sbxr.old/20261115T195118.213163000",
-		"/tmp/shim.test": "/opt/sbxr",
-	} {
-		if got := bundleOf(exe); got != want {
-			t.Errorf("bundleOf(%q) = %q, want %q", exe, got, want)
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "sbxr")
+	exe := filepath.Join(bundle, "bin", "containerd-shim-sbxr-v1")
+
+	for _, f := range []string{exe, filepath.Join(bundle, "guest", "usr", "bin", "crun")} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
 		}
+
+		if err := os.WriteFile(f, []byte(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var self unix.Stat_t
+	if err := unix.Stat(exe, &self); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := openBundle(exe, self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	// An upgrade retires the bundle. Paths through the pinned descriptor still reach it.
+	if err := os.Rename(bundle, filepath.Join(dir, "retired")); err != nil {
+		t.Fatal(err)
+	}
+
+	pinned := "/proc/self/fd/" + strconv.Itoa(int(f.Fd())) + "/guest/usr/bin/crun"
+	if data, err := os.ReadFile(pinned); err != nil || !strings.HasSuffix(string(data), "/sbxr/guest/usr/bin/crun") {
+		t.Errorf("read %s: %q, %v", pinned, data, err)
+	}
+
+	// A new bundle at the old path holds another binary, so it is not this shim's bundle.
+	if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(exe, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if g, err := openBundle(exe, self); err == nil {
+		_ = g.Close()
+
+		t.Error("openBundle accepted a bundle with another shim binary")
+	}
+
+	if _, err := openBundle("/tmp/shim.test", self); err == nil {
+		t.Error("openBundle accepted a binary outside a bundle")
 	}
 }
