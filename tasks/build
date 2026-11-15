@@ -10,6 +10,9 @@ name="$(_name_of "$(go list -m)")"
 
 mkdir -p bin
 
+# The release embeds the guest mount helper for -v, so build it first.
+go generate ./internal/guestmount
+
 # cgo stays off, like the release, so that the binary that the hv tests run matches it.
 CGO_ENABLED=0 go build -o "bin/$name" "./cmd/$name"
 

@@ -16,3 +16,6 @@ coverage.*
 mise.local.toml
 mise.*.local.toml
 hk.local.pkl
+
+# The mount helper that go generate builds.
+internal/guestmount/helper/*/sbxr-mount
