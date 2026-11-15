@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/creack/pty"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/albertsko/sbxr/internal/scenario"
 	"github.com/albertsko/sbxr/internal/vm/fake"
@@ -26,6 +28,8 @@ import (
 
 var (
 	bin string
+	// releaseBin is the build without the sbxrfake tag.
+	releaseBin string
 	// busybox is the reference of the scenario busybox image in a registry in this process.
 	busybox string
 )
@@ -46,6 +50,15 @@ func buildAndRun(m *testing.M) int {
 	bin = filepath.Join(dir, "sbxr")
 
 	err = scenario.Build(context.Background(), bin, "sbxrfake")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+
+		return 1
+	}
+
+	releaseBin = filepath.Join(dir, "sbxr-release")
+
+	err = scenario.Build(context.Background(), releaseBin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 
@@ -405,6 +418,64 @@ func TestDoctorJSON(t *testing.T) {
 		if wantFail := c["id"] == "hypervisor"; (c["status"] == "fail") != wantFail || hasFix != wantFail || c["detail"] == "" {
 			t.Errorf("check %v, want status fail with a fix only for hypervisor", c)
 		}
+	}
+}
+
+// TestDoctorJSONMatchesSchema checks doctor reports against docs/doctor.schema.json,
+// and that the release build runs the checks of the PRD doctor contract in order.
+func TestDoctorJSONMatchesSchema(t *testing.T) {
+	t.Parallel()
+
+	schema, err := jsonschema.NewCompiler().Compile("../../docs/doctor.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	platformCheck := map[string]string{"darwin": "entitlement", "linux": "userns"}[runtime.GOOS]
+	wantIDs := []string{"hypervisor", "libkrun", "libkrunfw", platformCheck, "cache"}
+
+	tests := []struct {
+		name    string
+		bin     string
+		environ []string
+	}{
+		{name: "fake", bin: bin, environ: env(t, "SBXR_FAKE_PREFLIGHT_FAIL=hypervisor")},
+		{name: "release", bin: releaseBin, environ: env(t)},
+		{name: "release without libraries", bin: releaseBin, environ: env(t, "SBXR_LIB_DIR="+t.TempDir())},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := exec.CommandContext(t.Context(), tt.bin, "doctor", "--json")
+			cmd.Env = tt.environ
+
+			out, err := cmd.Output()
+			if _, isExit := errors.AsType[*exec.ExitError](err); err != nil && !isExit {
+				t.Fatal(err)
+			}
+
+			report, err := jsonschema.UnmarshalJSON(bytes.NewReader(out))
+			if err != nil {
+				t.Fatalf("stdout %q: %v", out, err)
+			}
+
+			err = schema.Validate(report)
+			if err != nil {
+				t.Errorf("doctor --json %s does not match the schema: %v", out, err)
+			}
+
+			var ids []string
+
+			for _, c := range report.(map[string]any)["checks"].([]any) { //nolint:forcetypeassert // The schema guarantees the shape.
+				ids = append(ids, c.(map[string]any)["id"].(string)) //nolint:forcetypeassert // The schema guarantees the shape.
+			}
+
+			if !slices.Equal(ids, wantIDs) {
+				t.Errorf("check IDs %q, want %q", ids, wantIDs)
+			}
+		})
 	}
 }
 

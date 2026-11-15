@@ -102,7 +102,7 @@ func (b *Binary) Run(ctx context.Context, w Workload) (Result, error) {
 
 	code := cmd.ProcessState.ExitCode()
 
-	return Result{Stdout: stdout.String(), ExitCode: code, Class: classify(code, stderr.String())}, nil
+	return Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: code, Class: classify(code, stderr.String())}, nil
 }
 
 func (b *Binary) args(w Workload) []string {

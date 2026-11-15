@@ -77,7 +77,7 @@ type Runner struct {
 
 // Run runs the workload and returns its exit code.
 // An error means that sbxr failed, and the exit code is then ExitSetup.
-// A SIGINT or SIGTERM stops the run at once with exit code 130 or 143 and no error.
+// A SIGINT, SIGTERM, or SIGHUP stops the run at once with exit code 130, 143, or 129 and no error.
 func (r *Runner) Run(ctx context.Context, s spec.Spec) (int, error) {
 	ctx, stop := withSignals(ctx)
 	defer stop()

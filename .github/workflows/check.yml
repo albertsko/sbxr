@@ -82,6 +82,15 @@ jobs:
           mise run test:kind
           if SBXR_REQUIRE_HV=1 mise run test:hv; then exit 1; fi
           if SBXR_REQUIRE_HV=1 mise run test:kind; then exit 1; fi
+      # Hosted macOS runners have no hypervisor, so doctor must report it while the signature is in place.
+      - if: matrix.name == 'macos'
+        name: codesign and doctor
+        run: |
+          mise run build
+          codesign -d --entitlements - --xml bin/sbxr | grep -q com.apple.security.hypervisor
+          if bin/sbxr doctor --json >doctor.json; then exit 1; fi
+          jq -e '.checks[] | select(.id == "hypervisor") | .status == "fail"' doctor.json
+          jq -e '.checks[] | select(.id == "entitlement") | .status == "pass"' doctor.json
       - if: env.SAVE_CACHE == 'true' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

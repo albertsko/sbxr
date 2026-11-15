@@ -25,12 +25,12 @@ import (
 // drainTimeout bounds the terminal output copy when the end marker could not be written.
 const drainTimeout = time.Second
 
-// withSignals returns a context that a SIGINT or SIGTERM cancels with a signalError cause.
+// withSignals returns a context that a SIGINT, SIGTERM, or SIGHUP (closed terminal) cancels with a signalError cause.
 func withSignals(ctx context.Context) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	signals := make(chan os.Signal, 1)
 
-	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	go func() {
 		select {
@@ -147,11 +147,9 @@ func (r *Runner) runTTY(cmd *exec.Cmd, interactive bool) error {
 		cmd.Stdin = tty
 	}
 
-	if term.IsTerminal(int(r.Stdin.Fd())) {
+	userTerm := term.IsTerminal(int(r.Stdin.Fd()))
+	if userTerm {
 		_ = pty.InheritSize(r.Stdin, ptmx) // A failed resize keeps the default size.
-
-		stopResize := forwardResize(r.Stdin, ptmx)
-		defer stopResize()
 	}
 
 	// validate ensures that the user's stdin is a terminal with -i -t.
@@ -167,6 +165,11 @@ func (r *Runner) runTTY(cmd *exec.Cmd, interactive bool) error {
 	err = cmd.Start()
 	if err != nil {
 		return fmt.Errorf("start vm process: %w", err)
+	}
+
+	if userTerm {
+		stopResize := forwardResize(r.Stdin, ptmx, cmd.Process)
+		defer stopResize()
 	}
 
 	if interactive {
@@ -280,14 +283,16 @@ func (g *guardedWriter) close() {
 	g.closed = true
 }
 
-// forwardResize copies the terminal size of from to the pseudo-terminal on every SIGWINCH.
-func forwardResize(from, ptmx *os.File) func() {
+// forwardResize copies the terminal size of from to the pseudo-terminal on every SIGWINCH and tells the VM process.
+// The VM process must be told, because the pseudo-terminal is not its controlling terminal.
+func forwardResize(from, ptmx *os.File, vmProcess *os.Process) func() {
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
 
 	go func() {
 		for range winch {
-			_ = pty.InheritSize(from, ptmx) // A failed resize keeps the old size.
+			_ = pty.InheritSize(from, ptmx)        // A failed resize keeps the old size.
+			_ = vmProcess.Signal(syscall.SIGWINCH) // The VM process may have exited already.
 		}
 	}()
 

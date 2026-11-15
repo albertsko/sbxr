@@ -3,7 +3,7 @@ on:
   workflow_call:
   pull_request:
   push:
-    branches: [main, feat/libkrun]
+    branches: [main]
 permissions:
   contents: read
 concurrency:
@@ -66,14 +66,26 @@ jobs:
           path: krun
           key: ${{ needs.libkrun.outputs.key }}
           fail-on-cache-miss: true
-      - name: Enable KVM
+      - name: Enable KVM, uidmap, and subordinate ids
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Test
+          sudo apt-get install -y -q uidmap
+          grep -q "^$USER:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"
+      - run: mise run deps
+      # The runner restricts user namespaces with AppArmor, so sbxr runs from the profile path.
+      - name: Install sbxr and the AppArmor profile
+        shell: bash
+        run: |
+          mise run build
+          sudo install -m 755 bin/sbxr /usr/local/bin/sbxr
+          sbxr doctor apparmor-profile | sudo tee /etc/apparmor.d/sbxr
+          sudo apparmor_parser -r /etc/apparmor.d/sbxr
+      - name: test:hv
         timeout-minutes: 10
         env:
           CGO_ENABLED: "0"
           SBXR_REQUIRE_HV: "1"
-        run: SBXR_LIB_DIR="$PWD/krun/lib" go test -tags hv -exec "$PWD/scripts/gotest-exec.sh" -count=1 -v ./internal/vm/libkrun/...
+          SBXR_BIN: /usr/local/bin/sbxr
+        run: SBXR_LIB_DIR="$PWD/krun/lib" mise run test:hv -- -v

@@ -80,7 +80,9 @@ type Workload struct {
 
 // Result is the outcome of one run.
 type Result struct {
-	Stdout   string
+	Stdout string
+	// Stderr helps to explain a failure. Scenarios do not assert on it.
+	Stderr   string
 	ExitCode int
 	Class    ErrorClass
 }

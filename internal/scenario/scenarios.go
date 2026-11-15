@@ -132,7 +132,7 @@ func expect(w Workload, code int, class ErrorClass, checks ...resultCheck) func(
 		}
 
 		if err := errors.Join(errs...); err != nil {
-			return fmt.Errorf("%w (stdout %q)", err, res.Stdout)
+			return fmt.Errorf("%w (stdout %q, stderr %q)", err, res.Stdout, res.Stderr)
 		}
 
 		return nil

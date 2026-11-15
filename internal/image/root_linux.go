@@ -120,11 +120,9 @@ func (img *Image) MountRoot(dir, root string) (release func() error, err error) 
 		}
 	}
 
-	opts := "lowerdir=" + img.Root + ",upperdir=" + upper + ",workdir=" + work + ",userxattr"
-
-	err = unix.Mount("overlay", root, "overlay", 0, opts)
+	err = mountOverlay(root, map[string]string{"lowerdir": img.Root, "upperdir": upper, "workdir": work})
 	if err != nil {
-		return noop, fmt.Errorf("mount overlay %s: %w", opts, err)
+		return noop, err
 	}
 
 	return func() error {
@@ -135,4 +133,44 @@ func (img *Image) MountRoot(dir, root string) (release func() error, err error) 
 
 		return nil
 	}, nil
+}
+
+// mountOverlay mounts an overlay at target with the file system context API,
+// which takes each option separately, so paths may contain commas.
+func mountOverlay(target string, dirs map[string]string) error {
+	fsfd, err := unix.Fsopen("overlay", unix.FSOPEN_CLOEXEC)
+	if err != nil {
+		return fmt.Errorf("mount overlay: %w", err)
+	}
+	defer unix.Close(fsfd) //nolint:errcheck // The context is only used to create the mount.
+
+	for _, key := range []string{"lowerdir", "upperdir", "workdir"} {
+		err = unix.FsconfigSetString(fsfd, key, dirs[key])
+		if err != nil {
+			return fmt.Errorf("mount overlay: %s %s: %w", key, dirs[key], err)
+		}
+	}
+
+	// userxattr keeps overlay metadata in user xattrs, which a user namespace may write.
+	err = unix.FsconfigSetFlag(fsfd, "userxattr")
+	if err == nil {
+		err = unix.FsconfigCreate(fsfd)
+	}
+
+	if err != nil {
+		return fmt.Errorf("mount overlay: %w", err)
+	}
+
+	mfd, err := unix.Fsmount(fsfd, unix.FSMOUNT_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("mount overlay: %w", err)
+	}
+	defer unix.Close(mfd) //nolint:errcheck // The mount stays attached after the close.
+
+	err = unix.MoveMount(mfd, "", unix.AT_FDCWD, target, unix.MOVE_MOUNT_F_EMPTY_PATH)
+	if err != nil {
+		return fmt.Errorf("mount overlay at %s: %w", target, err)
+	}
+
+	return nil
 }

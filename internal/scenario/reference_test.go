@@ -95,7 +95,7 @@ func (r *reference) Run(ctx context.Context, w scenario.Workload) (scenario.Resu
 		class = scenario.NotFound
 	}
 
-	return scenario.Result{Stdout: stdout.String(), ExitCode: code, Class: class}, nil
+	return scenario.Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: code, Class: class}, nil
 }
 
 func (r *reference) newRoot(ctx context.Context, img run.Image, dir string, cfg krunconfig.Config) (*os.Root, error) {
