@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -151,7 +150,7 @@ func (s *service) Start(_ context.Context, req *taskAPI.StartRequest) (*taskAPI.
 		s.mu.Unlock()
 
 		pid, _, _ := p.pidAndExit()
-		s.log.Info("started", "container", req.GetID(), "pid", pid, "state", s.crunState(req.GetID()))
+		s.log.Info("started", "container", req.GetID(), "pid", pid)
 
 		return &taskAPI.StartResponse{Pid: uint32(pid)}, nil //nolint:gosec // Pids fit.
 	}
@@ -191,30 +190,6 @@ func (s *service) Exec(_ context.Context, req *taskAPI.ExecProcessRequest) (*emp
 	s.mu.Unlock()
 
 	return &emptypb.Empty{}, nil
-}
-
-// crunState returns crun's state of a container for the log.
-func (s *service) crunState(id string) string {
-	out, err := os.CreateTemp(crunRoot, "state-*")
-	if err != nil {
-		return err.Error()
-	}
-
-	defer os.Remove(out.Name()) //nolint:errcheck // Temporary file.
-	defer out.Close()           //nolint:errcheck // Read below.
-
-	err = s.crunCmd([3]*os.File{nil, out, nil}, "state", id)
-	data, _ := os.ReadFile(out.Name())
-
-	return strings.Join(strings.Fields(string(data)), " ") + errString(err)
-}
-
-func errString(err error) string {
-	if err == nil {
-		return ""
-	}
-
-	return " error: " + err.Error()
 }
 
 func execSpecPath(id, execID string) string {
