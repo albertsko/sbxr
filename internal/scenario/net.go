@@ -109,7 +109,7 @@ func publishReachesGuest(ctx context.Context, t Target) error {
 	w := Workload{
 		Image:       Busybox,
 		Net:         true,
-		Publish:     []uint16{8080},
+		Publish:     []Port{{Host: 0, Guest: 8080}},
 		Interactive: true,
 		Stdin:       msg,
 		Args:        []string{"nc", "-l", "-p", "8080"},
@@ -159,4 +159,20 @@ func readUntil(ctx context.Context, addr, want string) string {
 	}
 
 	return got
+}
+
+// publishBusyPort publishes on a host port that is in use. The run must fail before it starts anything.
+func publishBusyPort(ctx context.Context, t Target) error {
+	var lc net.ListenConfig
+
+	ln, err := lc.Listen(ctx, "tcp4", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("busy port: %w", err)
+	}
+	defer ln.Close() //nolint:errcheck // The listener only holds the port.
+
+	port := netip.MustParseAddrPort(ln.Addr().String()).Port()
+	w := Workload{Image: Busybox, Net: true, Publish: []Port{{Host: port, Guest: 80}}, Args: []string{"false"}}
+
+	return expect(w, 125, InvalidSpec)(ctx, t)
 }

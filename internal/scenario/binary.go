@@ -156,8 +156,12 @@ func (b *Binary) args(w Workload) []string {
 	}
 
 	// The debug log names the bound address of each published port.
+	if len(w.Publish) > 0 {
+		args = append(args, "--debug")
+	}
+
 	for _, p := range w.Publish {
-		args = append(args, "--debug", "-p", "127.0.0.1:0:"+strconv.Itoa(int(p)))
+		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%d", p.Host, p.Guest))
 	}
 
 	image := w.Image

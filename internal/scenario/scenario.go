@@ -87,12 +87,17 @@ type Workload struct {
 	// Net gives the workload outbound IPv4, and AllowLAN also LAN addresses.
 	Net      bool
 	AllowLAN bool
-	// Publish lists guest TCP ports that the target publishes on free ports of 127.0.0.1.
-	Publish []uint16
+	// Publish lists guest TCP ports that the target publishes on 127.0.0.1.
+	Publish []Port
 	// Published is called once per published port with its host address, while the workload runs.
 	Published func(ctx context.Context, guestPort uint16, hostAddr string)
 	// Volumes share host directories with the workload.
 	Volumes []Volume
+}
+
+// Port publishes the guest TCP port Guest on the host port Host of 127.0.0.1. Host 0 picks a free port.
+type Port struct {
+	Host, Guest uint16
 }
 
 // Volume is one -v flag.

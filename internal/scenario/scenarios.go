@@ -139,6 +139,7 @@ func All() []Scenario {
 			Check: invalidVolume(Volume{Host: "/nonexistent/sbxr-volume", Guest: workDir}),
 		},
 		{Name: "publish reaches a guest port on 127.0.0.1", Needs: []Capability{Publish, Stdin}, Check: publishReachesGuest},
+		{Name: "publish on a busy port", Needs: []Capability{Publish, SpecValidation}, Check: publishBusyPort},
 	}
 }
 
