@@ -240,8 +240,12 @@ Delivery has two phases:
   - Env names that start with `KRUN_` and the name `HOSTNAME` are rejected from user input and dropped from the image env, because the guest init reads them as control settings.
   - `PATH` is always set, from the image or a default.
   - `args` is not empty.
-  - Strings are raw UTF-8. The writer escapes only `"`, `\`, tab, and newline, and never writes `\u` escapes, because the guest init corrupts them silently. Other control characters are rejected.
-  - The token count stays below the parser limit (16384). Above that limit the guest init ignores the file and starts a root shell, so `sbxr` rejects such input.
+  - Strings are raw UTF-8. The writer escapes only `"`, `\`, tab, and newline, and never writes `\u` escapes, because the guest init corrupts them or ignores the whole file. Other control characters are rejected.
+  - The file has at most 16384 tokens, the parser limit. Above that limit the guest init ignores the file and starts a root shell, so `sbxr` rejects such input.
+  - Duplicate env names are rejected, because the guest init keeps the first value of most names and the last value of `HOME` and `TERM`.
+  - A uid or gid of 4294967295 is rejected, because the guest init cannot set it and exits with 125.
+  - Invalid UTF-8 and C1 control characters (U+0080 to U+009F) are rejected.
+  - The guest init matches keys case-insensitively and reads `Cmd` and `Cwd` as aliases for `args` and `WorkingDir`. The fixed key order keeps this safe, because no value before `args` can look like a key.
   - The file is written after removing any existing entry, with create-exclusive and no-follow semantics.
 - Commands are not resolved on the host. Bare names reach the guest init, which searches the image `PATH`.
 - Image user names in `User` are resolved by reading the image's `/etc/passwd` and `/etc/group` inside the cached image root. Path resolution never leaves that root. An unknown name fails with exit 125.

@@ -102,6 +102,7 @@ S3 also adds a small wrapper script for `go test -exec`. It signs the test binar
 | `cli` target (real VM)          | `mise run test:hv`   | yes                 | yes           | local or self-hosted only | `hv` (Ubuntu x86_64)            |
 | `k8s-p1` target                 | `mise run test:kind` | no                  | yes           | no                        | `kind`                          |
 
+- `mise run fuzz [DURATION]` fuzzes the config writer against the guest init parser copy (default `1m`). The nightly `fuzz` CI job runs it for 15 minutes.
 - `mise run test` never needs a hypervisor or external network. Real-VM tests live behind a build tag or in a separate package.
 - `test:hv` and `test:kind` skip with exit 0 when no hypervisor exists. With `SBXR_REQUIRE_HV=1`, they fail instead. CI sets this variable.
 - `test:hv` and `test:kind` run with `-count=1`, because Go's test cache does not notice changes to the built binary or to `libkrun`.
