@@ -174,6 +174,7 @@ func TestKubeletRange(t *testing.T) {
 		{name: "unaligned start", uids: "0: kubelet 100000 7208960", gids: "0: kubelet 100000 7208960", maxPods: 110, reason: "multiple of 65536"},
 		{name: "uids and gids differ", uids: ok, gids: "0: kubelet 131072 7208960", maxPods: 110, reason: "differ"},
 		{name: "two ranges", uids: ok + ok, gids: ok, maxPods: 110, reason: "want one range"},
+		{name: "no pod capacity", uids: ok, gids: ok, maxPods: 0, reason: "pod capacity 0 is not valid"},
 	}
 
 	for _, tt := range tests {

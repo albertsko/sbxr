@@ -130,6 +130,8 @@ func kubeletRange(f facts) (subid.Range, error) {
 		return subid.Range{}, fmt.Errorf("the kubelet uid range %s and gid range %s differ", uids, gids)
 	case uids.First < subid.PerPod || uids.First%subid.PerPod != 0 || uids.Count%subid.PerPod != 0:
 		return subid.Range{}, fmt.Errorf("the kubelet range %s does not start and end on a multiple of %d above the host ids", uids, subid.PerPod)
+	case f.maxPods <= 0:
+		return subid.Range{}, fmt.Errorf("the node's pod capacity %d is not valid", f.maxPods)
 	case uids.Count/subid.PerPod < f.maxPods:
 		return subid.Range{}, fmt.Errorf("the kubelet range %s holds %d pods, fewer than the node's %d", uids, uids.Count/subid.PerPod, f.maxPods)
 	}

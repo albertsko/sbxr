@@ -93,7 +93,10 @@ func (c *client) Node(ctx context.Context) (Node, error) {
 		return Node{}, fmt.Errorf("decode node: %w", err)
 	}
 
-	maxPods, _ := strconv.Atoi(obj.Status.Capacity.Pods)
+	maxPods, err := strconv.Atoi(obj.Status.Capacity.Pods)
+	if err != nil {
+		return Node{}, fmt.Errorf("decode node pod capacity %q: %w", obj.Status.Capacity.Pods, err)
+	}
 
 	n := Node{RuntimeVersion: obj.Status.NodeInfo.ContainerRuntimeVersion, RuntimeHandlers: nil, Heartbeat: time.Time{}, MaxPods: maxPods}
 	for _, h := range obj.Status.RuntimeHandlers {
