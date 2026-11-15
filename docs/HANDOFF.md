@@ -1,6 +1,6 @@
 # sbxr: Handoff
 
-Status: steps S1 to S4 are done. The PRD stays a living document. Last update: 2026-11-15.
+Status: steps S1 to S4 and S7 are done. The PRD stays a living document. Last update: 2026-11-15.
 
 **Next: start step S5 (networking), after the A10 spike in "Run first, in parallel".**
 
@@ -41,8 +41,9 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
   - `internal/userns`: the Linux user namespace with `newuidmap` and `newgidmap`, and the `userns` check.
   - `internal/preflight`: doctor checks and the `doctor --json` report. The schema is [doctor.schema.json](doctor.schema.json).
   - `internal/cli`: cobra, fang, and output. The only package that imports them.
-  - `internal/scenario`: behavior scenarios, the scenario images and their registry, and the `fake` and `cli` targets. `kind` tests skip with "needs run: S7".
-- `mise run ci` passes on macOS and Ubuntu. `mise run test:hv` passes on an Apple silicon Mac, in the `hv` job, and in an Ubuntu 24.04 arm64 VM with nested KVM.
+  - `internal/scenario`: behavior scenarios, the scenario images and their registry, the `fake` and `cli` targets, and the `k8s-p1` target (build tag `kind`).
+  - `internal/node` and `cmd/sbxr-node`: the phase 1 node installer. `deploy/node` builds its image, with the node bundle, and holds the manifest template. [kubernetes.md](kubernetes.md) is the user guide.
+- `mise run ci` passes on macOS and Ubuntu. `mise run test:hv` passes on an Apple silicon Mac, in the `hv` job, and in an Ubuntu 24.04 arm64 VM with nested KVM. The `kind` job runs the `k8s-p1` target and the PRD phase 1 criteria.
 - A cached `sbxr run alpine true` takes about 0.14 s on an M4 Pro Mac (median of 20 runs).
 - Deviation from the S3 plan: no checked-in fixture root. S3 and S4 landed together, and the `cli` target uses pulled busybox images (PRD "Test contract").
 
@@ -126,6 +127,7 @@ go test -tags hv -exec "$PWD/scripts/gotest-exec.sh" -count=1 ./internal/vm/libk
 - `mise run test` never needs a hypervisor or external network. Real-VM tests live behind a build tag or in a separate package.
 - `test:hv` and `test:kind` skip with exit 0 when no hypervisor exists. With `SBXR_REQUIRE_HV=1`, they fail instead. CI sets this variable.
 - `test:hv` and `test:kind` run with `-count=1`, because Go's test cache does not notice changes to the built binary or to `libkrun`.
+- `test:kind` needs Docker, kind, and kubectl. It creates the kind cluster `sbxr` from `kind.yaml` or reuses it (`SBXR_KIND_CLUSTER`), builds the installer image unless `SBXR_NODE_IMAGE` names one, installs `sbxr`, and uninstalls it at the end. The first local image build compiles `libkrun` and takes about 10 minutes.
 - CI setup that a local machine usually does not need:
 
   ```sh
@@ -146,7 +148,7 @@ go test -tags hv -exec "$PWD/scripts/gotest-exec.sh" -count=1 ./internal/vm/libk
 These two spikes can change the design. Run them before the step that depends on them. They need none of the product code.
 
 - **A10, before S3: macOS exit hang.** Write a standalone stress test of the userspace network stack. Hold the per-run connection cap (1024 TCP connections) on macOS, then exit. The process must exit. If it hangs, lower the caps or move the userspace network stack into a separate helper process, which changes the PRD process model.
-- **A2, A4, A8, before S7: phase 1 node bundle.** Build `crun` with `libkrun` on an old glibc baseline (for example Ubuntu 22.04, glibc 2.35), bundle its libraries, and run it on Ubuntu 22.04, Debian 12, and the kind node image. Read the rendered containerd config on an RKE2 node. Run `kubectl api-resources` for MutatingAdmissionPolicy on the oldest Kubernetes version you plan to support.
+- **A2, A4, A8, before S7: phase 1 node bundle.** Done. See the assumption rows in the PRD.
 
 ## Build plan
 
@@ -249,6 +251,8 @@ Exit criteria:
 
 ### S7: Kubernetes phase 1
 
+Done. Evidence: `kind` job run [43719566597](https://github.com/albertsko/sbxr/actions/runs/43719566597). The release workflow jobs `node-image` and `node-manifests` have not run yet, because they run only for a release tag.
+
 Scope:
 
 - Add the node bundle, the installer DaemonSet, the admission policies, and the `kind` CI job.
@@ -312,8 +316,10 @@ A step or pull request is done when:
 - **The userspace network stack dials any destination.** In testing, guest UDP to `0.0.0.0` reached a host loopback service. Do not ship `--net` without the egress guard.
 - **Go's built-in user namespace mapping writes only one mapping.** Use `newuidmap` and `newgidmap`, and re-execute only after the maps are written. The execve as mapped uid 0 also clears the parent death signal, so `internal/userns` sets it again.
 - **kind resets `/dev/kvm` permissions** when it creates a cluster. Run `sudo chmod 666 /dev/kvm` after `kind create cluster`.
-- **The spike built the phase 1 node bundle inside the kind node image** (`kindest/node:v1.37.0`, Debian with glibc 2.41). Such a build does not run on nodes with an older glibc. The product bundle needs an old glibc baseline (assumption A2). `crun` also needs `libjson-c`, which the kind node image lacks.
+- **kind needs D-Bus and a version 2 drop-in.** With systemd cgroups, `crun` reaches systemd only through D-Bus, and the kind node image has none, so the kind setup installs `dbus` in the node. kind writes a version 2 containerd config, and containerd fails to start with a version 3 drop-in under it.
 - **Kubernetes rewrites `$$` to `$`** in pod commands. Write `$$$$` in test pod specs.
+- **`kind load docker-image` fails for images with attestations or several platforms.** The kind setup rebuilds the public test images locally (`FROM busybox:1.37`) and turns off default attestations.
+- **containerd ignores the group of a numeric image `USER`** (`1000:1000` runs with gid 0) unless the pod sets `runAsGroup`. Kubernetes targets therefore lack the `exact-config` capability.
 - **fang queries the terminal color on every help and error render.** The workaround in PRD "Further Notes" keeps workload output safe only if stdout is restored before any workload runs. Restore it inside the `run` command, not in a persistent hook, because hooks also run for `sbxr help` and would bring the color query back.
 - **The race detector needs cgo.** The release binary builds with cgo off. Build the binary that the `cli` target tests with `CGO_ENABLED=0`, the same as the release.
 - **The `-t` terminal is not the VM process's controlling terminal.** When a controlling process exits, the kernel hangs the terminal up, and macOS then drops unread output. Without `-i`, the VM process's stdin is empty, and `libkrun` still sets up its console from stdout (checked with real VMs). Resizes do not signal the VM process by themselves, so the parent sends it SIGWINCH.
@@ -334,18 +340,19 @@ git fetch origin tag archive/spike-gvnet
 git show archive/spike-gvnet:.github/workflows/gvnet.yml
 ```
 
-| Topic                                                | Run                                                                       | Tag                             |
-| ---------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------- |
-| KVM and kind on GitHub runners, `libkrun` CI install | [43411616835](https://github.com/albertsko/sbxr/actions/runs/43411616835) | `archive/spike-ci-probe`        |
-| Rootless ownership in a user namespace               | [43411920655](https://github.com/albertsko/sbxr/actions/runs/43411920655) | `archive/spike-q5-ownership`    |
-| AppArmor profile for user namespaces                 | [43413103721](https://github.com/albertsko/sbxr/actions/runs/43413103721) | `archive/spike-a4-apparmor`     |
-| Phase 2 TAP networking                               | [43413531258](https://github.com/albertsko/sbxr/actions/runs/43413531258) | `archive/spike-a8-tap`          |
-| One `NET=1` build behaves like the default build     | [43418374705](https://github.com/albertsko/sbxr/actions/runs/43418374705) | `archive/spike-net1-parity`     |
-| Userspace network stack in the `sbxr` process        | [43421578807](https://github.com/albertsko/sbxr/actions/runs/43421578807) | `archive/spike-gvnet`           |
-| Phase 1 `crun` with `libkrun` in kind                | [43414830267](https://github.com/albertsko/sbxr/actions/runs/43414830267) | `archive/spike-a5-kind-krun`    |
-| Phase 1 error reporting                              | [43423090034](https://github.com/albertsko/sbxr/actions/runs/43423090034) | `archive/spike-k8s-errors`      |
-| Per-run root on Linux                                | [43425445163](https://github.com/albertsko/sbxr/actions/runs/43425445163) | `archive/spike-per-run-root`    |
-| Phase 1 DNS mitigation                               | [43426355714](https://github.com/albertsko/sbxr/actions/runs/43426355714) | `archive/spike-k8s-dns`         |
-| Egress guard and connection caps                     | [43593357284](https://github.com/albertsko/sbxr/actions/runs/43593357284) | `archive/spike-netstack-bypass` |
+| Topic                                                                                   | Run                                                                       | Tag                             |
+| --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------- |
+| KVM and kind on GitHub runners, `libkrun` CI install                                    | [43411616835](https://github.com/albertsko/sbxr/actions/runs/43411616835) | `archive/spike-ci-probe`        |
+| Rootless ownership in a user namespace                                                  | [43411920655](https://github.com/albertsko/sbxr/actions/runs/43411920655) | `archive/spike-q5-ownership`    |
+| AppArmor profile for user namespaces                                                    | [43413103721](https://github.com/albertsko/sbxr/actions/runs/43413103721) | `archive/spike-a4-apparmor`     |
+| Phase 2 TAP networking                                                                  | [43413531258](https://github.com/albertsko/sbxr/actions/runs/43413531258) | `archive/spike-a8-tap`          |
+| One `NET=1` build behaves like the default build                                        | [43418374705](https://github.com/albertsko/sbxr/actions/runs/43418374705) | `archive/spike-net1-parity`     |
+| Userspace network stack in the `sbxr` process                                           | [43421578807](https://github.com/albertsko/sbxr/actions/runs/43421578807) | `archive/spike-gvnet`           |
+| Phase 1 `crun` with `libkrun` in kind                                                   | [43414830267](https://github.com/albertsko/sbxr/actions/runs/43414830267) | `archive/spike-a5-kind-krun`    |
+| Phase 1 error reporting                                                                 | [43423090034](https://github.com/albertsko/sbxr/actions/runs/43423090034) | `archive/spike-k8s-errors`      |
+| Per-run root on Linux                                                                   | [43425445163](https://github.com/albertsko/sbxr/actions/runs/43425445163) | `archive/spike-per-run-root`    |
+| Phase 1 DNS mitigation                                                                  | [43426355714](https://github.com/albertsko/sbxr/actions/runs/43426355714) | `archive/spike-k8s-dns`         |
+| Egress guard and connection caps                                                        | [43593357284](https://github.com/albertsko/sbxr/actions/runs/43593357284) | `archive/spike-netstack-bypass` |
+| Phase 1 node bundle, drop-in directories, MutatingAdmissionPolicy versions (A2, A4, A8) | [43704817204](https://github.com/albertsko/sbxr/actions/runs/43704817204) | `archive/spike-node-bundle`     |
 
 GitHub keeps Actions logs for a limited time (90 days by default), so the run links expire. The tags keep the code. Copy any log output you need into an issue or the repository before the links expire.

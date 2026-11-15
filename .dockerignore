@@ -1,0 +1,7 @@
+*
+!go.mod
+!go.sum
+!cmd/sbxr-node
+!internal/node
+!deploy/node/collect.sh
+!deploy/node/fetch.sh

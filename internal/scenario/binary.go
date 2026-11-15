@@ -52,7 +52,7 @@ func Fake(t *testing.T, bin string, refs map[string]string) *Binary {
 		Images:   refs,
 		Flags:    nil,
 		Env:      nil,
-		Caps:     []Capability{Stdin, TTY, SplitStderr, SignalExit},
+		Caps:     []Capability{Stdin, TTY, SplitStderr, SignalExit, SpecValidation, ExactConfig},
 	}
 }
 

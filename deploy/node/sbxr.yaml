@@ -1,0 +1,256 @@
+# sbxr phase 1 for Kubernetes. Docs: https://github.com/albertsko/sbxr/blob/main/docs/kubernetes.md
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sbxr-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sbxr-node
+  namespace: sbxr-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sbxr-node
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sbxr-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sbxr-node
+subjects:
+  - kind: ServiceAccount
+    name: sbxr-node
+    namespace: sbxr-system
+---
+# RBAC cannot name the caller's own node, so this policy limits each installer pod to the node it runs on.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: sbxr-node-self
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [nodes]
+  matchConditions:
+    - name: installer
+      expression: request.userInfo.username == 'system:serviceaccount:sbxr-system:sbxr-node'
+  validations:
+    - expression: >-
+        'authentication.kubernetes.io/node-name' in request.userInfo.extra &&
+        request.userInfo.extra['authentication.kubernetes.io/node-name'][0] == object.metadata.name
+      message: the sbxr installer may change only the node it runs on
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: sbxr-node-self
+spec:
+  policyName: sbxr-node-self
+  validationActions: [Deny]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sbxr-node
+  namespace: sbxr-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sbxr-node
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sbxr-node
+    spec:
+      serviceAccountName: sbxr-node
+      hostPID: true
+      # The installer reaches the API server without the pod network, which may depend on the containerd it restarts.
+      hostNetwork: true
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+      # Longer than the worst case of one install: the 6 minute verification plus two containerd restarts.
+      terminationGracePeriodSeconds: 480
+      containers:
+        - name: sbxr-node
+          image: "@IMAGE@"
+          imagePullPolicy: IfNotPresent
+          args: ["@MODE@"]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: true
+          readinessProbe:
+            exec:
+              command: [test, -e, /tmp/done]
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {memory: 128Mi}
+          volumeMounts:
+            - name: host
+              mountPath: /host
+      volumes:
+        - name: host
+          hostPath:
+            path: /
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: sbxr
+  annotations:
+    sbxr.dev/phase: "1"
+    sbxr.dev/limits: >-
+      no kubectl exec or exec probes, no SIGTERM to the workload, stdout and stderr merged in logs,
+      DNS over TCP only, start errors reported as exit codes 126 and 127, workload is not PID 1,
+      one VM per container
+    sbxr.dev/docs: https://github.com/albertsko/sbxr/blob/main/docs/kubernetes.md
+handler: sbxr
+overhead:
+  podFixed:
+    memory: 64Mi
+scheduling:
+  nodeSelector:
+    sbxr.dev/ready: "true"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: sbxr-deny
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        # kubectl debug adds ephemeral containers through this subresource.
+        resources: [pods, pods/ephemeralcontainers]
+  matchConditions:
+    - name: sbxr-runtime
+      expression: has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'sbxr'
+  variables:
+    - name: containers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : []) +
+        (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : [])
+  validations:
+    - expression: "!has(object.spec.hostNetwork) || !object.spec.hostNetwork"
+      message: sbxr pods cannot use the host network
+    - expression: "!has(object.spec.hostPID) || !object.spec.hostPID"
+      message: sbxr pods cannot use the host PID namespace
+    - expression: "!has(object.spec.hostIPC) || !object.spec.hostIPC"
+      message: sbxr pods cannot use the host IPC namespace
+    - expression: >-
+        variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.privileged) || !c.securityContext.privileged)
+      message: sbxr containers cannot be privileged
+    - expression: >-
+        variables.containers.all(c, !has(c.securityContext) || !has(c.securityContext.capabilities) ||
+        !has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0)
+      message: sbxr containers cannot add capabilities
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: sbxr-deny
+spec:
+  policyName: sbxr-deny
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: sbxr-warn
+spec:
+  failurePolicy: Ignore
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [pods]
+  matchConditions:
+    - name: sbxr-runtime
+      expression: has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'sbxr'
+  variables:
+    - name: containers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : []) +
+        (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : [])
+  validations:
+    - expression: >-
+        variables.containers.all(c,
+        !(has(c.livenessProbe) && has(c.livenessProbe.exec)) &&
+        !(has(c.readinessProbe) && has(c.readinessProbe.exec)) &&
+        !(has(c.startupProbe) && has(c.startupProbe.exec)) &&
+        !(has(c.lifecycle) && has(c.lifecycle.postStart) && has(c.lifecycle.postStart.exec)) &&
+        !(has(c.lifecycle) && has(c.lifecycle.preStop) && has(c.lifecycle.preStop.exec)))
+      message: sbxr phase 1 cannot run exec probes or exec lifecycle hooks
+    - expression: "!has(object.spec.terminationGracePeriodSeconds) || object.spec.terminationGracePeriodSeconds <= 10"
+      message: >-
+        sbxr phase 1 does not send SIGTERM to the workload, so pod deletion waits the full grace period;
+        set terminationGracePeriodSeconds to 5 or less
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: sbxr-warn
+spec:
+  policyName: sbxr-warn
+  validationActions: [Warn]
+---
+# Phase 1 guests drop replies on connected UDP sockets, so resolvers switch to DNS over TCP.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: sbxr-dns-use-vc
+spec:
+  failurePolicy: Fail
+  reinvocationPolicy: IfNeeded
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [pods]
+  matchConditions:
+    - name: sbxr-runtime
+      expression: has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'sbxr'
+    - name: no-use-vc-yet
+      expression: "!has(object.spec.dnsConfig) || !has(object.spec.dnsConfig.options) || !object.spec.dnsConfig.options.exists(o, o.name == 'use-vc')"
+  mutations:
+    - patchType: JSONPatch
+      jsonPatch:
+        expression: >
+          !has(object.spec.dnsConfig) ?
+            [JSONPatch{op: "add", path: "/spec/dnsConfig", value: Object.spec.dnsConfig{options: [Object.spec.dnsConfig.options{name: "use-vc"}]}}] :
+          !has(object.spec.dnsConfig.options) ?
+            [JSONPatch{op: "add", path: "/spec/dnsConfig/options", value: [Object.spec.dnsConfig.options{name: "use-vc"}]}] :
+            [JSONPatch{op: "add", path: "/spec/dnsConfig/options/-", value: Object.spec.dnsConfig.options{name: "use-vc"}}]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: sbxr-dns-use-vc
+spec:
+  policyName: sbxr-dns-use-vc

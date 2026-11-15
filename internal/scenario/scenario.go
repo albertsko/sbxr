@@ -32,6 +32,10 @@ const (
 	Volumes      Capability = "volumes"
 	MemoryLimit  Capability = "memory-limit"
 	Probes       Capability = "probes"
+	// SpecValidation means that the target rejects invalid run input with class invalid-spec before anything starts.
+	SpecValidation Capability = "spec-validation"
+	// ExactConfig means that the workload sees the image config and the run flags and nothing that the platform adds.
+	ExactConfig Capability = "exact-config"
 )
 
 // ErrorClass is the target-neutral outcome of a run.
@@ -72,6 +76,8 @@ type Workload struct {
 	Interactive bool
 	Stdin       string // Used only when Interactive is set.
 	TTY         bool
+	// Memory is the memory limit in MiB, or 0 for the target's default.
+	Memory int
 	// InterruptAfter makes the target interrupt the run once stdout contains this text.
 	InterruptAfter string
 	// Terminate makes the interrupt a termination (SIGTERM) instead of Ctrl-C (SIGINT).
