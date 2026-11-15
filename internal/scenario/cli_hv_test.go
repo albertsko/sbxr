@@ -432,3 +432,32 @@ func hvImages(t *testing.T) map[string]string {
 
 	return hvRefs
 }
+
+// TestHVVolumeSymlinksCannotEscape mounts a volume through symlinks in an earlier volume that lead to a reserved path or the guest root.
+func TestHVVolumeSymlinksCannotEscape(t *testing.T) {
+	t.Parallel()
+
+	bin := hvBinary(t)
+	refs := hvImages(t)
+	cacheDir := hvCacheDir(t)
+
+	links, target := t.TempDir(), t.TempDir()
+	for name, to := range map[string]string{"escape": "/missing/../proc", "root": "/"} {
+		if err := os.Symlink(to, filepath.Join(links, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for name, want := range map[string]string{"escape": "reserved path /proc", "root": "resolves to the guest root"} {
+		args := append(append([]string{"run", "-q"}, hvFlags...), "-v", links+":/a", "-v", target+":/a/"+name, refs[scenario.Busybox], "true")
+
+		out, code := sbxr(t, bin, hvEnv(cacheDir), args...)
+		if code != 125 || !strings.Contains(out, want) {
+			t.Errorf("volume at /a/%s: sbxr run = %d, %q; want 125 and %q", name, code, out, want)
+		}
+	}
+
+	if err := scenario.CheckClean(cacheDir); err != nil {
+		t.Error(err)
+	}
+}
