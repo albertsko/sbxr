@@ -7,6 +7,14 @@
 - Kubernetes 1.36 or later. The DNS policy uses `MutatingAdmissionPolicy` at `admissionregistration.k8s.io/v1`, which older versions do not serve by default.
 - Nodes with containerd 2.2 or later, glibc 2.35 or later, Linux 5.19 or later, `/dev/kvm`, and `/dev/net/tun`.
 - `iptables` and `nsenter` on the node for `kubectl port-forward`.
+- A `kubelet` id range, so that pods with user namespaces (`hostUsers: false`) and `sbxr` pod VMs never share host ids. Without it, the kubelet may give such pods any host id. On each node, create the `kubelet` user, install `getsubids` (Debian and Ubuntu package `uidmap`), add one equal `kubelet` entry to `/etc/subuid` and `/etc/subgid`, and restart the kubelet. The installer then reserves an `sbxr` range next to it:
+
+  ```sh
+  useradd --system --no-create-home --shell /usr/sbin/nologin kubelet
+  echo kubelet:65536:7208960 | tee -a /etc/subuid /etc/subgid
+  systemctl restart kubelet
+  ```
+
 - One of these node distributions:
   - kubeadm-style nodes whose `/etc/containerd/config.toml` imports `/etc/containerd/conf.d/*.toml`.
   - k3s and RKE2, which import `config-v3.toml.d/*.toml` next to their containerd config.
@@ -24,7 +32,7 @@ kubectl get nodes -L sbxr.dev/ready
 The DaemonSet runs on every node. On each node, it:
 
 1. Detects the distribution from its active systemd units.
-2. Runs preflight: `/dev/kvm`, glibc, containerd version, main config version, an `imports` entry that covers the drop-in directory, the Linux version, and `/dev/net/tun`.
+2. Runs preflight: `/dev/kvm`, glibc, containerd version, main config version, an `imports` entry that covers the drop-in directory, the Linux version, `/dev/net/tun`, and the `kubelet` id range. It reserves the `sbxr` id range in `/etc/subuid` and `/etc/subgid`.
 3. On failure, changes nothing and writes the reason to the node annotation `sbxr.dev/preflight`. It never edits a main containerd config.
 4. Copies the bundle to `/opt/sbxr.new`, checks every file against its SHA-256, swaps it in, and links the shim to `/usr/local/bin/containerd-shim-sbxr-v1`, because containerd finds a sandboxer shim only by its name. Then it writes the drop-in `sbxr.toml` atomically, under a host lock, and restarts the containerd unit only when the drop-in changed.
 5. Waits until the unit is active and the kubelet posts a node status, after the restart, that lists runtime handler `sbxr`. Then it sets the label `sbxr.dev/ready=true`. If the restart or this check fails, it restores the previous drop-in (or removes it) and restarts containerd again.
@@ -104,7 +112,7 @@ kubectl -n sbxr-system rollout status ds/sbxr-node
 kubectl delete -f https://github.com/albertsko/sbxr/releases/latest/download/sbxr-uninstall.yaml
 ```
 
-The first command replaces the installer with a DaemonSet that removes the label and annotation, removes the drop-in of every supported distribution, restarts containerd, and removes `/opt/sbxr`. It also removes the shim link. While `sbxr` pods still exist (a directory under `/run/sbxr/pods`, or phase 1 state under `/run/sbxr/runc`), or when containerd cannot restart, it keeps `/opt/sbxr`, writes the reason to `sbxr.dev/preflight`, and retries. It keeps `/run/sbxr.lock`, which goes away at reboot, and `/var/lib/sbxr/verify-after`, a timestamp that makes a later reinstall wait for a node status newer than this restart. If the node clock was ahead when that timestamp was written, delete the file to reinstall at once. The last command removes the RuntimeClass, the policies, and the namespace.
+The first command replaces the installer with a DaemonSet that removes the label and annotation, removes the drop-in of every supported distribution, restarts containerd, and removes `/opt/sbxr`. It also removes the shim link and the `sbxr` id range. While `sbxr` pods still exist (a directory under `/run/sbxr/pods`, or phase 1 state under `/run/sbxr/runc`), or when containerd cannot restart, it keeps `/opt/sbxr`, writes the reason to `sbxr.dev/preflight`, and retries. It keeps `/run/sbxr.lock`, which goes away at reboot, and `/var/lib/sbxr/verify-after`, a timestamp that makes a later reinstall wait for a node status newer than this restart. If the node clock was ahead when that timestamp was written, delete the file to reinstall at once. The last command removes the RuntimeClass, the policies, and the namespace.
 
 ## kind
 
