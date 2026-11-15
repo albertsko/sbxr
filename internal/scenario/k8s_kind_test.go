@@ -471,7 +471,7 @@ func testOverhead(t *testing.T, k *kind) {
 			`)/cgroup)/memory.current`
 		if k.Phase == 2 {
 			uid := strings.ReplaceAll(k.run("", "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.metadata.uid}"), "-", "_")
-			script = `cat /sys/fs/cgroup/kubepods.slice/*/*pod` + uid + `.slice/sbxr-vm/memory.current`
+			script = `cat $(find /sys/fs/cgroup -type d -path '*pod` + uid + `.slice/sbxr-vm')/memory.current`
 		}
 
 		current, _ := strconv.Atoi(k.node(script))
