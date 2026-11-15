@@ -87,7 +87,7 @@ func (p *policy) reset(frame []byte) []byte {
 	}
 
 	syn := header.TCP(ip.Payload())
-	if len(syn) < header.TCPMinimumSize || syn.Flags() != header.TCPFlagSyn {
+	if len(syn) < header.TCPMinimumSize || syn.Flags()&(header.TCPFlagSyn|header.TCPFlagAck|header.TCPFlagRst) != header.TCPFlagSyn {
 		return nil
 	}
 

@@ -277,3 +277,64 @@ func FuzzAllowFrame(f *testing.F) {
 		}
 	})
 }
+
+func TestResetForBlockedSYN(t *testing.T) {
+	t.Parallel()
+
+	const (
+		syn = uint8(header.TCPFlagSyn)
+		ack = uint8(header.TCPFlagAck)
+		rst = uint8(header.TCPFlagRst)
+		ecn = uint8(header.TCPFlagEce | header.TCPFlagCwr)
+	)
+
+	tcpFrame := func(flags uint8) []byte {
+		b := ipv4Frame(netip.MustParseAddr("10.0.0.1"), protoTCP, 40000, 80, nil)
+		l4 := b[header.EthernetMinimumSize+header.IPv4MinimumSize:]
+		binary.BigEndian.PutUint32(l4[4:8], 1000)
+		l4[12] = header.TCPMinimumSize << 2
+		l4[13] = flags
+
+		return b
+	}
+
+	tests := []struct {
+		name  string
+		frame []byte
+		want  bool
+	}{
+		{name: "syn", frame: tcpFrame(syn), want: true},
+		{name: "syn with ecn", frame: tcpFrame(syn | ecn), want: true},
+		{name: "syn ack", frame: tcpFrame(syn | ack)},
+		{name: "syn rst", frame: tcpFrame(syn | rst)},
+		{name: "ack", frame: tcpFrame(ack)},
+		{name: "spoofed source mac", frame: spoofMAC(tcpFrame(syn))},
+		{name: "not tcp", frame: ipv4Frame(netip.MustParseAddr("10.0.0.1"), protoUDP, 40000, 80, nil)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := testPolicy(false).reset(tt.frame)
+			if (got != nil) != tt.want {
+				t.Fatalf("reset = %x, want reset %v", got, tt.want)
+			}
+
+			if got == nil {
+				return
+			}
+
+			ip := header.IPv4(got[header.EthernetMinimumSize:])
+			reply := header.TCP(ip.Payload())
+
+			if reply.Flags() != header.TCPFlagRst|header.TCPFlagAck || reply.AckNumber() != 1001 || reply.DestinationPort() != 40000 {
+				t.Errorf("reset flags %v, ack %d, port %d", reply.Flags(), reply.AckNumber(), reply.DestinationPort())
+			}
+
+			if !ip.IsChecksumValid() || !reply.IsChecksumValid(ip.SourceAddress(), ip.DestinationAddress(), 0, 0) {
+				t.Error("reset has an invalid checksum")
+			}
+		})
+	}
+}
