@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -156,15 +157,17 @@ func Enter(dir string, cfg Config) error {
 		}
 	}
 
-	// The implicit vsock device would forward guest sockets to the host (TSI). The explicit one has no TSI features
-	// and no port map, so without a network device the guest has no network at all. It still carries the host's
-	// time sync messages to the guest init (macOS).
+	// The implicit vsock device would forward guest sockets to the host (TSI), so without a network device the guest has no network at all.
 	if err := check("krun_disable_implicit_vsock", krun.disableImplicitVsock(ctx)); err != nil {
 		return err
 	}
 
-	if err := check("krun_add_vsock", krun.addVsock(ctx, 0)); err != nil {
-		return err
+	// On macOS, libkrun sends the host time to the guest init over vsock. A device without TSI features and port map carries only that.
+	// Linux has no such time sync, so the device would only add threads there. The symbol stays required on both, to keep one list.
+	if runtime.GOOS == "darwin" {
+		if err := check("krun_add_vsock", krun.addVsock(ctx, 0)); err != nil {
+			return err
+		}
 	}
 
 	if !anyTerminal() {
