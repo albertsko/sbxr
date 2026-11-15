@@ -5,8 +5,10 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/albertsko/sbxr/internal/userns"
@@ -46,26 +48,55 @@ func Userns(ctx context.Context) Result {
 // installPaths are the paths that the AppArmor profile covers.
 var installPaths = []string{"/usr/bin/sbxr", "/usr/local/bin/sbxr"}
 
+// appArmorProfile is where the AppArmor profile of sbxr is installed.
+const appArmorProfile = "/etc/apparmor.d/sbxr"
+
+// usernsFix returns the fix for a failed userns check. The check detail holds the helper's own message.
 func usernsFix(err error) string {
 	switch {
 	case errors.Is(err, userns.ErrNoHelpers):
 		return "sudo apt-get install -y uidmap"
 	case errors.Is(err, userns.ErrNoSubIDs):
 		return `sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "$USER"`
-	case !appArmorRestricts():
-		return "enable unprivileged user namespaces: sudo sysctl -w kernel.unprivileged_userns_clone=1"
+	case appArmorRestricts():
+		if fix := appArmorFix(); fix != "" {
+			return fix
+		}
 	}
 
+	switch {
+	case !primaryGroup():
+		return "log in again: newgidmap maps only the primary group from /etc/passwd, which newgrp and sg replace"
+	case !appArmorRestricts():
+		return "enable unprivileged user namespaces: sudo sysctl -w kernel.unprivileged_userns_clone=1"
+	default:
+		return "check the newuidmap and newgidmap message, /etc/subuid, and /etc/subgid"
+	}
+}
+
+// appArmorFix returns the AppArmor step that is missing, or "" when the profile covers the running binary.
+func appArmorFix() string {
 	exe, err := os.Executable()
 	if err == nil {
 		exe, err = filepath.EvalSymlinks(exe)
 	}
 
-	if err == nil && slices.Contains(installPaths, exe) {
-		return "sbxr doctor apparmor-profile | sudo tee /etc/apparmor.d/sbxr && sudo apparmor_parser -r /etc/apparmor.d/sbxr"
+	if err != nil || !slices.Contains(installPaths, exe) {
+		return "install sbxr to /usr/local/bin, then run /usr/local/bin/sbxr doctor for the AppArmor fix: sudo install -m 755 " + exe + " /usr/local/bin/sbxr"
 	}
 
-	return "install sbxr to /usr/local/bin, then run /usr/local/bin/sbxr doctor for the AppArmor fix: sudo install -m 755 " + exe + " /usr/local/bin/sbxr"
+	if _, err := os.Stat(appArmorProfile); err != nil {
+		return "sbxr doctor apparmor-profile | sudo tee " + appArmorProfile + " && sudo apparmor_parser -r " + appArmorProfile
+	}
+
+	return ""
+}
+
+// primaryGroup reports whether the process runs with the primary group of its user from /etc/passwd.
+func primaryGroup() bool {
+	u, err := user.LookupId(strconv.Itoa(os.Getuid()))
+
+	return err != nil || u.Gid == strconv.Itoa(os.Getgid())
 }
 
 // appArmorRestricts reports whether AppArmor restricts unprivileged user namespaces (Ubuntu 23.10 and later).
