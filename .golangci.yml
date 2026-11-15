@@ -3,6 +3,10 @@
 
 version: "2"
 
+run:
+  build-tags:
+    - hv
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
