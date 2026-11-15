@@ -69,7 +69,7 @@ version = 3
   [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxrprobe.options]
     BinaryName = "/usr/bin/false"
 TOML
-echo "containerd pid before restart: $(pgrep -x containerd || true)"
+echo "containerd before restart: $(ps -o pid=,lstart= -C containerd || true)"
 sudo systemctl restart "$unit"
 for _ in $(seq 90); do
   if crictl info 2>/dev/null | grep -q sbxrprobe; then
@@ -77,7 +77,8 @@ for _ in $(seq 90); do
   fi
   sleep 2
 done
-echo "containerd pid after restart: $(pgrep -x containerd || true)"
+echo "containerd after restart: $(ps -o pid=,lstart= -C containerd || true)"
+sudo journalctl -u "$unit" --no-pager | grep -i -E "containerd (is now running|.*exited|.*already)|Running containerd|killing" | tail -8 || true
 
 for f in "$dir"/config.toml "$dir"/containerd.toml /run/k0s/containerd-cri.toml; do
   if sudo test -f "$f"; then

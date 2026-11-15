@@ -29,15 +29,24 @@ echo "::group::rendered containerd config"
 docker exec "$node" sh -c 'containerd --version; cat /etc/containerd/config.toml'
 echo "::endgroup::"
 
+# Evidence: a version 3 drop-in under the version 2 main file that kind writes.
 docker exec "$node" sh -c 'mkdir -p /etc/containerd/conf.d && cat >/etc/containerd/conf.d/sbxr.toml <<TOML
 version = 3
 [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr]
   runtime_type = "io.containerd.runc.v2"
-  [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr.options]
+TOML
+systemctl restart containerd && echo "RESULT v3 drop-in under v2 main: containerd started" || { echo "RESULT v3 drop-in under v2 main: containerd failed"; journalctl -u containerd --no-pager | grep -i -E "error|fail|version" | tail -5; }'
+
+# A drop-in uses the same config version as the main file.
+docker exec "$node" sh -c 'cat >/etc/containerd/conf.d/sbxr.toml <<TOML
+version = 2
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr]
+  runtime_type = "io.containerd.runc.v2"
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr.options]
     BinaryName = "/opt/sbxr/bin/krun"
     SystemdCgroup = true
 TOML
-systemctl restart containerd'
+systemctl restart containerd || { journalctl -u containerd --no-pager | tail -20; exit 1; }'
 sleep 5
 docker exec "$node" sh -c 'crictl info | grep -A6 "\"sbxr\""'
 docker exec "$node" /opt/sbxr/bin/krun --version
