@@ -31,14 +31,14 @@ else
 	result "U1 plain dir idmapped bind FAIL"
 fi
 umount $W/u1/m
-rm -rf $W/u1/u/* $W/u1/w/*
-mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/l $W/u1/il &&
-	mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/u $W/u1/iu &&
-	mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/w $W/u1/iw &&
-	if mount -t overlay overlay -o lowerdir=$W/u1/il,upperdir=$W/u1/iu,workdir=$W/u1/iw $W/u1/m2; then
-		ls -ln $W/u1/m2; result "U1 overlay over idmapped layers PASS"
+mkdir -p $W/u1/all/{l,u,w} $W/u1/allid
+echo hi >$W/u1/all/l/f
+chown 1000:1000 $W/u1/all/l/f
+mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/all $W/u1/allid &&
+	if mount -t overlay overlay -o lowerdir=$W/u1/allid/l,upperdir=$W/u1/allid/u,workdir=$W/u1/allid/w $W/u1/m2; then
+		ls -ln $W/u1/m2; result "U1 overlay over one idmapped parent PASS"
 	else
-		dmesg | tail -3; result "U1 overlay over idmapped layers FAIL"
+		dmesg | tail -3; result "U1 overlay over one idmapped parent FAIL"
 	fi
 echo "::endgroup::"
 
@@ -132,11 +132,9 @@ echo "::group::U4 bind after boot into the share, idmapped"
 mkdir -p $S/c1/rootfs
 chown -R $BASE:$BASE $S/c1
 umount $C/merged
-for d in lower upper work; do
-	mkdir -p $C/id-$d
-	mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $C/$d $C/id-$d
-done
-mount -t overlay overlay -o lowerdir=$C/id-lower,upperdir=$C/id-upper,workdir=$C/id-work $S/c1/rootfs
+mkdir -p $W/ctr-id
+mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $C $W/ctr-id
+mount -t overlay overlay -o lowerdir=$W/ctr-id/lower,upperdir=$W/ctr-id/upper,workdir=$W/ctr-id/work $S/c1/rootfs
 ls -ln $S/c1/rootfs/data || result "U4 idmapped bind of container overlay FAIL"
 guest 'ls -ln /mnt/shared/c1/rootfs/data' 'echo new >/mnt/shared/c1/rootfs/data/new && chown 1000:1000 /mnt/shared/c1/rootfs/data/new && ls -ln /mnt/shared/c1/rootfs/data/new' | tee $W/u4.txt
 echo "host upper:"
@@ -156,7 +154,7 @@ guest 'cd /mnt/shared/c1 && crun spec && sed -i "s/\"terminal\": true/\"terminal
 grep -q hi-from-crun $W/u5.txt && result "U5 crun container in the guest PASS" || result "U5 crun container in the guest FAIL"
 echo "::endgroup::"
 
-guest 'poweroff -f' >/dev/null 2>&1
+guest 'reboot -f' >/dev/null 2>&1
 for _ in $(seq 50); do kill -0 $VM 2>/dev/null || break; sleep 0.2; done
 kill -0 $VM 2>/dev/null && { result "VM poweroff FAIL"; kill $VM; } || result "VM poweroff PASS"
 echo "::group::vm log"
