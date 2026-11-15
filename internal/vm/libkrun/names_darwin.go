@@ -9,6 +9,3 @@ const (
 func defaultLibDirs() []string {
 	return []string{"/opt/homebrew/lib", "/usr/local/lib"}
 }
-
-// serialConsole returns the guest name of the first serial port, which is a PL011 on arm64.
-func serialConsole() string { return "ttyAMA0" }

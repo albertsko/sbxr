@@ -62,7 +62,6 @@ type api struct {
 	setEnv               func(ctx uint32, envp unsafe.Pointer) int32
 	addNetUnixgram       func(ctx uint32, path unsafe.Pointer, fd int32, mac *byte, features, flags uint32) int32
 	disableImplicitVsock func(ctx uint32) int32
-	addSerialConsole     func(ctx uint32, inFD, outFD int32) int32
 	setKernelConsole     func(ctx uint32, id string) int32
 	startEnter           func(ctx uint32) int32
 }
@@ -89,7 +88,6 @@ func load(dir string) (*api, error) {
 		{"krun_set_env", &a.setEnv},
 		{"krun_add_net_unixgram", &a.addNetUnixgram},
 		{"krun_disable_implicit_vsock", &a.disableImplicitVsock},
-		{"krun_add_serial_console_default", &a.addSerialConsole},
 		{"krun_set_kernel_console", &a.setKernelConsole},
 		{"krun_start_enter", &a.startEnter},
 	}
@@ -162,7 +160,7 @@ func Enter(dir string, cfg Config) error {
 	}
 
 	if !anyTerminal() {
-		if err := useSerialConsole(krun, ctx); err != nil {
+		if err := useQuietConsole(krun, ctx); err != nil {
 			return err
 		}
 	}
@@ -195,18 +193,14 @@ func check(name string, rc int32) error {
 	return fmt.Errorf("%s: %w", name, syscall.Errno(-rc))
 }
 
-// useSerialConsole makes a serial port the kernel console, which the guest kernel registers at boot.
+// useQuietConsole makes the virtual terminal tty0 the kernel console, which the guest kernel registers at boot.
 //
 // The default console hvc0 appears only after a virtio handshake with this process. Under host load,
 // the kernel starts the guest init before hvc0 exists, and the libkrun 1.19.8 init then loses its stdout (EBADF).
 // The init still redirects stdout and stderr to the krun-stdout and krun-stderr ports, which exist only when no stdio fd is a terminal.
-// Output to the serial port is dropped.
-func useSerialConsole(krun *api, ctx uint32) error {
-	if err := check("krun_add_serial_console_default", krun.addSerialConsole(ctx, -1, -1)); err != nil {
-		return err
-	}
-
-	return check("krun_set_kernel_console", krun.setKernelConsole(ctx, serialConsole()))
+// tty0 shows nothing, so output to the console is dropped.
+func useQuietConsole(krun *api, ctx uint32) error {
+	return check("krun_set_kernel_console", krun.setKernelConsole(ctx, "tty0"))
 }
 
 func anyTerminal() bool {
