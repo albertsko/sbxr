@@ -363,13 +363,15 @@ func markWritten(written map[string]bool, name string) {
 	}
 }
 
-// clearLower removes entries under dir that this layer did not write. A dir that is not a directory stays.
+// clearLower removes entries under dir that this layer did not write.
+// A dir that is not a directory, including a symlink to one, stays as it is.
 func (l layerApplier) clearLower(dir string, written map[string]bool) error {
-	entries, err := fs.ReadDir(l.root.FS(), dir)
-	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, unix.ENOTDIR) {
+	info, err := l.root.Lstat(dir)
+	if errors.Is(err, fs.ErrNotExist) || err == nil && !info.IsDir() {
 		return nil
 	}
 
+	entries, err := fs.ReadDir(l.root.FS(), dir)
 	if err != nil {
 		return err //nolint:wrapcheck // The caller adds the entry name.
 	}

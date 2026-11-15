@@ -131,6 +131,36 @@ func TestUnpackWhiteoutsKeepTheirOwnLayer(t *testing.T) {
 	}
 }
 
+// TestUnpackSameLayerWhiteoutOfASymlink checks that a whiteout of a symlink that its own layer wrote never follows it.
+func TestUnpackSameLayerWhiteoutOfASymlink(t *testing.T) {
+	t.Parallel()
+
+	for _, target := range []string{"data", "/data"} {
+		top := []entry{symlink("foo", target), file(".wh.foo", "")}
+		reversed := slices.Clone(top)
+		slices.Reverse(reversed)
+
+		for order, entries := range map[string][]entry{"symlink first": top, "whiteout first": reversed} {
+			t.Run(target+"/"+order, func(t *testing.T) {
+				t.Parallel()
+
+				root, err := unpack(t, hostImage(t, layer(t, file("data/keep", "x")), layer(t, entries...)))
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				if got := readFile(t, at(root, "data/keep")); got != "x" {
+					t.Errorf("data/keep = %q, want x", got)
+				}
+
+				if link, err := os.Readlink(at(root, "foo")); err != nil || link != target {
+					t.Errorf("foo = %q, %v; want the symlink to %s from its own layer", link, err, target)
+				}
+			})
+		}
+	}
+}
+
 func TestUnpackRejectsEscapingPaths(t *testing.T) {
 	t.Parallel()
 
