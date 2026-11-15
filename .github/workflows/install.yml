@@ -32,8 +32,9 @@ jobs:
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           awk '/^### Linux/ { s = 1 } s && /^```sh$/ { f = 1; next } f && /^```$/ { exit } f' README.md |
-            sed "s|https://github.com/albertsko/sbxr/releases/latest/download/|file://$PWD/dist/|" >setup.sh
+            sed "s|https://github.com/albertsko/sbxr/releases/latest/download|file://$PWD/dist|" >setup.sh
           cat setup.sh
+          grep -q "file://$PWD/dist" setup.sh
           bash -euxo pipefail setup.sh
       # A new login picks up the kvm group, like the last line of the block asks.
       - run: sudo -iu "$USER" sbxr doctor
