@@ -7,17 +7,24 @@ require (
 	charm.land/lipgloss/v2 v2.0.5
 	charm.land/log/v2 v2.0.1
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/containerd/containerd/api v1.11.1
+	github.com/containerd/ttrpc v1.2.10
 	github.com/containers/gvisor-tap-vsock v0.9.0
 	github.com/creack/pty v1.1.24
 	github.com/ebitengine/purego v0.11.3
 	github.com/google/go-containerregistry v0.22.1
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9
 	github.com/miekg/dns v1.1.73
+	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/sirupsen/logrus v1.10.2
 	github.com/spf13/cobra v1.10.2
+	github.com/vishvananda/netlink v1.3.1
+	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
+	google.golang.org/grpc v1.81.1
+	google.golang.org/protobuf v1.36.11
 	gvisor.dev/gvisor v0.0.0-20260914202337-72a26d4d63f4
 )
 
@@ -30,6 +37,8 @@ require (
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
+	github.com/containerd/log v0.1.0 // indirect
+	github.com/containerd/typeurl/v2 v2.3.0 // indirect
 	github.com/docker/cli v29.7.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
 	github.com/go-logfmt/logfmt v0.6.1 // indirect
@@ -56,5 +65,6 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )

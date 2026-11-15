@@ -16,6 +16,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/albertsko/sbxr/internal/subid"
 )
 
 // Node label, annotation, handler, and install directory from the PRD.
@@ -30,8 +32,14 @@ const (
 const (
 	// lockFile serializes installer pods on one node. It is never removed, so every pod locks the same inode.
 	lockFile = "/run/sbxr.lock"
-	// RuntimeRoot is the crun state directory of handler sbxr. Each container of an sbxr pod has state there while it exists.
+	// RuntimeRoot is the crun state directory of handler sbxr in phase 1. Each container of an sbxr pod has state there while it exists.
 	RuntimeRoot = "/run/sbxr/runc"
+	// PodsRoot holds a directory for each phase 2 pod while it exists.
+	PodsRoot = "/run/sbxr/pods"
+	// ShimLink makes the phase 2 shim visible to containerd. containerd's shim sandboxer finds a shim only by its name,
+	// in PATH or next to the containerd binary, and ignores runtime_path.
+	ShimLink = "/usr/local/bin/containerd-shim-sbxr-v1"
+	shimPath = Prefix + "/bin/containerd-shim-sbxr-v1"
 	// stateDir holds installer state that must survive a bundle replacement.
 	stateDir = "/var/lib/sbxr"
 	// restartPending exists from a drop-in change until containerd restarts successfully. It holds the unit to restart.
@@ -50,10 +58,15 @@ type Installer struct {
 	HostRoot string
 	// Bundle is the node bundle directory with its SHA256SUMS file.
 	Bundle string
+	// Phase selects the runtime: 1 runs crun with libkrun per container, 2 runs the sbxr shim with one VM per pod.
+	Phase int
 	// Poll and Timeout bound the wait for the node to report handler sbxr.
 	Poll    time.Duration
 	Timeout time.Duration
 	Log     *slog.Logger
+
+	// afterSubidRead runs while the installer holds shadow's locks, between reading and writing the id files. Tests only.
+	afterSubidRead func()
 }
 
 // rejection is a reason why this node cannot run sbxr.
@@ -78,7 +91,7 @@ func (in *Installer) Install(ctx context.Context) error {
 		return errors.Join(err, in.reject(ctx, "pending restart: "+err.Error()))
 	}
 
-	d, unit, dropIn, err := in.preflight(ctx)
+	d, unit, dropIn, kubelet, err := in.preflight(ctx)
 	if reject, ok := errors.AsType[rejection](err); ok {
 		return in.reject(ctx, "preflight: "+reject.Error())
 	}
@@ -99,7 +112,121 @@ func (in *Installer) Install(ctx context.Context) error {
 		return in.reject(ctx, fmt.Sprintf("bundle: krun --version on the host: %v: %s", err, out))
 	}
 
+	if kubelet != nil {
+		err = in.reserveIDs(*kubelet)
+		if reject, ok := errors.AsType[rejection](err); ok {
+			return in.reject(ctx, "preflight: "+reject.Error())
+		}
+
+		if err != nil {
+			return err
+		}
+	}
+
+	if in.Phase == 2 {
+		err = linkShim(in.HostRoot + ShimLink)
+		if err != nil {
+			return err
+		}
+	}
+
 	return in.configure(ctx, in.HostRoot+d.dropInFile(), unit, dropIn, pending)
+}
+
+// subidFiles are the subordinate id files, in the order in which shadow's tools lock them.
+var subidFiles = []string{"/etc/subuid", "/etc/subgid"}
+
+// reserveIDs adds the sbxr range to /etc/subuid and /etc/subgid, so no other user and no kubelet pod gets these ids.
+// It holds shadow's locks from reading the files to writing them, so a concurrent useradd cannot take the same ids.
+func (in *Installer) reserveIDs(kubelet subid.Range) error {
+	return in.withSubids(func(data [][]byte) ([][]byte, error) {
+		r, isNew, err := subid.Choose(string(data[0]), string(data[1]), kubelet)
+		if err != nil {
+			return nil, rejection{fmt.Errorf("pod VM ids: %w", err)}
+		}
+
+		if !isNew {
+			return data, nil
+		}
+
+		out := make([][]byte, len(data))
+
+		for i, d := range data {
+			if len(d) > 0 && !bytes.HasSuffix(d, []byte("\n")) {
+				d = append(d, '\n')
+			}
+
+			out[i] = append(d, r.String()+"\n"...)
+		}
+
+		in.Log.Info("reserving ids for pod VMs", "range", r.String())
+
+		return out, nil
+	})
+}
+
+// releaseIDs removes the sbxr entries from /etc/subuid and /etc/subgid.
+func (in *Installer) releaseIDs() error {
+	return in.withSubids(func(data [][]byte) ([][]byte, error) {
+		out := make([][]byte, len(data))
+
+		for i, d := range data {
+			for line := range strings.Lines(string(d)) {
+				if !strings.HasPrefix(line, subid.Name+":") {
+					out[i] = append(out[i], line...)
+				}
+			}
+		}
+
+		return out, nil
+	})
+}
+
+// withSubids reads both subordinate id files under shadow's locks, and writes the files that edit changes before it
+// releases the locks. A missing file counts as empty.
+func (in *Installer) withSubids(edit func(data [][]byte) ([][]byte, error)) error {
+	data := make([][]byte, len(subidFiles))
+	unlocks := make([]func(), 0, len(subidFiles))
+
+	// Release in reverse order, after the writes.
+	defer func() {
+		for _, unlock := range slices.Backward(unlocks) {
+			unlock()
+		}
+	}()
+
+	for i, name := range subidFiles {
+		unlock, err := lockShadow(in.HostRoot + name)
+		if err != nil {
+			return err
+		}
+
+		unlocks = append(unlocks, unlock)
+
+		data[i], err = os.ReadFile(in.HostRoot + name)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+	}
+
+	if in.afterSubidRead != nil {
+		in.afterSubidRead()
+	}
+
+	out, err := edit(data)
+	if err != nil {
+		return err
+	}
+
+	for i, name := range subidFiles {
+		if !bytes.Equal(out[i], data[i]) {
+			if err := writeFile(in.HostRoot+name, out[i]); err != nil {
+				return fmt.Errorf("write %s: %w", name, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // configure publishes the drop-in, restarts the unit when needed, verifies the handler, and labels the node.
@@ -297,39 +424,99 @@ func (in *Installer) detect(ctx context.Context) (distro, string, error) {
 }
 
 // preflight returns the distribution, its unit, and the drop-in content. A rejection error means the node is not supported.
-func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, error) {
+// It also returns the pod VM id range of phase 2 when /etc/subuid and /etc/subgid still need it.
+func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *subid.Range, error) {
 	d, unit, err := in.detect(ctx)
 	if err != nil {
-		return distro{}, "", nil, err
+		return distro{}, "", nil, nil, err
 	}
 
-	n, err := in.API.Node(ctx)
+	n, err := in.runtimeNode(ctx)
 	if err != nil {
-		return distro{}, "", nil, fmt.Errorf("read node: %w", err)
+		return distro{}, "", nil, nil, err
 	}
 
 	config, err := os.ReadFile(in.HostRoot + d.config)
 	if err != nil {
-		return distro{}, "", nil, rejection{fmt.Errorf("read containerd config: %w", err)}
+		return distro{}, "", nil, nil, rejection{fmt.Errorf("read containerd config: %w", err)}
 	}
 
 	_, kvmErr := in.Host(ctx, "test", "-c", "/dev/kvm")
 	_, dbusErr := in.Host(ctx, "test", "-S", "/run/dbus/system_bus_socket")
+	_, tunErr := in.Host(ctx, "test", "-c", "/dev/net/tun")
 	glibc, _ := in.Host(ctx, "getconf", "GNU_LIBC_VERSION")
+	kernel, _ := in.Host(ctx, "uname", "-r")
+	_, kubeletErr := in.Host(ctx, "getent", "passwd", "kubelet")
+	kubeletUIDs := in.hostOutput(ctx, "getsubids", "kubelet")
+	kubeletGIDs := in.hostOutput(ctx, "getsubids", "-g", "kubelet")
+	subuid, _ := os.ReadFile(in.HostRoot + "/etc/subuid")
+	subgid, _ := os.ReadFile(in.HostRoot + "/etc/subgid")
 
-	dropIn, err := preflight(d, facts{
-		kvm:     kvmErr == nil,
-		glibc:   glibc,
-		runtime: n.RuntimeVersion,
-		config:  string(config),
-		systemd: runcSystemdCgroup(append([]string{string(config)}, in.imported(string(config), d)...)...),
-		dbus:    dbusErr == nil,
-	})
-	if err != nil {
-		return distro{}, "", nil, rejection{err}
+	f := facts{
+		kvm:         kvmErr == nil,
+		glibc:       glibc,
+		runtime:     n.RuntimeVersion,
+		config:      string(config),
+		systemd:     runcSystemdCgroup(append([]string{string(config)}, in.imported(string(config), d)...)...),
+		dbus:        dbusErr == nil,
+		kernel:      kernel,
+		tun:         tunErr == nil,
+		subuid:      string(subuid),
+		subgid:      string(subgid),
+		kubeletUser: kubeletErr == nil,
+		kubeletUIDs: kubeletUIDs,
+		kubeletGIDs: kubeletGIDs,
+		maxPods:     n.MaxPods,
 	}
 
-	return d, unit, dropIn, nil
+	dropIn, err := preflight(d, f, in.Phase)
+	if err != nil {
+		return distro{}, "", nil, nil, rejection{err}
+	}
+
+	if in.Phase != 2 {
+		return d, unit, dropIn, nil, nil
+	}
+
+	kubelet, err := podIDs(f)
+	if err != nil {
+		return distro{}, "", nil, nil, rejection{err}
+	}
+
+	return d, unit, dropIn, &kubelet, nil
+}
+
+// hostOutput runs a host command and returns its output, or nothing when it fails.
+func (in *Installer) hostOutput(ctx context.Context, args ...string) string {
+	out, err := in.Host(ctx, args...)
+	if err != nil {
+		return ""
+	}
+
+	return out
+}
+
+// runtimeNode reads the node once the kubelet knows the container runtime version.
+// Right after a containerd restart the kubelet reports "containerd://Unknown", which is no reason to reject the node.
+func (in *Installer) runtimeNode(ctx context.Context) (Node, error) {
+	deadline := time.Now().Add(in.Timeout)
+
+	for {
+		n, err := in.API.Node(ctx)
+		if err != nil {
+			return n, fmt.Errorf("read node: %w", err)
+		}
+
+		if !strings.HasSuffix(n.RuntimeVersion, "://Unknown") || time.Now().After(deadline) {
+			return n, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return n, ctx.Err() //nolint:wrapcheck // The installer stops.
+		case <-time.After(in.Poll):
+		}
+	}
 }
 
 // imported returns the content of every file that the main config imports, in import order, except the sbxr drop-in.

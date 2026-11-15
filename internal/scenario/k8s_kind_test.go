@@ -8,12 +8,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,8 +35,9 @@ const (
 	agentSandboxSHA256 = "4c54dc1284e9d34e9a00b88de2cb0f098f2dbce4ade814616fd49d44cfd5d1c2"
 )
 
-// TestKind runs the scenarios for the k8s-p1 capabilities and the PRD "Kubernetes, phase 1" criteria in a kind cluster.
-// scripts/kind-up.sh creates or reuses the cluster and installs sbxr. The last subtests uninstall it.
+// TestKind runs the scenarios for the k8s-p1 or k8s-p2 capabilities and the PRD Kubernetes criteria in a kind cluster.
+// scripts/kind-up.sh creates or reuses the cluster and installs the phase in SBXR_PHASE (default 2). The last subtests uninstall it.
+// With SBXR_UPGRADE_FROM=1, the cluster runs phase 1 first, so the phase 1 criteria run after the node upgrade.
 func TestKind(t *testing.T) {
 	t.Parallel()
 
@@ -57,30 +60,42 @@ func TestKind(t *testing.T) {
 		t.Fatalf("kind setup: %v", err)
 	}
 
+	phase := 2
+	if os.Getenv("SBXR_PHASE") == "1" {
+		phase = 1
+	}
+
 	images := kindImages(t, cluster)
-	k := &kind{t: t, K8s: &scenario.K8s{Context: "kind-" + cluster, Node: cluster + "-control-plane", Namespace: "sbxr-test", Images: images}}
+	k := &kind{t: t, K8s: &scenario.K8s{Phase: phase, Context: "kind-" + cluster, Node: cluster + "-control-plane", Namespace: "sbxr-test", Images: images}}
 	k.image = k.run("", "-n", "sbxr-system", "get", "ds", "sbxr-node", "-o", "jsonpath={.spec.template.spec.containers[0].image}")
 
-	t.Run("phase 1", func(t *testing.T) {
+	tests := map[string]func(*testing.T, *kind){
+		"node is ready and the RuntimeClass exists":  testInstalled,
+		"pods select ready nodes":                    testScheduling,
+		"probes, Services, pod-to-pod, port-forward": testNetwork,
+		"DNS from Go, glibc, and musl":               testDNS,
+		"admission policies":                         testAdmission,
+		"deletion stops the VM within the grace":     testDeletion,
+		"agent-sandbox Sandbox":                      testAgentSandbox,
+		"overhead covers the VM":                     testOverhead,
+	}
+
+	if phase == 1 {
+		tests["one VM per app container"] = testVMPerContainer
+	} else {
+		maps.Copy(tests, phase2Tests)
+	}
+
+	t.Run("phase "+strconv.Itoa(phase), func(t *testing.T) {
 		t.Run("scenarios", func(t *testing.T) {
 			t.Parallel()
 
 			scenario.RunAll(t, func(*testing.T) scenario.Target {
-				return &scenario.K8s{Context: k.Context, Node: k.Node, Namespace: k.Namespace, Images: images}
+				return &scenario.K8s{Phase: phase, Context: k.Context, Node: k.Node, Namespace: k.Namespace, Images: images}
 			})
 		})
 
-		for name, test := range map[string]func(*testing.T, *kind){
-			"node is ready and the RuntimeClass exists":  testInstalled,
-			"pods select ready nodes":                    testScheduling,
-			"one VM per app container":                   testVMPerContainer,
-			"probes, Services, pod-to-pod, port-forward": testNetwork,
-			"DNS from Go, glibc, and musl":               testDNS,
-			"admission policies":                         testAdmission,
-			"deletion stops the VM within the grace":     testDeletion,
-			"agent-sandbox Sandbox":                      testAgentSandbox,
-			"overhead covers the VM":                     testOverhead,
-		} {
+		for name, test := range tests {
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				test(t, k.with(t))
@@ -157,7 +172,7 @@ func testInstalled(t *testing.T, k *kind) {
 	}
 
 	rc := k.run("", "get", "runtimeclass", "sbxr", "-o", `jsonpath={.handler} {.metadata.annotations.sbxr\.dev/phase} {.scheduling.nodeSelector}`)
-	if rc != `sbxr 1 {"sbxr.dev/ready":"true"}` {
+	if rc != "sbxr "+strconv.Itoa(k.Phase)+` {"sbxr.dev/ready":"true"}` {
 		t.Errorf("RuntimeClass %q", rc)
 	}
 }
@@ -261,22 +276,29 @@ func testDNS(t *testing.T, k *kind) {
 
 	const host = "kubernetes.default.svc.cluster.local"
 
-	for name, container := range map[string]string{
+	pods := map[string]string{
 		"dns-go":    "      image: sbxr-test/dnsgo:1\n      args: [" + host + "]\n",
 		"dns-glibc": "      image: sbxr-test/debian:1\n      command: [getent, hosts, " + host + "]\n",
 		"dns-musl":  "      image: sbxr-test/alpine:1\n      command: [getent, hosts, " + host + "]\n",
-	} {
+	}
+
+	// Phase 2 carries UDP, so busybox nslookup, which uses connected UDP sockets, works too.
+	if k.Phase == 2 {
+		pods["dns-busybox"] = "      image: sbxr-test/busybox:1\n      command: [nslookup, " + host + "]\n"
+	}
+
+	for name, container := range pods {
 		k.apply(pod(name, "  restartPolicy: Never\n", container))
 	}
 
-	for _, name := range []string{"dns-go", "dns-glibc", "dns-musl"} {
+	for _, name := range slices.Sorted(maps.Keys(pods)) {
 		phase := waitDone(k, name)
 		if logs := k.run("", "-n", k.Namespace, "logs", name); phase != "Succeeded" || !strings.Contains(logs, "10.96.0.1") {
 			t.Errorf("%s: phase %s, output %q; want the kubernetes Service address", name, phase, logs)
 		}
 	}
 
-	k.run("", "-n", k.Namespace, "delete", "pod", "dns-go", "dns-glibc", "dns-musl", "--wait")
+	k.run("", append([]string{"-n", k.Namespace, "delete", "pod", "--wait"}, slices.Sorted(maps.Keys(pods))...)...)
 }
 
 func testAdmission(t *testing.T, k *kind) {
@@ -308,6 +330,16 @@ func testAdmission(t *testing.T, k *kind) {
 	}
 
 	k.run("", "-n", k.Namespace, "delete", "pod", "adm-debug", "--wait")
+
+	if k.Phase == 2 {
+		// Phase 2 runs exec probes, sends SIGTERM, and carries DNS over UDP, so no policy warns or changes the pod.
+		out, err := create("", "      readinessProbe: {exec: {command: [\"true\"]}}\n")
+		if err != nil || out != "" {
+			t.Errorf("phase 2 pod with an exec probe: dnsConfig %q, error %v; want no change", out, err)
+		}
+
+		return
+	}
 
 	for want, manifest := range map[string]string{
 		"exec probes": pod("adm", "", "      image: sbxr-test/busybox:1\n      readinessProbe: {exec: {command: [\"true\"]}}\n"),
@@ -433,9 +465,16 @@ func testOverhead(t *testing.T, k *kind) {
 			time.Sleep(time.Second)
 		}
 
-		id := strings.TrimPrefix(k.run("", "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.status.containerStatuses[0].containerID}"), "containerd://")
-		current, _ := strconv.Atoi(k.node(fmt.Sprintf(`pid=$(crictl inspect -o go-template --template '{{.info.pid}}' %s)
-cat /sys/fs/cgroup$(cut -d: -f3 /proc/$pid/cgroup)/memory.current`, id)))
+		// Phase 1 runs the VM in the container cgroup. Phase 2 runs it in a child of the pod cgroup, which holds nothing else.
+		script := `cat /sys/fs/cgroup$(cut -d: -f3 /proc/$(crictl inspect -o go-template --template '{{.info.pid}}' ` +
+			strings.TrimPrefix(k.run("", "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.status.containerStatuses[0].containerID}"), "containerd://") +
+			`)/cgroup)/memory.current`
+		if k.Phase == 2 {
+			uid := strings.ReplaceAll(k.run("", "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.metadata.uid}"), "-", "_")
+			script = `cat $(find /sys/fs/cgroup -type d -name '*pod` + uid + `.slice')/memory.current`
+		}
+
+		current, _ := strconv.Atoi(k.node(script))
 
 		used := (guest["MemTotal"] - guest["MemFree"]) / 1024
 		vmm := current>>20 - used
@@ -519,7 +558,7 @@ func (k *kind) manifests() string {
 
 	dir := k.t.TempDir()
 
-	out, err := exec.CommandContext(k.t.Context(), "../../scripts/node-manifests.sh", k.image, dir).CombinedOutput()
+	out, err := exec.CommandContext(k.t.Context(), "../../scripts/node-manifests.sh", k.image, dir, strconv.Itoa(k.Phase)).CombinedOutput()
 	if err != nil {
 		k.t.Fatalf("render manifests: %v: %s", err, out)
 	}

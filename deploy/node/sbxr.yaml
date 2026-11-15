@@ -1,4 +1,4 @@
-# sbxr phase 1 for Kubernetes. Docs: https://github.com/albertsko/sbxr/blob/main/docs/kubernetes.md
+# sbxr for Kubernetes, phase @PHASE@. Docs: https://github.com/albertsko/sbxr/blob/main/docs/kubernetes.md
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -91,6 +91,8 @@ spec:
           imagePullPolicy: IfNotPresent
           args: ["@MODE@"]
           env:
+            - name: SBXR_PHASE
+              value: "@PHASE@"
             - name: NODE_NAME
               valueFrom:
                 fieldRef:
@@ -117,11 +119,9 @@ kind: RuntimeClass
 metadata:
   name: sbxr
   annotations:
-    sbxr.dev/phase: "1"
-    sbxr.dev/limits: >-
-      no kubectl exec or exec probes, no SIGTERM to the workload, stdout and stderr merged in logs,
-      DNS over TCP only, start errors reported as exit codes 126 and 127, workload is not PID 1,
-      one VM per container
+    sbxr.dev/phase: "@PHASE@"
+    sbxr.dev/limits: "no kubectl exec or exec probes, no SIGTERM to the workload, stdout and stderr merged in logs, DNS over TCP only, start errors reported as exit codes 126 and 127, workload is not PID 1, one VM per container" # phase 1
+    sbxr.dev/limits: "container metrics only for the whole pod, shareProcessNamespace is ignored, no kubectl attach, one VM per pod" # phase 2
     sbxr.dev/docs: https://github.com/albertsko/sbxr/blob/main/docs/kubernetes.md
 handler: sbxr
 overhead:
@@ -175,6 +175,8 @@ metadata:
 spec:
   policyName: sbxr-deny
   validationActions: [Deny]
+# phase 1 begin
+# Phase 2 runs exec probes, sends SIGTERM, and carries UDP, so it needs neither of these policies.
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -254,3 +256,4 @@ metadata:
   name: sbxr-dns-use-vc
 spec:
   policyName: sbxr-dns-use-vc
+# phase 1 end

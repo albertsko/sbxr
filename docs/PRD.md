@@ -217,7 +217,7 @@ Delivery has two phases:
 - With `-i -t`, the parent restores the user's terminal mode as soon as the VM process exits, so that Ctrl-C can end a drain of terminal output that a slow reader holds back.
 - The VM process gets SIGWINCH from the parent after each terminal resize, because its pseudo-terminal is not its controlling terminal. `libkrun` 1.19.8 applies later resizes only on Linux. On macOS the guest keeps the size from the start.
 - `libkrun` aborts the process on some invalid inputs instead of returning an error. `sbxr` validates every value before it calls `libkrun`, so an abort is always an `sbxr` bug.
-- In Kubernetes phase 2, the containerd shim process is the VM process.
+- In Kubernetes phase 2, the VM process is a child of the containerd shim, in a hidden mode of the shim binary. See "Kubernetes phase 2: sbxr runtime".
 
 ### Root filesystem
 
@@ -403,7 +403,7 @@ On Linux, a text report with a failed check ends with the setup block from "Dist
 - Resource limits: each run allows at most 1024 established TCP connections and 256 UDP flows. Past the cap, new TCP connections get a reset and new UDP flows are dropped. The library alone limits only half-open TCP connections, and in testing a guest held 2000 connections, each costing one host file descriptor.
 - Published connections and DNS TCP connections count against the TCP cap. A published or DNS TCP connection past the cap gets a reset.
 - Gateway DNS: at most 64 queries resolve at once, and further queries are dropped. Each query has a 2-second timeout. A queries go to the host resolver, AAAA queries get an empty answer because the guest has no IPv6 route, and other types go to the nameservers in `/etc/resolv.conf`. Forwarded queries are rebuilt with one `IN` question, recursion desired, and no guest options. A truncated UDP answer is asked again over TCP. The gateway refuses non-`IN` classes and does not implement other opcodes or zone transfers.
-- The core defines a network backend interface. The userspace stack is one adapter used by the CLI. The phase 2 TAP network is another adapter. The core and the fake test VM do not depend on the userspace stack.
+- The core defines a network backend interface. The userspace stack is one adapter used by the CLI. The phase 2 TAP network is no adapter of it: it lives in `internal/podnet`, which only the shim and the agent use. The core and the fake test VM do not depend on the userspace stack.
 
 ### Run lifecycle
 
@@ -441,7 +441,7 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 ### Kubernetes phase 1: crun with libkrun
 
 - The installer ships `crun` built with `libkrun` support, plus `libkrun`, `libkrunfw`, and the libraries they need that nodes may lack (for example `libjson-c`). No distribution package provides this build.
-- The bundle builds on Ubuntu 22.04 (glibc 2.35) and installs to `/opt/sbxr` (33 MiB). `crun` has the absolute RUNPATH `/opt/sbxr/lib`, because it re-executes itself from a memfd, where `$ORIGIN` resolves to `/`. The libraries use `$ORIGIN`.
+- The bundle builds on Ubuntu 22.04 (glibc 2.35) and installs to `/opt/sbxr` (33 MiB; the phase 2 files add about 27 MiB). `crun` has the absolute RUNPATH `/opt/sbxr/lib`, because it re-executes itself from a memfd, where `$ORIGIN` resolves to `/`. The libraries use `$ORIGIN`.
 - The bundle patches the `libkrun` guest init so that the last of duplicate env entries wins. containerd puts the pod env after the image env, so a pod env value overrides the image value, as with `runc` (Q1, item 6).
 - containerd drop-in for handler `sbxr`: runtime type `io.containerd.runc.v2`, with the binary set to a `krun`-named link to that `crun` and the runtime root set to `/run/sbxr/runc`, so that the installer can tell whether any `sbxr` container exists. The installer passes no `krun.*` annotations to `crun`, because they enable nested virtualization, custom kernels, and TAP devices.
 - The drop-in uses the main config's version (kind writes 2, k3s, RKE2, and k0s write 3), because containerd rejects a version 3 drop-in under a version 2 main config. Its `SystemdCgroup` matches the node's runc runtime. With systemd cgroups, `crun` needs D-Bus, unlike `runc`. The kind node image has no D-Bus, so the kind setup installs it.
@@ -459,23 +459,43 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 
 ### Kubernetes phase 2: sbxr runtime
 
-- containerd runtime type `io.containerd.sbxr.v1`, shim binary `containerd-shim-sbxr-v1`. containerd uses the shim as the pod sandboxer (containerd sandbox API), so the pod has no pause container.
-- One VM per pod. The shim process is the VM process. It runs without capabilities, as a per-pod uid or user namespace, and not dumpable, so a guest escape into one VM process cannot reach another pod's VM process.
-- The guest boots the `sbxr` guest agent as PID 1 instead of the `libkrun` built-in init.
+- containerd runtime type `io.containerd.sbxr.v1`, shim binary `containerd-shim-sbxr-v1`. containerd uses the shim as the pod sandboxer (containerd sandbox API, `sandboxer = "shim"`), so the pod has no pause container.
+- containerd's shim sandboxer finds the shim only by its name, in `PATH` or next to the containerd binary, and ignores `runtime_path`. The installer links `/usr/local/bin/containerd-shim-sbxr-v1` to the bundle, and uninstall removes the link.
+- One VM per pod. The VM process is a child of the shim, in a hidden mode of the shim binary, because the shim keeps the privileges that mounting container roots needs. The VM process:
+  - Runs as root of its own user namespace, which maps 65536 ids to a slot of the `sbxr` range (claims under `/run/sbxr/ids`). It has no capabilities on the host.
+  - Stays in the host mount namespace. A private mount namespace with only its files would need a pivot root per pod, so it waits until a threat needs it.
+  - Is not dumpable, sets no-new-privileges, and dies with the shim (parent death signal).
+  - Starts in the pod network namespace and directly in a child cgroup of the pod cgroup (`CLONE_INTO_CGROUP`), so the pod memory limit plus the RuntimeClass overhead covers it from the start. A pod without a cgroup parent fails to start.
+  - Opens the TAP device itself before it starts the VM, and fails if that fails.
+- The guest agent runs as PID 1: the `libkrun` built-in init executes it as PID 1 (`KRUN_INIT_PID1=1` in the guest root's `.krun_config.json`). The guest root is `/opt/sbxr/guest`: the agent and a static `crun` (release build without systemd), shared read-only with every pod VM.
 - Guest agent responsibilities:
-  - Mount system filesystems, reap processes, set hostname and pod networking.
-  - Mount each container's root filesystem and volumes.
-  - Create and start the pod's containers with `crun` inside the guest, in shared pod namespaces.
+  - Mount system filesystems and the pod share, reap processes, set hostname and pod networking.
+  - Create and start the pod's containers with `crun` inside the guest. The containers share the guest's network, IPC, and UTS namespaces. Each has its own PID, mount, and cgroup namespaces.
   - Run exec processes and resize terminals.
   - Carry stdin, stdout, and stderr as separate streams.
-  - Forward signals, report exit codes, start errors, and events, and run graceful stop: SIGTERM, grace period, SIGKILL, guest power-off.
-- Host-guest protocol: TTRPC with the containerd task API on one vsock control port, plus one vsock port for raw stdio streams.
-- Pod networking: a TAP device in the pod network namespace, created owned by the VM process's uid, with traffic redirected both ways between the pod interface and the TAP device. The pod interface's address moves to the guest, and the guest uses the pod interface's MAC address. Socket forwarding is off when a network device exists.
-- Fail fast: before starting the VM, the shim opens the TAP device itself and fails if that fails, because `libkrun` reports a TAP failure only in a log line and then hangs. A boot watchdog stops the VM when the guest agent does not connect within the boot timeout.
+  - Forward signals, report exit codes and start errors, and power off the guest when the sandbox stops.
+- Graceful stop: the kubelet stops each container through the task API (SIGTERM, grace period, SIGKILL in the guest). Then the shim asks the agent to power off, and kills the VM process if the guest is still running after the stop timeout.
+- Host ids: the installer reserves `sbxr:<first>:33554432` (512 pods of 65536 ids) in `/etc/subuid` and `/etc/subgid`, apart from every other entry. Without a `kubelet` entry, the kubelet gives pods with `hostUsers: false` random ids from almost the whole id space, so preflight requires the `kubelet` user, `getsubids`, and an equal `kubelet` entry in both files. Uninstall removes the `sbxr` entries. The `kubelet` range comes from `getsubids`, as the kubelet reads it, and must follow the kubelet's rules: one equal uid and gid range, a first id that is a multiple of 65536 and at least 65536, and a length that holds the node's pod capacity in 65536-id steps. Preflight cannot detect a kubelet that was not restarted after the range changed. The installer edits the files under shadow's `.lock` files and keeps their mode and owner.
+- Pod directory `/run/sbxr/pods/<id>`: mode 0750, owned by root with the pod's group, so other pods cannot read it. Everything the shim creates in it, including the share, belongs to root and is at most readable by the pod's group, so neither the guest nor the VM process can create, rename, or replace an entry the shim uses. Only the VM's socket directory and the mounted container roots and volumes are writable by the pod. The shim resolves paths below the pod directory with `openat2` (no symlinks, no mount crossings), mounts on `O_PATH` descriptors, connects to the VM's sockets only after it checks their type and owner, and removes nothing while a mount remains.
+- Container roots and volumes: the shim mounts them into the pod share (a virtio-fs share that the guest mounts at `/run/sbxr/shared`) and rewrites the container spec for the guest. Overlayfs cannot be idmapped, so the shim idmaps each lower layer into the pod's id range and mounts the overlay over them. The upper layer stays on the host and belongs to the pod's range. Volumes are idmapped binds, with a plain bind on file systems without idmapped mounts. This needs Linux 5.19 or later.
+- The shim writes `/etc/resolv.conf` and `/etc/hostname` for the containers, because containerd writes them only for its own sandbox controller.
+- VM memory is the sum of the container memory limits, or 1024 MiB without one. VM vCPUs are the pod CPU limit rounded up, or every node CPU without one.
+- Host-guest protocol: TTRPC with the containerd task API on vsock port 1024, plus vsock port 1025 for raw streams. Each stream starts with one header line that names the process and stream, or a port-forward target port.
+- Pod networking: a TAP device in the pod network namespace, created owned by the VM process's uid, with traffic redirected both ways between the pod interface and the TAP device (tc mirred). The pod interface's addresses and routes move to the guest, and the guest uses the pod interface's MAC address. No socket forwarding (TSI).
+- `kubectl port-forward`: containerd dials `localhost` in the pod network namespace, where nothing listens. An `iptables` rule there redirects local TCP connections to a shim listener, which opens a port-forward stream to the agent. The node needs `iptables` and `nsenter`; without them, everything else works.
+- A failed sandbox start stops the VM and undoes the TAP device, the redirect, the moved addresses, and the port-forward rule. containerd does not retry a start: the kubelet creates a new sandbox. A failed host stream setup after the guest created a process removes the process from the guest again.
+- Fail fast: a boot watchdog stops the VM when the guest agent does not answer within 30 seconds, and the sandbox start fails with the VM log tail.
+- Phase 2 needs neither phase 1 admission policy (`sbxr-warn`, `sbxr-dns-use-vc`): exec probes, SIGTERM, and DNS over UDP work. Its preflight adds Linux 5.19, `/dev/net/tun`, and the `kubelet` id range, and drops the D-Bus check.
+- These phase 1 criteria change in phase 2: exec probes and long grace periods get no admission warning, and each pod runs one VM with no pause container.
+- Known limits, shown in the RuntimeClass annotations and the docs:
+  - No per-container metrics (`kubectl top` shows the pod's cgroup).
+  - `shareProcessNamespace` is ignored. Each container has its own PID namespace.
+  - No `kubectl attach`.
+  - Moving from phase 1 needs one manual step: delete the two phase 1 policies, because `kubectl apply` does not remove objects.
 
 ### Test contract
 
-- Behavior scenarios are written once and run against several targets: `fake` (no hypervisor), `cli` (real VM), `k8s-p1` (kind cluster with phase 1), and later `k8s-p2`.
+- Behavior scenarios are written once and run against several targets: `fake` (no hypervisor), `cli` (real VM), `k8s-p1` (kind cluster with phase 1), and `k8s-p2` (kind cluster with phase 2, upgraded from phase 1).
 - Each target declares its capabilities. Each scenario declares the capabilities it needs and runs only on targets that have them. Scenarios never check the target name.
 - Capabilities: `stdin`, `tty`, `split-stderr`, `signal-exit`, `graceful-stop`, `exec`, `net`, `net-off`, `publish`, `dns`, `volumes`, `memory-limit`, `probes`, `spec-validation`, `exact-config`, `egress-guard`.
 - `spec-validation`: the target rejects invalid run input (relative workdir, control characters, reserved env names) before anything starts. `exact-config`: the workload sees the image config and the run flags and nothing else. Kubernetes targets lack both, because Kubernetes accepts such input, adds service env and `HOSTNAME`, and does not apply the group of a numeric image `USER`.
@@ -508,6 +528,7 @@ CI contract:
 | macos          | `macos-15`                                               | fake target, codesign check, `doctor` reports the missing hypervisor, help timing on a silent terminal | 8 min  |
 | hv             | `ubuntu-latest`, KVM enabled, AppArmor profile installed | `cli` target, fuzz corpus through the real init, `SBXR_REQUIRE_HV=1`                                   | 10 min |
 | kind           | `ubuntu-latest`, KVM enabled                             | `k8s-p1` target                                                                                        | 10 min |
+| kind-p2        | `ubuntu-latest`, KVM enabled                             | phase 1 install, upgrade to phase 2, `k8s-p2` target and the phase 2 criteria                          | 10 min |
 | fuzz (nightly) | `ubuntu-latest`                                          | long fuzz runs                                                                                         | 20 min |
 | install-linux  | `ubuntu-latest`                                          | README setup block on a goreleaser snapshot, `doctor` passes after a new login                         | 6 min  |
 | install-macos  | `macos-15`                                               | tap formula on a goreleaser snapshot, `doctor` fails only `hypervisor`                                 | 6 min  |
@@ -570,7 +591,7 @@ CI contract:
 | A4  | RKE2 imports the `config-v3.toml.d` drop-in directory like k3s. Verified on RKE2 1.34.13 and 1.37.2, with the k3s and k0s paths. Restarting the k3s or RKE2 unit restarts containerd                                                                                                                                                                                                       | verified   |
 | A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install. Verified: `brew install albertsko/tap/sbxr` needs no extra step on Homebrew 7.0.13                                                                                                                                                                                                                             | verified   |
 | A6  | Overlay edge cases not yet tested (hardlinks across copy-up, renaming lower directories) work over virtio-fs                                                                                                                                                                                                                                                                               | 75%        |
-| A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot                                                                                                                                                                                                                                                      | 75%        |
+| A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot. Verified with `libkrun` 1.19.8 and `crun` 1.31 in kind; overlayfs needs idmapped lower layers instead of an idmapped overlay                                                                                                                        | verified   |
 | A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available on every Kubernetes version the installer supports. Failed as first written: Kubernetes serves it by default only from 1.36, so the installer requires 1.36                                                                                                                                                      | verified   |
 | A9  | The fang terminal color query problem (fang issue 104) gets fixed upstream, so the CLI's workaround can be removed                                                                                                                                                                                                                                                                         | 50%        |
 | A10 | The macOS process that could not exit after holding 2000 guest connections in testing does not recur under the per-run connection caps. Verified on an M4 Pro Mac with `libkrun` 1.19.8 (see HANDOFF "Evidence"): the parent exited within 0.1 s in every run at the caps (1024 TCP, 256 UDP), above them, and with 2000 TCP connections. `TestCloseAtCaps` checks the network stack in CI | verified   |
@@ -611,7 +632,7 @@ These questions stay open at handoff. Each one names who decides or what work an
 - **Exit code 125.** `sbxr` follows the Docker exit-code convention. The `libkrun` init also uses 125 for setup failures inside the guest. Both are `sbxr` failures from the user's view, and the stderr message says which.
 - **Why not a block-device root.** A block-device root carries ownership without a user namespace, but the guest exit code then always reads 0, because `libkrun` returns the exit code only through a virtio-fs root.
 - **fang workaround.** fang 2.0.1 queries the terminal background color on every help and error render, which waits 4 seconds on terminals that never answer. The CLI points the process stdout at a non-terminal while fang renders and restores it before any workload runs. A test guards both the timing and the restore. The workaround goes away when fang releases a fix.
-- **Verification log (2026-11-13 to 2026-11-14).**
+- **Verification log (2026-11-13 to 2026-11-15).**
   - macOS: a `purego` program with cgo off booted Alpine through `libkrun` 1.19.8. Exit codes 0, 3, 126, and 127 passed through. Ownership xattrs worked. Unsigned binaries fail at VM creation. With hardened runtime, `libkrun` failed to load `libkrunfw` unless the binary also had `cs.allow-dyld-environment-variables`. Without hardened runtime, the hypervisor entitlement alone was enough. The config file carried quotes, tabs, newlines, and non-ASCII text intact. Boot took about 0.1 s and 115 to 220 MiB host memory. `go build` failed at 256 MiB guest memory and passed at 512 MiB.
   - GitHub runners: `ubuntu-latest` and `ubuntu-24.04` (x86_64) expose KVM after a udev rule. `ubuntu-24.04-arm`, `macos-15`, and `macos-26` have no usable hypervisor.
   - Linux rootless: correct guest ownership, setuid bits, and exit codes inside a user namespace. The AppArmor profile makes this work with the restriction on.
@@ -620,5 +641,6 @@ These questions stay open at handoff. Each one names who decides or what work an
   - Phase 2 TAP networking: the guest owned the pod address with ICMP, TCP, and UDP working, and the VM process ran without capabilities.
   - Phase 1 in kind: VMs ran with the pause container outside, logs, exit codes, probes, Services, port-forward, memory limits, and OOM behaved as listed. SIGTERM did not reach workloads. The `use-vc` mutating policy fixed Go and glibc DNS.
   - Phase 1 installer in kind (Kubernetes 1.37, containerd 2.3): the installer passed preflight, installed the bundle, and labeled the node. The phase 1 acceptance criteria and the `k8s-p1` scenarios passed, and uninstall left nothing behind. A node without the drop-in import stayed unchanged and unlabeled, with the reason in its annotation.
+  - Phase 2 (2026-11-15): the `libkrun` init started the agent as PID 1, vsock ports with `listen` connected host sockets to guest listeners, a VM process in its own user namespace opened a TAP device created for its uid, tc redirect carried ICMP both ways, static `crun` ran containers in the guest, and mounts made in a virtio-fs share after boot appeared in the guest. An idmapped bind of an overlay failed (EINVAL), while an overlay over idmapped lower layers worked. In kind, the phase 2 criteria and the phase 1 criteria passed after the node upgrade.
   - Fresh install (2026-11-15): on `ubuntu-latest`, the README setup block with Homebrew `libkrun` 1.19.8 and a new login made every doctor check pass. The runner's `/dev/kvm` needed only the `kvm` group. On `macos-15` with Homebrew 7.0.13, `brew install albertsko/tap/sbxr` tapped the tap, trusted the formula, installed `libkrun`, and signed `sbxr`. Doctor failed only `hypervisor`.
 - **Council review.** Four independent reviewers (architecture, VMM and security, CLI experience, tests and CI) reviewed the design in three rounds. Their decisions are recorded in this document.

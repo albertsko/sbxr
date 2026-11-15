@@ -53,6 +53,12 @@ type Config struct {
 	Volumes []Volume
 	// MountHelper is the guest mount helper, which libkrun serves at guestmount.Path when there are volumes.
 	MountHelper []byte
+	// TAP adds a virtio-net device on a TAP device that the VM process can open. It excludes Net.
+	TAP *TAP
+	// Shares are extra virtio-fs devices.
+	Shares []Share
+	// Vsock connects guest vsock ports to host Unix sockets. It adds a vsock device without socket forwarding.
+	Vsock []VsockPort
 	// LogLevel is the libkrun log level, from 0 (off) to 5 (trace).
 	LogLevel uint32
 }
@@ -70,6 +76,26 @@ type Net struct {
 	MAC [6]byte
 }
 
+// TAP is a virtio-net device on a TAP device in the network namespace of the VM process.
+type TAP struct {
+	Name string
+	MAC  [6]byte
+}
+
+// Share is a host directory that the guest mounts with virtio-fs under Tag.
+type Share struct {
+	Tag  string
+	Path string
+}
+
+// VsockPort pairs a guest vsock port with a Unix socket in the host.
+type VsockPort struct {
+	Port uint32
+	Path string
+	// Listen makes libkrun listen on Path and connect each host connection to a guest listener on Port.
+	Listen bool
+}
+
 // api holds the libkrun functions that sbxr uses. Each one returns 0 or a negative errno.
 type api struct {
 	setLogLevel          func(level uint32) int32
@@ -80,6 +106,8 @@ type api struct {
 	addNetUnixgram       func(ctx uint32, path unsafe.Pointer, fd int32, mac *byte, features, flags uint32) int32
 	addVirtiofs4         func(ctx uint32, tag, path string, shmSize uint64, readOnly bool, semantics uint32) int32
 	addOverlayFile       func(ctx uint32, tag, path string, data *byte, size uintptr, mode uint32, oneShot bool) int32
+	addNetTap            func(ctx uint32, name string, mac *byte, features, flags uint32) int32
+	addVsockPort2        func(ctx uint32, port uint32, path string, listen bool) int32
 	disableImplicitVsock func(ctx uint32) int32
 	addVsock             func(ctx uint32, tsiFeatures uint32) int32
 	setKernelConsole     func(ctx uint32, id string) int32
@@ -109,6 +137,8 @@ func load(dir string) (*api, error) {
 		{"krun_add_net_unixgram", &a.addNetUnixgram},
 		{"krun_add_virtiofs4", &a.addVirtiofs4},
 		{"krun_fs_add_overlay_file", &a.addOverlayFile},
+		{"krun_add_net_tap", &a.addNetTap},
+		{"krun_add_vsock_port2", &a.addVsockPort2},
 		{"krun_disable_implicit_vsock", &a.disableImplicitVsock},
 		{"krun_add_vsock", &a.addVsock},
 		{"krun_set_kernel_console", &a.setKernelConsole},
@@ -181,6 +211,10 @@ func Enter(dir string, cfg Config) error {
 		return err
 	}
 
+	if err := addDevices(krun, ctx, cfg); err != nil {
+		return err
+	}
+
 	// The implicit vsock device would forward guest sockets to the host (TSI).
 	// Disabling it leaves a guest without a network device with no network at all.
 	if err := check("krun_disable_implicit_vsock", krun.disableImplicitVsock(ctx)); err != nil {
@@ -189,7 +223,7 @@ func Enter(dir string, cfg Config) error {
 
 	// On macOS, libkrun sends the host time to the guest init over vsock. A device without TSI features and port map carries only that.
 	// Linux has no such time sync, so the device would only add threads there. The symbol stays required on both, to keep one list.
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" || len(cfg.Vsock) > 0 {
 		if err := check("krun_add_vsock", krun.addVsock(ctx, 0)); err != nil {
 			return err
 		}
@@ -201,7 +235,31 @@ func Enter(dir string, cfg Config) error {
 		}
 	}
 
+	for _, p := range cfg.Vsock {
+		if err := check("krun_add_vsock_port2", krun.addVsockPort2(ctx, p.Port, p.Path, p.Listen)); err != nil {
+			return err
+		}
+	}
+
 	return check("krun_start_enter", krun.startEnter(ctx))
+}
+
+// addDevices adds the TAP device and the extra virtio-fs shares.
+func addDevices(krun *api, ctx uint32, cfg Config) error {
+	if cfg.TAP != nil {
+		// No flags: the guest configures its own address, without the DHCP client.
+		if err := check("krun_add_net_tap", krun.addNetTap(ctx, cfg.TAP.Name, &cfg.TAP.MAC[0], compatNetFeatures, 0)); err != nil {
+			return err
+		}
+	}
+
+	for _, s := range cfg.Shares {
+		if err := check("krun_add_virtiofs4", krun.addVirtiofs4(ctx, s.Tag, s.Path, 0, false, volumeSemantics)); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (cfg Config) validate() error {
@@ -218,6 +276,8 @@ func (cfg Config) validate() error {
 		return errors.New("VM volume needs a tag and an absolute host path")
 	case len(cfg.Volumes) > 0 && len(cfg.MountHelper) == 0:
 		return errors.New("VM volumes need the mount helper")
+	case cfg.Net != nil && cfg.TAP != nil:
+		return errors.New("VM has both a unixgram and a TAP network device")
 	case cfg.LogLevel > maxLogLevel:
 		return fmt.Errorf("libkrun log level %d is above %d", cfg.LogLevel, maxLogLevel)
 	}

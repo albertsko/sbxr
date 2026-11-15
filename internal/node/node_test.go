@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,12 +15,17 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/albertsko/sbxr/internal/subid"
 )
 
 const dropInPath = "/etc/containerd/conf.d/sbxr.toml"
 
 // fakeNode is the API server and the host of one node.
 type fakeNode struct {
+	// onKrun runs when the installer checks the installed bundle, after preflight.
+	onKrun func()
+
 	root string
 
 	mu          sync.Mutex
@@ -59,7 +65,7 @@ func (f *fakeNode) Node(context.Context) (Node, error) {
 		heartbeat = time.Unix(1, 0)
 	}
 
-	return Node{RuntimeVersion: "containerd://2.3.4", RuntimeHandlers: slices.Clone(f.handlers), Heartbeat: heartbeat}, nil
+	return Node{RuntimeVersion: "containerd://2.3.4", RuntimeHandlers: slices.Clone(f.handlers), Heartbeat: heartbeat, MaxPods: 110}, nil
 }
 
 func (f *fakeNode) Patch(_ context.Context, labels, annotations map[string]*string) error {
@@ -100,7 +106,25 @@ func (f *fakeNode) host(_ context.Context, args ...string) (string, error) {
 		return "", nil
 	case "getconf GNU_LIBC_VERSION":
 		return "glibc 2.39\n", nil
+	case "uname -r":
+		return "6.8.0-1015-azure\n", nil
+	case "test -c /dev/net/tun", "getent passwd kubelet":
+		return "", nil
+	case "getsubids kubelet", "getsubids -g kubelet":
+		// getsubids prints the kubelet entry of the file, or fails without one.
+		file := map[bool]string{true: "/etc/subgid", false: "/etc/subuid"}[strings.Contains(strings.Join(args, " "), "-g")]
+		data, _ := os.ReadFile(f.root + file)
+
+		for _, r := range subid.Parse(string(data)) {
+			if r.Name == "kubelet" {
+				return fmt.Sprintf("0: kubelet %d %d\n", r.First, r.Count), nil
+			}
+		}
 	case "/opt/sbxr/bin/krun --version":
+		if f.onKrun != nil {
+			f.onKrun()
+		}
+
 		if !f.krunFails {
 			return "crun version 1.31\n+SYSTEMD +SELINUX +LIBKRUN\n", nil
 		}
@@ -159,6 +183,7 @@ func newFakeNode(t *testing.T) (*fakeNode, *Installer) {
 		Host:     f.host,
 		HostRoot: f.root,
 		Bundle:   newBundle(t, "crun"),
+		Phase:    1,
 		Poll:     time.Millisecond,
 		Timeout:  50 * time.Millisecond,
 		Log:      slog.New(slog.DiscardHandler),
@@ -861,4 +886,163 @@ func sum(s string) string {
 	h := sha256.Sum256([]byte(s))
 
 	return hex.EncodeToString(h[:])
+}
+
+func TestInstallPhase2(t *testing.T) {
+	t.Parallel()
+
+	f, in := newFakeNode(t)
+	in.Phase = 2
+
+	// Without a kubelet range, kubelet pods with user namespaces could get any id.
+	err := in.Install(t.Context())
+	if err != nil || !strings.Contains(f.annotations[PreflightAnnotation], "kubelet id range: getsubids kubelet") {
+		t.Fatalf("install without a kubelet range: %v, annotations %v", err, f.annotations)
+	}
+
+	write(t, f.root+"/etc/subuid", "kubelet:65536:7208960\n")
+	write(t, f.root+"/etc/subgid", "kubelet:65536:7208960")
+
+	// shadow's tools keep the file mode, and a lock of a process that is gone is stale.
+	if err := os.Chmod(f.root+"/etc/subgid", 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	write(t, f.root+"/etc/subuid.lock", "999999999")
+
+	err = in.Install(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"/etc/subuid", "/etc/subgid"} {
+		if got := read(t, f.root+name); got != "kubelet:65536:7208960\nsbxr:7274496:33554432\n" {
+			t.Errorf("%s = %q, want the sbxr range after the kubelet range", name, got)
+		}
+	}
+
+	if st, err := os.Stat(f.root + "/etc/subgid"); err != nil || st.Mode().Perm() != 0o600 || exists(f.root+"/etc/subuid.lock") {
+		t.Errorf("subgid mode %v, %v, lock left %v; want the mode kept and the lock gone", st.Mode(), err, exists(f.root+"/etc/subuid.lock"))
+	}
+
+	dropIn := read(t, f.root+dropInPath)
+	if f.labels[ReadyLabel] != "true" || !strings.Contains(dropIn, `runtime_type = "io.containerd.sbxr.v1"`) {
+		t.Errorf("labels %v, drop-in:\n%s", f.labels, dropIn)
+	}
+
+	if target, err := os.Readlink(f.root + ShimLink); err != nil || target != "/opt/sbxr/bin/containerd-shim-sbxr-v1" {
+		t.Errorf("shim link: %q, %v", target, err)
+	}
+
+	// A pod keeps the bundle in place.
+	write(t, f.root+PodsRoot+"/pod1/vm.pid", "42")
+
+	err = in.Uninstall(t.Context())
+	if err == nil || !strings.Contains(f.annotations[PreflightAnnotation], "1 sbxr containers still exist (pod1)") || !exists(f.root+Prefix) {
+		t.Errorf("error %v, annotations %v; want the bundle kept while pod1 exists", err, f.annotations)
+	}
+
+	err = os.RemoveAll(f.root + PodsRoot)
+	if err == nil {
+		err = in.Uninstall(t.Context())
+	}
+
+	if _, lerr := os.Lstat(f.root + ShimLink); err != nil || lerr == nil {
+		t.Errorf("uninstall: %v; shim link: %v, want removed", err, lerr)
+	}
+
+	if got := read(t, f.root+"/etc/subuid"); got != "kubelet:65536:7208960\n" {
+		t.Errorf("subuid after uninstall = %q", got)
+	}
+}
+
+// unknownRuntimeAPI reports the runtime version as unknown for the first reads, as the kubelet does after a containerd restart.
+type unknownRuntimeAPI struct {
+	*fakeNode
+}
+
+func (a unknownRuntimeAPI) Node(ctx context.Context) (Node, error) {
+	n, err := a.fakeNode.Node(ctx)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.nodeReads <= 2 {
+		n.RuntimeVersion = "containerd://Unknown"
+	}
+
+	return n, err
+}
+
+func TestInstallWaitsForTheRuntimeVersion(t *testing.T) {
+	t.Parallel()
+
+	f, in := newFakeNode(t)
+	in.API = unknownRuntimeAPI{f}
+
+	err := in.Install(t.Context())
+	if err != nil || f.labels[ReadyLabel] != "true" {
+		t.Errorf("error %v, labels %v, annotations %v; want the node ready", err, f.labels, f.annotations)
+	}
+}
+
+// TestReserveIDsChoosesUnderTheLock simulates useradd, which takes shadow's lock, around the installer's id reservation.
+// An entry added after preflight still counts, and a useradd during the reservation waits for it and sees the sbxr range.
+func TestReserveIDsChoosesUnderTheLock(t *testing.T) {
+	t.Parallel()
+
+	f, in := newFakeNode(t)
+	in.Phase = 2
+
+	write(t, f.root+"/etc/subuid", "kubelet:65536:7208960\n")
+	write(t, f.root+"/etc/subgid", "kubelet:65536:7208960\n")
+
+	// After preflight chose 7274496, a user takes the ids right there.
+	f.onKrun = func() {
+		data := read(t, f.root+"/etc/subuid")
+		write(t, f.root+"/etc/subuid", data+"alice:7274496:65536\n")
+	}
+
+	// During the reservation, another useradd waits for the lock and then reads the file.
+	seen := make(chan string, 1)
+	locked := make(chan struct{})
+
+	in.afterSubidRead = func() {
+		go func() {
+			close(locked)
+
+			unlock, err := lockShadow(f.root + "/etc/subuid")
+			if err != nil {
+				seen <- err.Error()
+
+				return
+			}
+			defer unlock()
+
+			data, _ := os.ReadFile(f.root + "/etc/subuid")
+			seen <- string(data)
+		}()
+
+		<-locked
+		time.Sleep(50 * time.Millisecond)
+
+		select {
+		case got := <-seen:
+			t.Errorf("useradd got the lock during the reservation and read %q", got)
+		default:
+		}
+	}
+
+	err := in.Install(t.Context())
+	if err != nil || f.labels[ReadyLabel] != "true" {
+		t.Fatalf("install: %v, labels %v, annotations %v", err, f.labels, f.annotations)
+	}
+
+	if got := read(t, f.root+"/etc/subuid"); got != "kubelet:65536:7208960\nalice:7274496:65536\nsbxr:7340032:33554432\n" {
+		t.Errorf("subuid = %q, want the sbxr range after alice's", got)
+	}
+
+	if got := <-seen; !strings.Contains(got, "sbxr:7340032:33554432") {
+		t.Errorf("the waiting useradd read %q, want the sbxr range", got)
+	}
 }

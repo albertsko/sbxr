@@ -13,8 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // lock takes an exclusive host lock, so that two installer pods on one node never interleave.
@@ -34,7 +36,43 @@ func lock(path string) (func(), error) {
 	return func() { _ = f.Close() }, nil // Closing releases the lock.
 }
 
+// lockShadow takes the lock that shadow's tools, such as usermod, take before they rewrite path: they link a file
+// with their pid to path.lock. A lock whose process is gone is stale and goes, as shadow does.
+func lockShadow(path string) (func(), error) {
+	lockPath := path + ".lock"
+	tmp := path + "." + strconv.Itoa(os.Getpid())
+
+	err := os.WriteFile(tmp, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
+	defer os.Remove(tmp) //nolint:errcheck // The link keeps the lock.
+
+	for range 100 {
+		err = os.Link(tmp, lockPath)
+		if err == nil {
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("lock %s: %w", path, err)
+		}
+
+		data, _ := os.ReadFile(lockPath)
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 && errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			_ = os.Remove(lockPath)
+
+			continue
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return nil, fmt.Errorf("lock %s: another process holds %s", path, lockPath)
+}
+
 // writeFile replaces path with data atomically and durably: it syncs the temporary file before the rename and the directory after it.
+// A replaced file keeps its mode and owner.
 func writeFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 
@@ -51,6 +89,14 @@ func writeFile(path string, data []byte) error {
 	}
 
 	_, err = f.Write(data)
+
+	if st, statErr := os.Stat(path); statErr == nil && err == nil {
+		err = f.Chmod(st.Mode().Perm())
+
+		if sys, ok := st.Sys().(*syscall.Stat_t); ok && err == nil {
+			err = f.Chown(int(sys.Uid), int(sys.Gid))
+		}
+	}
 
 	err = errors.Join(err, f.Sync(), f.Close())
 	if err != nil {
@@ -250,4 +296,40 @@ func copyFile(src, dst string) (string, error) {
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// linkShim points link at the installed shim. It replaces the link atomically.
+func linkShim(link string) error {
+	tmp := link + ".tmp"
+	_ = os.Remove(tmp)
+
+	err := os.MkdirAll(filepath.Dir(link), 0o755) //nolint:gosec // A bin directory.
+	if err == nil {
+		err = os.Symlink(shimPath, tmp)
+	}
+
+	if err == nil {
+		err = os.Rename(tmp, link)
+	}
+
+	if err != nil {
+		return fmt.Errorf("link the shim at %s: %w", link, err)
+	}
+
+	return nil
+}
+
+// unlinkShim removes link when it points at the installed shim.
+func unlinkShim(link string) error {
+	target, err := os.Readlink(link)
+	if err != nil || target != shimPath {
+		return nil //nolint:nilerr // Not ours, or gone.
+	}
+
+	err = os.Remove(link)
+	if err != nil {
+		return fmt.Errorf("remove %s: %w", link, err)
+	}
+
+	return nil
 }

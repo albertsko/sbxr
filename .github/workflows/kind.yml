@@ -11,7 +11,18 @@ concurrency:
   cancel-in-progress: true
 jobs:
   kind:
-    name: kind
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: kind
+            phase: "1"
+            upgrade-from: ""
+          # Phase 2 starts from phase 1, so the phase 1 criteria run after the node upgrade.
+          - name: kind-p2
+            phase: "2"
+            upgrade-from: "1"
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -55,6 +66,8 @@ jobs:
         env:
           SBXR_REQUIRE_HV: "1"
           SBXR_NODE_IMAGE: sbxr-node:ci
+          SBXR_PHASE: ${{ matrix.phase }}
+          SBXR_UPGRADE_FROM: ${{ matrix.upgrade-from }}
         run: mise run test:kind -v
       - name: Diagnostics
         if: failure()
@@ -63,10 +76,11 @@ jobs:
           kubectl get pods -A -o wide || true
           kubectl -n sbxr-system logs ds/sbxr-node || true
           kubectl -n sbxr-test describe pods || true
+          docker exec sbxr-control-plane sh -c 'tail -n 30 /run/sbxr/pods/*/vm.log' || true
           kind export logs --name sbxr kind-logs || true
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: kind-logs
+          name: ${{ matrix.name }}-logs
           path: kind-logs
           retention-days: 7

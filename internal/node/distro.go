@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/albertsko/sbxr/internal/subid"
 )
 
 // distro is a node distribution that runs containerd under its own systemd unit.
@@ -73,15 +75,73 @@ type facts struct {
 	config  string // Main containerd config.
 	systemd bool   // The node's runc runtime uses systemd cgroups.
 	dbus    bool   // The D-Bus system socket exists.
+	kernel  string // Output of "uname -r", for example "6.8.0-1015-azure".
+	tun     bool   // /dev/net/tun exists.
+	// subuid and subgid are /etc/subuid and /etc/subgid.
+	subuid, subgid string
+	// kubeletUser reports whether the kubelet user exists. kubeletUIDs and kubeletGIDs are the output of
+	// "getsubids kubelet" and "getsubids -g kubelet", empty when getsubids failed. The kubelet reads its range the same way.
+	kubeletUser              bool
+	kubeletUIDs, kubeletGIDs string
+	maxPods                  int // The node's pod capacity.
 }
 
 var (
 	minGlibc      = version{2, 35}
 	minContainerd = version{2, 2}
+	// Phase 2 mounts overlays on idmapped lower layers, which Linux supports since 5.19.
+	minKernel = version{5, 19}
 )
 
-// preflight returns the drop-in for d, or the reason why the node is not supported.
-func preflight(d distro, f facts) ([]byte, error) {
+// podIDs returns the kubelet's id range, and checks that a range for phase 2 pod VMs fits next to it.
+//
+// Without a kubelet entry, the kubelet gives pods with user namespaces (hostUsers: false) random ids from almost the
+// whole id space, so any range could overlap them. With one, it uses only that entry, and the sbxr range stays apart.
+func podIDs(f facts) (subid.Range, error) {
+	kubelet, err := kubeletRange(f)
+	if err != nil {
+		return subid.Range{}, fmt.Errorf("kubelet id range: %w; the kubelet may give pods with user namespaces "+
+			"any host id, which can overlap sbxr pod VMs (see the requirements in docs/kubernetes.md)", err)
+	}
+
+	// The installer chooses again under shadow's locks. This only rejects a node early.
+	_, _, err = subid.Choose(f.subuid, f.subgid, kubelet)
+	if err != nil {
+		return subid.Range{}, fmt.Errorf("pod VM ids: %w", err)
+	}
+
+	return kubelet, nil
+}
+
+// kubeletRange returns the range that the kubelet uses, and checks it against the kubelet's own rules for the default
+// 65536 ids per pod: the first id is a multiple of 65536 and at least 65536, and the length is a multiple of 65536
+// that covers maxPods pods.
+func kubeletRange(f facts) (subid.Range, error) {
+	if !f.kubeletUser {
+		return subid.Range{}, errors.New("the kubelet user does not exist")
+	}
+
+	uids, errU := subid.ParseGetsubids(f.kubeletUIDs)
+	gids, errG := subid.ParseGetsubids(f.kubeletGIDs)
+
+	switch {
+	case errU != nil || errG != nil:
+		return subid.Range{}, fmt.Errorf("getsubids kubelet: %w", errors.Join(errU, errG))
+	case uids != gids:
+		return subid.Range{}, fmt.Errorf("the kubelet uid range %s and gid range %s differ", uids, gids)
+	case uids.First < subid.PerPod || uids.First%subid.PerPod != 0 || uids.Count%subid.PerPod != 0:
+		return subid.Range{}, fmt.Errorf("the kubelet range %s does not start and end on a multiple of %d above the host ids", uids, subid.PerPod)
+	case f.maxPods <= 0:
+		return subid.Range{}, fmt.Errorf("the node's pod capacity %d is not valid", f.maxPods)
+	case uids.Count/subid.PerPod < f.maxPods:
+		return subid.Range{}, fmt.Errorf("the kubelet range %s holds %d pods, fewer than the node's %d", uids, uids.Count/subid.PerPod, f.maxPods)
+	}
+
+	return uids, nil
+}
+
+// preflight returns the drop-in for d and phase, or the reason why the node is not supported.
+func preflight(d distro, f facts, phase int) ([]byte, error) {
 	if !f.kvm {
 		return nil, errors.New("/dev/kvm is missing")
 	}
@@ -105,18 +165,43 @@ func preflight(d distro, f facts) ([]byte, error) {
 		return nil, fmt.Errorf("%s does not import %s/*.toml", d.config, d.dropIn)
 	}
 
+	if phase == 2 {
+		kernel, ok := parseVersion(f.kernel)
+		if !ok || kernel.less(minKernel) {
+			return nil, fmt.Errorf("kernel %q is older than Linux %s", f.kernel, minKernel)
+		}
+
+		if !f.tun {
+			return nil, errors.New("/dev/net/tun is missing")
+		}
+
+		return renderDropIn(v, f.systemd, phase), nil
+	}
+
 	if f.systemd && !f.dbus {
 		return nil, errors.New("runc uses systemd cgroups, but /run/dbus/system_bus_socket is missing: install D-Bus")
 	}
 
-	return renderDropIn(v, f.systemd), nil
+	return renderDropIn(v, f.systemd, phase), nil
 }
 
 // renderDropIn returns the drop-in for handler sbxr. Its version must match the main config.
-func renderDropIn(version int, systemd bool) []byte {
+// Phase 1 runs crun with libkrun through the runc shim. Phase 2 uses the sbxr shim as the pod sandboxer.
+func renderDropIn(version int, systemd bool, phase int) []byte {
 	plugin := "io.containerd.grpc.v1.cri"
 	if version == 3 {
 		plugin = "io.containerd.cri.v1.runtime"
+	}
+
+	if phase == 2 {
+		return fmt.Appendf(nil, `# Written by the sbxr installer. sbxr-uninstall.yaml removes it.
+version = %d
+
+[plugins.%q.containerd.runtimes.sbxr]
+  runtime_type = "io.containerd.sbxr.v1"
+  runtime_path = "%s/bin/containerd-shim-sbxr-v1"
+  sandboxer = "shim"
+`, version, plugin, Prefix)
 	}
 
 	return fmt.Appendf(nil, `# Written by the sbxr installer. sbxr-uninstall.yaml removes it.

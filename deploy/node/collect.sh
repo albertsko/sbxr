@@ -73,10 +73,5 @@ if [[ -n $leaks ]]; then
 fi
 "$prefix/bin/krun" --version
 echo "glibc floor: $(objdump -T "$prefix"/bin/crun "$prefix"/lib/*.so* | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
-
-# The installer checks every file against this list while it copies the bundle to the node.
-sums=$(cd "$prefix" && find . -type f -exec sha256sum {} + | sort -k2)
-echo "$sums" >"$prefix/SHA256SUMS"
 cat "$prefix/NOTICE"
 ls -lA "$prefix/bin" "$prefix/lib" "$licenses"
-du -sh "$prefix"
