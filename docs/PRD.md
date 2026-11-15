@@ -400,17 +400,17 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 
 - RuntimeClass name and handler: `sbxr`.
 - RuntimeClass `scheduling.nodeSelector`: `sbxr.dev/ready: "true"`.
-- RuntimeClass `overhead.podFixed`: memory for the guest kernel and VMM. The value is set after measurement.
+- RuntimeClass `overhead.podFixed`: memory for the guest kernel and VMM, 64 MiB. In kind, the container cgroup of an idle phase 1 pod held 20 MiB more than the guest used for a 256 MiB guest, and 45 MiB more for a 2 GiB guest: about 15 MiB plus 15 MiB per GiB of guest memory. 64 MiB covers guests up to about 3 GiB.
 - RuntimeClass annotations: `sbxr.dev/phase` (`"1"` or `"2"`), `sbxr.dev/limits` (comma-separated list of known limits), `sbxr.dev/docs` (URL).
-- Installer: one DaemonSet manifest, release asset `sbxr-install.yaml`, with the installer image pinned by digest and artifact checksums verified.
-- Supported first: kubeadm-style nodes with containerd 2.2 or later and the default `conf.d` import, k3s and RKE2 with the `config-v3.toml.d` drop-in directory, and k0s 1.36 or later with `/etc/k0s/containerd.d`. kind is supported through a documented cluster config patch, set at cluster creation. Managed cloud node pools come later.
+- Installer: one DaemonSet manifest, release asset `sbxr-install.yaml`, with the installer image `ghcr.io/albertsko/sbxr-node` pinned by digest and artifact checksums verified.
+- Supported first: Kubernetes 1.36 or later, where `MutatingAdmissionPolicy` v1 is served by default. Node distributions: kubeadm-style nodes with containerd 2.2 or later and the default `conf.d` import, k3s and RKE2 with the `config-v3.toml.d` drop-in directory, and k0s 1.36 or later with `/etc/k0s/containerd.d`. kind is supported through a documented cluster config patch, set at cluster creation. Managed cloud node pools come later.
 - Installer steps on each node:
   1. Detect the distribution from its systemd units.
-  2. Run preflight: `/dev/kvm`, containerd version, and an `imports` entry that covers the drop-in directory.
+  2. Run preflight: `/dev/kvm`, glibc 2.35 or later, containerd version, main config version 2 or 3, an `imports` entry that covers the drop-in directory, and the D-Bus system socket when runc uses systemd cgroups.
   3. If preflight fails, change nothing, leave the node unlabeled, and write the reason to the node annotation `sbxr.dev/preflight`. The installer never edits a main containerd config or template.
   4. Install binaries and libraries under one directory, then write the `sbxr` drop-in file atomically under a host lock, and restart the containerd unit only when the content changed.
-  5. Verify that containerd serves handler `sbxr` and the node reports it in its runtime handlers. Then set the ready label. If verification fails, remove the drop-in and restart again.
-- Uninstall, release asset `sbxr-uninstall.yaml`: remove the label and annotation, remove the drop-in, restart containerd last, remove binaries and policies.
+  5. Verify that the unit is active and that a node status posted after the restart reports handler `sbxr`. Then set the ready label. If the restart or verification fails, restore the previous drop-in (or remove it) and restart again. If that rollback fails, the installer exits with an error and retries.
+- Uninstall, release asset `sbxr-uninstall.yaml`: `kubectl apply` replaces the installer DaemonSet with one that removes the label and annotation, removes the drop-in of every supported distribution, restarts containerd, and removes the binaries. It keeps the binaries while containerd has not restarted or `sbxr` containers still have state under the handler's runtime root (`/run/sbxr/runc`), and reports why in the annotation. `kubectl delete -f` of the same file then removes the RuntimeClass, the policies, and the namespace.
 - containerd pulls the container image, not `sbxr`.
 - Admission policies shipped with the installer, for pods with `runtimeClassName: sbxr`:
   - Validating, deny: privileged containers, host network, host PID, host IPC, added capabilities.
@@ -420,7 +420,10 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 ### Kubernetes phase 1: crun with libkrun
 
 - The installer ships `crun` built with `libkrun` support, plus `libkrun`, `libkrunfw`, and the libraries they need that nodes may lack (for example `libjson-c`). No distribution package provides this build.
-- containerd drop-in for handler `sbxr`: runtime type `io.containerd.runc.v2`, with the binary set to a `krun`-named link to that `crun`. The installer passes no `krun.*` annotations to `crun`, because they enable nested virtualization, custom kernels, and TAP devices.
+- The bundle builds on Ubuntu 22.04 (glibc 2.35) and installs to `/opt/sbxr` (33 MiB). `crun` has the absolute RUNPATH `/opt/sbxr/lib`, because it re-executes itself from a memfd, where `$ORIGIN` resolves to `/`. The libraries use `$ORIGIN`.
+- The bundle patches the `libkrun` guest init so that the last of duplicate env entries wins. containerd puts the pod env after the image env, so a pod env value overrides the image value, as with `runc` (Q1, item 6).
+- containerd drop-in for handler `sbxr`: runtime type `io.containerd.runc.v2`, with the binary set to a `krun`-named link to that `crun` and the runtime root set to `/run/sbxr/runc`, so that the installer can tell whether any `sbxr` container exists. The installer passes no `krun.*` annotations to `crun`, because they enable nested virtualization, custom kernels, and TAP devices.
+- The drop-in uses the main config's version (kind writes 2, k3s, RKE2, and k0s write 3), because containerd rejects a version 3 drop-in under a version 2 main config. Its `SystemdCgroup` matches the node's runc runtime. With systemd cgroups, `crun` needs D-Bus, unlike `runc`. The kind node image has no D-Bus, so the kind setup installs it.
 - `crun` runs the pod sandbox container as a normal process and each app container and init container in its own VM.
 - VM memory comes from the container memory limit, or 1024 MiB without a limit. VM vCPUs come from the container CPU affinity. A guest that uses all its memory is killed by the container cgroup (`OOMKilled`). A guest process that exceeds guest memory is killed by the guest kernel (exit 137, reason `Error`).
 - Networking uses TSI inside the pod network namespace. Guest listeners are exposed in the pod network namespace, as with a normal pod. TCP, UDP clients, probes, Services, and port-forward work. ICMP, IPv6, and UDP listeners do not.
@@ -453,14 +456,15 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 
 - Behavior scenarios are written once and run against several targets: `fake` (no hypervisor), `cli` (real VM), `k8s-p1` (kind cluster with phase 1), and later `k8s-p2`.
 - Each target declares its capabilities. Each scenario declares the capabilities it needs and runs only on targets that have them. Scenarios never check the target name.
-- Capabilities: `stdin`, `tty`, `split-stderr`, `signal-exit`, `graceful-stop`, `exec`, `net`, `net-off`, `publish`, `dns`, `volumes`, `memory-limit`, `probes`.
+- Capabilities: `stdin`, `tty`, `split-stderr`, `signal-exit`, `graceful-stop`, `exec`, `net`, `net-off`, `publish`, `dns`, `volumes`, `memory-limit`, `probes`, `spec-validation`, `exact-config`.
+- `spec-validation`: the target rejects invalid run input (relative workdir, control characters, reserved env names) before anything starts. `exact-config`: the workload sees the image config and the run flags and nothing else. Kubernetes targets lack both, because Kubernetes accepts such input, adds service env and `HOSTNAME`, and does not apply the group of a numeric image `USER`.
 
-  | Target   | Capabilities                                                                                 |
-  | -------- | -------------------------------------------------------------------------------------------- |
-  | `fake`   | `stdin`, `tty`, `split-stderr`, `signal-exit`, `net`, `net-off`, `publish`, `dns`, `volumes` |
-  | `cli`    | same as `fake`                                                                               |
-  | `k8s-p1` | `net`, `publish`, `dns`, `memory-limit`, `probes`                                            |
-  | `k8s-p2` | `k8s-p1` plus `exec`, `graceful-stop`                                                        |
+  | Target   | Capabilities                                                                                                                    |
+  | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
+  | `fake`   | `stdin`, `tty`, `split-stderr`, `signal-exit`, `net`, `net-off`, `publish`, `dns`, `volumes`, `spec-validation`, `exact-config` |
+  | `cli`    | same as `fake`                                                                                                                  |
+  | `k8s-p1` | `net`, `publish`, `dns`, `memory-limit`, `probes`                                                                               |
+  | `k8s-p2` | `k8s-p1` plus `exec`, `graceful-stop`                                                                                           |
 
 - Scenarios assert on behavior: stdout (or combined output), exit code, and a target-neutral error class. Error classes: `ok`, `invalid-spec`, `image`, `preflight`, `not-found`, `not-executable`, `interrupted`. Each target maps its own signals to these classes. Scenarios never assert the order across stdout and stderr.
 - After each scenario, the target verifies that no VM process, network listener, pod, or run state remains.
@@ -485,7 +489,7 @@ CI contract:
 
 - KVM on `ubuntu-latest` needs a udev rule that opens `/dev/kvm` to all users. kind resets `/dev/kvm` permissions when it creates a cluster, so the kind job sets them again after creation.
 - The hv job installs `sbxr` to `/usr/local/bin` and the AppArmor profile, because the runner has the user namespace restriction on.
-- CI builds `libkrun` from source at the pinned version with network support, uses the `libkrunfw` release tarball, and caches both by version. The kind job builds the phase 1 node bundle inside the kind node image and caches it.
+- CI builds `libkrun` from source at the pinned version with network support, uses the `libkrunfw` release tarball, and caches both by version. The kind job builds the installer image, including the node bundle, and caches its layers by version.
 - Real-VM tests on macOS and Linux arm64 run locally or on a self-hosted runner, because hosted macOS and arm64 runners have no usable hypervisor.
 
 ### Distribution
@@ -529,24 +533,24 @@ CI contract:
 
 ### Assumptions
 
-| ID  | Assumption                                                                                                                             | Confidence |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| A1  | `libkrun` 1.19.x stays maintained for the next 6 to 12 months                                                                          | 85%        |
-| A2  | One phase 1 node bundle, built on an old glibc baseline with its own libraries, runs on all supported node distributions               | 70%        |
-| A3  | One scenario set with capability tags covers all targets without target-specific branches inside scenarios                             | 75%        |
-| A4  | RKE2 imports the `config-v3.toml.d` drop-in directory like k3s                                                                         | 70%        |
-| A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install                                                             | 70%        |
-| A6  | Overlay edge cases not yet tested (hardlinks across copy-up, renaming lower directories) work over virtio-fs                           | 75%        |
-| A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot  | 75%        |
-| A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available on every Kubernetes version the installer supports           | 75%        |
-| A9  | The fang terminal color query problem (fang issue 104) gets fixed upstream, so the CLI's workaround can be removed                     | 50%        |
-| A10 | The macOS process that could not exit after holding 2000 guest connections in testing does not recur under the per-run connection caps | 60%        |
+| ID  | Assumption                                                                                                                                                                                                                                | Confidence |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| A1  | `libkrun` 1.19.x stays maintained for the next 6 to 12 months                                                                                                                                                                             | 85%        |
+| A2  | One phase 1 node bundle, built on Ubuntu 22.04 with its own libraries, runs on nodes with glibc 2.35 or later. Verified on Ubuntu 22.04 and 24.04, Debian 12, Rocky 9, Amazon Linux 2023, and the kind node. Debian 11 (glibc 2.31) fails | verified   |
+| A3  | One scenario set with capability tags covers all targets without target-specific branches inside scenarios                                                                                                                                | 75%        |
+| A4  | RKE2 imports the `config-v3.toml.d` drop-in directory like k3s. Verified on RKE2 1.34.13 and 1.37.2, with the k3s and k0s paths. Restarting the k3s or RKE2 unit restarts containerd                                                      | verified   |
+| A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install                                                                                                                                                                | 70%        |
+| A6  | Overlay edge cases not yet tested (hardlinks across copy-up, renaming lower directories) work over virtio-fs                                                                                                                              | 75%        |
+| A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot                                                                                                     | 75%        |
+| A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available on every Kubernetes version the installer supports. Failed as first written: Kubernetes serves it by default only from 1.36, so the installer requires 1.36     | verified   |
+| A9  | The fang terminal color query problem (fang issue 104) gets fixed upstream, so the CLI's workaround can be removed                                                                                                                        | 50%        |
+| A10 | The macOS process that could not exit after holding 2000 guest connections in testing does not recur under the per-run connection caps                                                                                                    | 60%        |
 
 ### Open questions
 
 These questions stay open at handoff. Each one names who decides or what work answers it.
 
-- **Q1. Upstream bug reports.** Verification found five `libkrun` problems worth reporting to `libkrun/libkrun`. Filing them is a public action, so the project owner decides whether and when to file. No issue has been filed yet. All five were seen with `libkrun` 1.19.8 and `libkrunfw` 5.6.4. `sbxr` already works around each one, so none of them blocks implementation.
+- **Q1. Upstream bug reports.** Verification found six `libkrun` problems worth reporting to `libkrun/libkrun`. Filing them is a public action, so the project owner decides whether and when to file. No issue has been filed yet. All six were seen with `libkrun` 1.19.8 and `libkrunfw` 5.6.4. `sbxr` already works around each one, so none of them blocks implementation.
   1. **The port map does not limit exposure.**
      - Seen: under TSI, a guest listener on a port that is not in the port map still appears on the host. A guest bound to `0.0.0.0` appears on all host interfaces.
      - Contradicts: the header says an empty map exposes nothing.
@@ -562,10 +566,9 @@ These questions stay open at handoff. Each one names who decides or what work an
   5. **A TAP open failure hangs the VM.**
      - Seen: `krun_add_net_tap` returns success for a TAP device the process cannot open. Activation then fails with a log line and a vCPU panic, and the process never exits.
      - Seen on: Linux, with a build that has network support.
-- **Q2. RuntimeClass overhead.** The `overhead.podFixed` memory value is not set yet.
-  - Answered by: a measurement during installer work, on a real node with the phase 1 bundle.
-  - Method: run `sbxr` pods with known memory limits, then compare the container cgroup memory with the guest memory.
-  - Starting point: host memory was 115 to 220 MiB per trivial run on macOS.
+  6. **The guest init keeps the first of duplicate env entries.**
+     - Seen: containerd lists the image env first and the pod env after it, and the init sets each entry without overwriting. A pod env value that the image also sets is lost.
+     - Seen on: Kubernetes phase 1 through `crun`. The phase 1 bundle patches the init to let the last entry win.
 - **Q3. macOS process that cannot exit (assumption A10).**
   - Seen: in a network test on macOS, the parent process held 2000 guest TCP connections and then got stuck while exiting, in state `?E`. It ignored `kill -9` and was still present 15 minutes later. The same test exited cleanly on Linux.
   - Not done: no root-cause analysis, because that needed root access.
@@ -591,4 +594,5 @@ These questions stay open at handoff. Each one names who decides or what work an
   - Network: TSI exposed unmapped guest listeners on all host interfaces. The in-process userspace stack published only listed ports on `127.0.0.1` and served DHCP and DNS on macOS and Linux. Without a guard, guest UDP to `0.0.0.0` reached a host loopback service and the host LAN address was reachable. A frame filter closed every tested path, and `--allow-lan` mode opened the LAN but never loopback.
   - Phase 2 TAP networking: the guest owned the pod address with ICMP, TCP, and UDP working, and the VM process ran without capabilities.
   - Phase 1 in kind: VMs ran with the pause container outside, logs, exit codes, probes, Services, port-forward, memory limits, and OOM behaved as listed. SIGTERM did not reach workloads. The `use-vc` mutating policy fixed Go and glibc DNS.
+  - Phase 1 installer in kind (Kubernetes 1.37, containerd 2.3): the installer passed preflight, installed the bundle, and labeled the node. The phase 1 acceptance criteria and the `k8s-p1` scenarios passed, and uninstall left nothing behind. A node without the drop-in import stayed unchanged and unlabeled, with the reason in its annotation.
 - **Council review.** Four independent reviewers (architecture, VMM and security, CLI experience, tests and CI) reviewed the design in three rounds. Their decisions are recorded in this document.

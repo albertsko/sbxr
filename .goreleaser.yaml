@@ -13,6 +13,9 @@ archives:
   - formats: [tar.gz]
 checksum:
   name_template: checksums.txt
+  # sbxr-install.yaml and sbxr-uninstall.yaml from the release workflow's node-manifests job.
+  extra_files:
+    - glob: ./node-manifests/*.yaml
 changelog:
   use: github
   format: "{{ .Message }}{{ if .Logins }} ({{ .Logins | englishJoin }}){{ end }}"
@@ -33,6 +36,8 @@ changelog:
       order: 999
 release:
   prerelease: auto
+  extra_files:
+    - glob: ./node-manifests/*.yaml
   header: |
     {{ .TagSubject }}
     {{- with .TagBody }}

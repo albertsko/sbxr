@@ -12,9 +12,9 @@ func All() []Scenario {
 	return []Scenario{
 		{Name: "echo", Check: expect(Workload{Image: Busybox, Args: []string{"echo", "hi"}}, 0, OK, stdout("hi\n"))},
 		{Name: "exit code", Check: expect(Workload{Image: Busybox, Args: []string{"sh", "-c", "exit 3"}}, 3, OK)},
-		{Name: "relative workdir", Check: expect(Workload{Image: Busybox, Args: []string{"true"}, Workdir: "app"}, 125, InvalidSpec)},
-		{Name: "control character in argument", Check: expect(Workload{Image: Busybox, Args: []string{"echo", "a\x1bb"}}, 125, InvalidSpec)},
-		{Name: "reserved env name", Check: expect(Workload{Image: Busybox, Args: []string{"true"}, Env: []string{"KRUN_INIT=/bin/sh"}}, 125, InvalidSpec)},
+		{Name: "relative workdir", Needs: []Capability{SpecValidation}, Check: expect(Workload{Image: Busybox, Args: []string{"true"}, Workdir: "app"}, 125, InvalidSpec)},
+		{Name: "control character in argument", Needs: []Capability{SpecValidation}, Check: expect(Workload{Image: Busybox, Args: []string{"echo", "a\x1bb"}}, 125, InvalidSpec)},
+		{Name: "reserved env name", Needs: []Capability{SpecValidation}, Check: expect(Workload{Image: Busybox, Args: []string{"true"}, Env: []string{"KRUN_INIT=/bin/sh"}}, 125, InvalidSpec)},
 		{Name: "missing command", Check: expect(Workload{Image: Busybox, Args: []string{"nope"}}, 127, NotFound)},
 		{Name: "not executable", Check: expect(Workload{Image: Busybox, Args: []string{"/etc/passwd"}}, 126, NotExecutable)},
 		{Name: "missing image", Check: expect(Workload{Image: MissingImage, Args: []string{"true"}}, 125, Image)},
@@ -25,6 +25,7 @@ func All() []Scenario {
 		},
 		{
 			Name:  "image config applies",
+			Needs: []Capability{ExactConfig},
 			Check: expect(Workload{Image: Configured}, 0, OK, stdout("image image\n1000\n1000\n/tmp\n")),
 		},
 		{
@@ -40,7 +41,8 @@ func All() []Scenario {
 			Check: expect(Workload{Image: Configured, User: "0", Workdir: "/root", Args: []string{"id -u; pwd"}}, 0, OK, stdout("0\n/root\n")),
 		},
 		{
-			Name: "guest env holds only image env, flags, and defaults",
+			Name:  "guest env holds only image env, flags, and defaults",
+			Needs: []Capability{ExactConfig},
 			Check: expect(Workload{Image: Busybox, Args: []string{"env"}, Env: []string{"A=1", "TERM=xterm"}}, 0, OK,
 				envExactly("PATH=/bin", "A=1", "TERM=xterm", "HOME=/")),
 		},
@@ -86,6 +88,11 @@ func All() []Scenario {
 			Name:  "terminate",
 			Needs: []Capability{SignalExit},
 			Check: expect(Workload{Image: Busybox, Args: []string{"sh", "-c", "echo ready; sleep 30"}, InterruptAfter: "ready", Terminate: true}, 143, Interrupted),
+		},
+		{
+			Name:  "memory limit kills the workload",
+			Needs: []Capability{MemoryLimit},
+			Check: expect(Workload{Image: Busybox, Memory: 128, Args: []string{"sh", "-c", "x=$(yes | head -c 400000000); echo survived"}}, 137, OK),
 		},
 		{
 			Name:    "no network without --net",

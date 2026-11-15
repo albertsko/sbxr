@@ -49,7 +49,7 @@ func TestHVCLITarget(t *testing.T) {
 			Images:   refs,
 			Flags:    hvFlags,
 			Env:      hvEnv(),
-			Caps:     []scenario.Capability{scenario.Stdin, scenario.TTY, scenario.SplitStderr, scenario.SignalExit},
+			Caps:     []scenario.Capability{scenario.Stdin, scenario.TTY, scenario.SplitStderr, scenario.SignalExit, scenario.SpecValidation, scenario.ExactConfig},
 		}
 	})
 }
