@@ -122,6 +122,7 @@ func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string, quiet bo
 	r := &run.Runner{
 		Images:     nil,
 		Checks:     a.backend.Checks(dir),
+		Network:    startNetwork,
 		Isolate:    nil,
 		Exe:        exe,
 		VMEnv:      a.backend.VMEnv,

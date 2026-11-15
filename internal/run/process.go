@@ -50,12 +50,13 @@ func withSignals(ctx context.Context) (context.Context, func()) {
 // It ignores terminal interrupts (see vm.Child), so Ctrl-C ends the run only through the runner.
 //
 // The VM process inherits the cache hold and the run lock, so that sweeps and prune leave the run alone while the VM lives,
-// even after the runner died. Its fds are 3 for the lifeline (see vm.AttachLifeline), 4 for hold, and 5 for lock.
-func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, hold, lock *os.File) (int, error) {
+// even after the runner died. Its fds are 3 for the lifeline (see vm.AttachLifeline), then extra in order:
+// 4 for the hold, 5 for the lock, and 6 (vm.NetFD) for the network socket.
+func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, extra []*os.File) (int, error) {
 	cmd := exec.CommandContext(ctx, r.Exe, vm.ChildArg, dir) //nolint:gosec // Exe is the sbxr binary itself.
 	cmd.Env = append(os.Environ(), r.VMEnv...)
 
-	cmd.ExtraFiles = []*os.File{hold, lock}
+	cmd.ExtraFiles = extra
 
 	release, err := vm.AttachLifeline(cmd)
 	if err != nil {
