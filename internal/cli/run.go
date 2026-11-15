@@ -87,9 +87,8 @@ func splitArgs(args []string) (string, []string) {
 }
 
 func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string, quiet bool) (int, error) {
-	// A write to a closed stdout or stderr pipe would end the process with SIGPIPE, before the run cleans up.
-	// With the signal delivered to a channel, the write fails with EPIPE instead. Notify, unlike Ignore, is not inherited
-	// by the VM process. It stays in place until the process exits, because output copies can outlive the run.
+	// Writes to a closed pipe fail with EPIPE instead of ending sbxr. Notify, not Ignore, keeps the default for the VM process.
+	// The notifier stays active for the whole process.
 	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
 
 	for _, path := range envFiles {
