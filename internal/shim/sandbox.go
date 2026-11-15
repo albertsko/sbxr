@@ -35,7 +35,8 @@ import (
 const (
 	libDir    = "/opt/sbxr/lib"
 	guestRoot = "/opt/sbxr/guest"
-	podsDir   = "/run/sbxr/pods"
+	runDir    = "/run/sbxr"
+	podsDir   = runDir + "/pods"
 )
 
 // bootTimeout bounds the time from the VM start until the guest agent answers.
@@ -77,7 +78,7 @@ func (s *service) CreateSandbox(_ context.Context, req *sandboxAPI.CreateSandbox
 
 	sb := &sandbox{id: req.GetSandboxID(), netns: req.GetNetnsPath(), config: cfg, dir: filepath.Join(podsDir, req.GetSandboxID()), uid: uid, usernsFD: -1, vm: nil, agent: nil, conn: nil, portFwd: nil, createdAt: time.Time{}, exitedAt: time.Time{}}
 
-	err = os.MkdirAll(sb.dir, 0o711) //nolint:gosec // The VM process, another user, reaches its own subdirectories.
+	err = makeTraversable(sb.dir)
 	if err == nil {
 		err = os.WriteFile(filepath.Join(sb.dir, "ids"), []byte(strconv.Itoa(uid)), 0o600)
 	}
@@ -177,7 +178,13 @@ func (s *service) boot(ctx context.Context, sb *sandbox) error {
 
 	sb.usernsFD, err = unix.Open(fmt.Sprintf("/proc/%d/ns/user", pid), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return fmt.Errorf("open VM user namespace: %w", err)
+		// The VM process may have failed already. Its log says why.
+		select {
+		case <-sb.vm.done:
+			return fmt.Errorf("the VM stopped at once: %w; %s", sb.vm.exit, tail(filepath.Join(sb.dir, "vm.log")))
+		case <-time.After(time.Second):
+			return fmt.Errorf("open VM user namespace: %w", err)
+		}
 	}
 
 	return s.connectAgent(ctx, sb)
@@ -358,6 +365,24 @@ func (s *service) ShutdownSandbox(_ context.Context, req *sandboxAPI.ShutdownSan
 	time.AfterFunc(100*time.Millisecond, func() { s.shutdown() })
 
 	return &sandboxAPI.ShutdownSandboxResponse{}, nil
+}
+
+// makeTraversable creates dir and lets every user pass through it and its parents up to /run/sbxr.
+// The VM process runs as another user and must reach its pod directory.
+func makeTraversable(dir string) error {
+	err := os.MkdirAll(dir, 0o711) //nolint:gosec // See above.
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+
+	for d := dir; d != filepath.Dir(runDir); d = filepath.Dir(d) {
+		err = os.Chmod(d, 0o711) //nolint:gosec // Only traversal, no listing.
+		if err != nil {
+			return fmt.Errorf("make %s traversable: %w", d, err)
+		}
+	}
+
+	return nil
 }
 
 // cleanupPod unmounts and removes a pod directory and releases its id range.
