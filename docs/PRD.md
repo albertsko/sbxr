@@ -1,6 +1,6 @@
 # sbxr: Product Requirements
 
-Status: draft, written on the go. Last update: 2026-11-14.
+Status: draft, written on the go. Last update: 2026-11-15.
 
 ## Problem Statement
 
@@ -210,9 +210,10 @@ Delivery has two phases:
 
 - One VM equals one OS process, because `libkrun` takes over the process that starts the VM and exits with the workload's exit code. `libkrun` 2.0 keeps this behavior.
 - The `sbxr run` process (the parent) prepares the run, hosts the network stack, forwards signals and terminal size, and reports the exit code. It starts the VM in a child process, which is a hidden mode of the same `sbxr` binary.
-- On Linux, the child runs inside a new user namespace and mount namespace with the user's subordinate id range mapped. The child re-executes itself after the maps are written.
+- On Linux, `sbxr run` and `sbxr prune` run the preflight checks, then run the same command again inside a new user namespace and mount namespace with the user's subordinate id range mapped. The process inside executes itself once more after the maps are written, because only that execve grants it full capabilities in the namespace. It is the parent described above: it pulls and unpacks images, mounts the run root, and starts the VM process, which inherits the namespaces. The process outside forwards SIGINT, SIGTERM, and SIGHUP and returns the exit code. When it dies, the process inside gets SIGTERM and cleans up.
 - The child's stdin is the user's terminal only with `-i`. Otherwise it is empty.
-- A signal to the parent stops the VM at once (no graceful guest shutdown in the CLI). The parent then exits 130 or 143.
+- A signal to the parent stops the VM at once (no graceful guest shutdown in the CLI). The parent then exits 130 or 143, or 129 after SIGHUP (closed terminal).
+- The VM process gets SIGWINCH from the parent after each terminal resize, because its pseudo-terminal is not its controlling terminal. `libkrun` 1.19.8 applies later resizes only on Linux. On macOS the guest keeps the size from the start.
 - `libkrun` aborts the process on some invalid inputs instead of returning an error. `sbxr` validates every value before it calls `libkrun`, so an abort is always an `sbxr` bug.
 - In Kubernetes phase 2, the containerd shim process is the VM process.
 
@@ -225,7 +226,7 @@ Delivery has two phases:
   - On Linux, the unpack runs inside the user namespace, so files get real mapped ownership. Cache files then belong to subordinate ids, and `sbxr prune` removes them inside the user namespace.
 - Per-run root:
   - On macOS, `sbxr` clones the cached image directory with an APFS clone (about 0.1 s and a few MB for a 250 MB image).
-  - On Linux, `sbxr` mounts an overlay inside the user namespace: the cached image as the lower layer, a per-run upper layer. Upper layers are never reused as lower layers.
+  - On Linux, `sbxr` mounts an overlay inside the user namespace: the cached image as the lower layer, a per-run upper layer, and the `userxattr` option. It uses the file system context API (`fsopen`), so cache paths may contain commas. Upper layers are never reused as lower layers.
 - The guest root is the per-run root, shared over virtio-fs. The exit code comes back through virtio-fs, so the root must be virtio-fs.
 
 ### Workload config
@@ -254,14 +255,14 @@ Delivery has two phases:
 
 Commands:
 
-| Command                                 | Purpose                                                                                 |
-| --------------------------------------- | --------------------------------------------------------------------------------------- |
-| `sbxr run [flags] IMAGE [CMD [ARG...]]` | Run a workload in a new VM, in the foreground, and remove it after exit                 |
-| `sbxr doctor [--json]`                  | Check the machine and print fix commands                                                |
-| `sbxr doctor apparmor-profile`          | Print the AppArmor profile to stdout (Linux)                                            |
-| `sbxr prune [--force]`                  | Remove cached images. Asks for confirmation on a terminal. Requires `--force` otherwise |
-| `sbxr completion SHELL`                 | Print shell completion (from fang)                                                      |
-| `sbxr --version`                        | Print version (from fang)                                                               |
+| Command                                 | Purpose                                                                                                              |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `sbxr run [flags] IMAGE [CMD [ARG...]]` | Run a workload in a new VM, in the foreground, and remove it after exit                                              |
+| `sbxr doctor [--json]`                  | Check the machine and print fix commands                                                                             |
+| `sbxr doctor apparmor-profile`          | Print the AppArmor profile to stdout (Linux)                                                                         |
+| `sbxr prune [--force]`                  | Remove cached images. Asks for confirmation on a terminal. Requires `--force` otherwise. Fails while a run is active |
+| `sbxr completion SHELL`                 | Print shell completion (from fang)                                                                                   |
+| `sbxr --version`                        | Print version (from fang)                                                                                            |
 
 `sbxr` without arguments prints a short usage text with example `run` commands, including one with `--net`.
 
@@ -308,6 +309,7 @@ Exit codes for `sbxr run`:
 | 125           | `sbxr` failed: invalid input, preflight, image, or VM setup |
 | 126           | The command exists in the image but cannot run              |
 | 127           | The command does not exist in the image                     |
+| 129           | Stopped by SIGHUP, for example a closed terminal            |
 | 130           | Interrupted by SIGINT                                       |
 | 143           | Stopped by SIGTERM                                          |
 
@@ -360,7 +362,7 @@ When the `userns` check fails and the AppArmor restriction is on, `sbxr doctor` 
 }
 ```
 
-`status` is `pass` or `fail`. `fix` is present only when `status` is `fail`.
+`status` is `pass` or `fail`. `fix` is present only when `status` is `fail`. The JSON schema is [doctor.schema.json](doctor.schema.json).
 
 ### Networking (CLI)
 
@@ -383,9 +385,11 @@ When the `userns` check fails and the AppArmor restriction is on, `sbxr doctor` 
 States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `exited` -> `cleaned`.
 
 - Any failure before `running` goes to `cleaned` with exit 125.
-- A signal in any state goes to `cleaned` with exit 130 or 143.
+- A signal in any state goes to `cleaned` with exit 130, 143, or 129.
 - `cleaned` is reached on every path: the VM process is gone, the network stack and its listeners are closed, and the per-run root is removed. Run state never outlives the `sbxr run` process.
 - Concurrent runs share the image cache read-only. Writes to the cache (pull, unpack, prune) are locked. Each run has its own root and state.
+- Each run holds a shared lock on the cache from before the pull until its root is removed. `sbxr prune` takes the lock exclusively without waiting, so it fails with a message while any run is active.
+- When the parent dies without cleanup (for example by SIGKILL), the VM process sees its lifeline pipe close, unmounts the run root, removes the run directory, and exits.
 
 ### Kubernetes contract, both phases
 
@@ -459,6 +463,7 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 - The config file writer is tested with property and fuzz tests against a copy of the guest init parser. The hypervisor job also runs the fuzz seed corpus through the real guest init.
 - Hypervisor detection uses the same rules as the `hypervisor` doctor check.
 - `SBXR_REQUIRE_HV=1` turns hypervisor skips into failures. CI sets it on hypervisor jobs.
+- The `fake` and `cli` targets pull the scenario images from a registry inside the test process on `127.0.0.1`, so both exercise pull, cache, and run root. The `fake` target builds them on a fake busybox image. The `cli` target builds them on `mirror.gcr.io/library/busybox`, which serves Docker Hub library images without its rate limit, and is the only external network use of the tests.
 - Every VM test has a hard timeout.
 - On macOS, every test binary that starts a real VM is signed before it runs. CLI tests run the built binary, not in-process commands.
 

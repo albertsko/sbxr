@@ -1,8 +1,8 @@
 # sbxr: Handoff
 
-Status: steps S1 and S2 are done. The PRD stays a living document. Last update: 2026-11-15.
+Status: steps S1 to S4 are done. The PRD stays a living document. Last update: 2026-11-15.
 
-**Next: start step S3, after the A10 spike in "Run first, in parallel".**
+**Next: start step S5 (networking), after the A10 spike in "Run first, in parallel".**
 
 The design decisions in [PRD.md](PRD.md) are final unless a failed assumption or an open question reopens them (see "Changing a decision"). This handoff tells the next engineer or AI agent how to continue. It does not repeat the PRD. When the two disagree, the PRD wins, so fix this handoff.
 
@@ -26,18 +26,25 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 
 ## Current state
 
-- `sbxr run`, `sbxr doctor`, and `sbxr doctor apparmor-profile` work in the fake build (`go build -tags sbxrfake`). The fake build replaces the hypervisor with an interpreter of a small busybox subset and reads images from `SBXR_FAKE_IMAGES`.
-- The release build validates input and runs the `hypervisor` and `cache` doctor checks. Its hypervisor and image store return "not implemented yet" until S3 and S4.
-- `sbxr prune` is a stub until S4. Image `User` values with names fail until S4 adds the `/etc/passwd` lookup.
+- `sbxr run` boots real VMs with `libkrun` on macOS arm64 and on Linux with KVM, without root. `sbxr doctor` runs every check of the PRD contract, and `sbxr run` runs them first. `sbxr prune` works and fails while a run is active.
+- Images come from registries through `internal/image`: pull policy, a cache with a shared run lock, `User` name lookup, and a run root per run (APFS clone on macOS, overlay in the user namespace on Linux).
+- On Linux, `sbxr run` and `sbxr prune` run again inside a user namespace (`internal/userns`) after the checks. See PRD "Process model".
+- The fake build (`-tags sbxrfake`) replaces only the hypervisor and the doctor checks. It pulls images like the release build and keeps ownership in xattrs on every platform, so it needs no user namespace.
+- Not built yet: `--net`, `-p`, and `-v` (S5), progress output for pulls.
 - Packages:
   - `internal/spec`: run input validation, no I/O.
   - `internal/krunconfig`: the config writer.
   - `internal/run`: the run lifecycle, the VM process, stdio, terminal, signals, and cleanup.
-  - `internal/vm`: the VM process side, with the parent lifeline. `internal/vm/fake` is the fake hypervisor, image store, and doctor checks.
-  - `internal/preflight`: doctor checks and the `doctor --json` report.
+  - `internal/vm`: the VM process side, with the parent lifeline. `internal/vm/libkrun` is the `libkrun` binding. `internal/vm/fake` is the fake hypervisor, its busybox image, and its doctor checks.
+  - `internal/hv`: hypervisor detection and the macOS entitlement check, shared by doctor and tests.
+  - `internal/image`: pull, unpack, cache, run root, and the store that the runner uses.
+  - `internal/userns`: the Linux user namespace with `newuidmap` and `newgidmap`, and the `userns` check.
+  - `internal/preflight`: doctor checks and the `doctor --json` report. The schema is [doctor.schema.json](doctor.schema.json).
   - `internal/cli`: cobra, fang, and output. The only package that imports them.
-  - `internal/scenario`: behavior scenarios, the `Target` interface, and the `fake` target. `hv` and `kind` tests skip with "needs run: S3" and "needs run: S7".
-- `mise run ci` passes on macOS and Ubuntu. The CI jobs `check`, `linux-arm64`, and `macos` run the fake target.
+  - `internal/scenario`: behavior scenarios, the scenario images and their registry, and the `fake` and `cli` targets. `kind` tests skip with "needs run: S7".
+- `mise run ci` passes on macOS and Ubuntu. `mise run test:hv` passes on an Apple silicon Mac, in the `hv` job, and in an Ubuntu 24.04 arm64 VM with nested KVM.
+- A cached `sbxr run alpine true` takes about 0.14 s on an M4 Pro Mac (median of 20 runs).
+- Deviation from the S3 plan: no checked-in fixture root. S3 and S4 landed together, and the `cli` target uses pulled busybox images (PRD "Test contract").
 
 ## Development environment
 
@@ -57,7 +64,7 @@ mise run ci
 
 - Add your user to the `kvm` group, so that `/dev/kvm` is readable and writable.
 - Install `uidmap`, and check that your user has a range in `/etc/subuid` and `/etc/subgid`.
-- On Ubuntu 23.10 and later, install the AppArmor profile from PRD "Platforms and dependencies", and install the binary as `/usr/local/bin/sbxr`.
+- On Ubuntu 23.10 and later, install the AppArmor profile from PRD "Platforms and dependencies", and install the binary as `/usr/local/bin/sbxr`. Then run the real VM tests against it: `SBXR_BIN=/usr/local/bin/sbxr mise run test:hv`.
 - No Ubuntu LTS ships `libkrun`. Build it from source with network support, and use the `libkrunfw` release tarball. Alternative: install both with Homebrew on Linux.
 
   ```sh
@@ -79,7 +86,7 @@ mise run ci
 
 ### Signing on macOS
 
-S3 adds this file as `entitlements.plist` at the repository root:
+The repository root has this `entitlements.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -100,7 +107,7 @@ codesign --entitlements entitlements.plist --force -s - ./bin/sbxr
 
 Do not add `--options runtime`. Hardened runtime removes the `DYLD_*` variables at launch, and then `libkrun` cannot find `libkrunfw` (tested). PRD "Distribution" lists the options for a later notarized release.
 
-S3 also adds a small wrapper script for `go test -exec`. It signs the test binary and then runs it, so tests that start real VMs work on macOS. Pass it as an absolute path, because `go test` runs the `-exec` program from the package directory:
+`scripts/gotest-exec.sh` is a small wrapper for `go test -exec`. It signs the test binary and then runs it, so tests that start real VMs work on macOS. Pass it as an absolute path, because `go test` runs the `-exec` program from the package directory:
 
 ```sh
 go test -tags hv -exec "$PWD/scripts/gotest-exec.sh" -count=1 ./internal/vm/libkrun/...
@@ -302,13 +309,17 @@ A step or pull request is done when:
 - **The workload is not PID 1** under the `libkrun` built-in init, so a signal that the workload sends to itself can end it.
 - **TSI exposes every guest listener on the host, and no setting limits it.** The CLI never uses TSI. "No network" mode disables socket forwarding and adds no network device. Phase 1 Kubernetes uses TSI inside the pod network namespace.
 - **The userspace network stack dials any destination.** In testing, guest UDP to `0.0.0.0` reached a host loopback service. Do not ship `--net` without the egress guard.
-- **Go's built-in user namespace mapping writes only one mapping.** Use `newuidmap` and `newgidmap`, and re-execute the VM process only after the maps are written.
+- **Go's built-in user namespace mapping writes only one mapping.** Use `newuidmap` and `newgidmap`, and re-execute only after the maps are written. The execve as mapped uid 0 also clears the parent death signal, so `internal/userns` sets it again.
 - **kind resets `/dev/kvm` permissions** when it creates a cluster. Run `sudo chmod 666 /dev/kvm` after `kind create cluster`.
 - **The spike built the phase 1 node bundle inside the kind node image** (`kindest/node:v1.37.0`, Debian with glibc 2.41). Such a build does not run on nodes with an older glibc. The product bundle needs an old glibc baseline (assumption A2). `crun` also needs `libjson-c`, which the kind node image lacks.
 - **Kubernetes rewrites `$$` to `$`** in pod commands. Write `$$$$` in test pod specs.
 - **fang queries the terminal color on every help and error render.** The workaround in PRD "Further Notes" keeps workload output safe only if stdout is restored before any workload runs. Restore it inside the `run` command, not in a persistent hook, because hooks also run for `sbxr help` and would bring the color query back.
 - **The race detector needs cgo.** The release binary builds with cgo off. Build the binary that the `cli` target tests with `CGO_ENABLED=0`, the same as the release.
-- **The `-t` terminal is not the VM process's controlling terminal.** When a controlling process exits, the kernel hangs the terminal up, and macOS then drops unread output. Without `-i`, the VM process's stdin is empty. Check in S3 that `libkrun` sets up its console from stdout in that case.
+- **The `-t` terminal is not the VM process's controlling terminal.** When a controlling process exits, the kernel hangs the terminal up, and macOS then drops unread output. Without `-i`, the VM process's stdin is empty, and `libkrun` still sets up its console from stdout (checked with real VMs). Resizes do not signal the VM process by themselves, so the parent sends it SIGWINCH.
+- **`libkrun` 1.19.8 forwards terminal resizes only on Linux.** On macOS the guest keeps the size from the start.
+- **The guest init prints "Couldn't bind timesync socket" with `-t` on macOS,** because the VM has no vsock device. Without `-t` the line stays in an unflushed buffer and never appears.
+- **`newgidmap` maps only the user's primary group.** Under `sg kvm` the process gid differs and the `userns` check fails. Log in again after `usermod -aG kvm` (or use `sudo -iu "$USER"`) instead.
+- **On Linux, image cache files belong to subordinate ids.** Remove a cache directory with `sbxr prune --force` (with `SBXR_CACHE_DIR` set), not `rm -rf`. Tests may leave such directories in the temporary directory.
 - **CI shuffles and parallelizes tests.** Publish tests must bind port 0. Cleanup checks must look only at the test's own run directory and processes, not at every process on the host.
 
 ## Evidence
