@@ -65,6 +65,7 @@ mise run ci
 - Add your user to the `kvm` group, so that `/dev/kvm` is readable and writable.
 - Install `uidmap`, and check that your user has a range in `/etc/subuid` and `/etc/subgid`.
 - On Ubuntu 23.10 and later, install the AppArmor profile from PRD "Platforms and dependencies", and install the binary as `/usr/local/bin/sbxr`. Then run the real VM tests against it: `SBXR_BIN=/usr/local/bin/sbxr mise run test:hv`.
+- In a Linux VM that shares the checkout with a Mac (for example Lima), do not run `mise run build`, because it overwrites the Mac's `bin/sbxr`. Build to a private path instead: `CGO_ENABLED=0 go build -o /tmp/sbxr ./cmd/sbxr && sudo install -m 755 /tmp/sbxr /usr/local/bin/sbxr`.
 - No Ubuntu LTS ships `libkrun`. Build it from source with network support, and use the `libkrunfw` release tarball. Alternative: install both with Homebrew on Linux.
 
   ```sh
