@@ -43,7 +43,7 @@ The DaemonSet runs on every node. On each node, it:
 2. Runs preflight: `/dev/kvm`, glibc, containerd version, main config version, an `imports` entry that covers the drop-in directory, the Linux version, `/dev/net/tun`, and the `kubelet` id range. It reserves the `sbxr` id range in `/etc/subuid` and `/etc/subgid`.
 3. On failure, changes nothing and writes the reason to the node annotation `sbxr.dev/preflight`. It never edits a main containerd config.
 4. Copies the bundle to a new directory below `/opt/sbxr.old`, checks every file against its SHA-256, and swaps it with `/opt/sbxr`, so the previous bundle stays in `/opt/sbxr.old` (see "Upgrade"), and links the shim to `/usr/local/bin/containerd-shim-sbxr-v1`, because containerd finds a sandboxer shim only by its name. Then it writes the drop-in `sbxr.toml` atomically, under a host lock, and restarts the containerd unit only when the drop-in changed.
-5. Waits until the unit is active and the kubelet posts a node status, after the restart, that lists runtime handler `sbxr`. Then it sets the label `sbxr.dev/ready=true`. If the restart or this check fails, it restores the previous drop-in (or removes it) and restarts containerd again.
+5. Waits until the unit is active and the restarted containerd serves runtime handler `sbxr`, which it asks through the CRI `Status` call on the containerd socket. Then it sets the label `sbxr.dev/ready=true`. If the restart or this check fails, it restores the previous drop-in (or removes it) and restarts containerd again.
 
 Read the result of a node:
 
@@ -53,7 +53,7 @@ kubectl get node NODE -o jsonpath='{.metadata.annotations.sbxr\.dev/preflight}'
 
 To retry after you fix a node, run `kubectl -n sbxr-system rollout restart ds/sbxr-node`.
 
-A first install takes seconds per node, because only the restarted containerd can list handler `sbxr`. When an `sbxr` drop-in already existed, the installer waits for a node status that the kubelet posts at least 10 seconds after the restart, which can take up to 5 minutes, so an upgrade rolls through the nodes at up to about 6 minutes each. An unchanged bundle and drop-in cause no copy and no restart.
+An install takes seconds per node, an upgrade too: the installer asks containerd itself, so it does not wait for the kubelet to post a node status. It gives the restarted containerd up to 1 minute to serve the handler. An unchanged bundle and drop-in cause no copy and no restart.
 
 ## Use
 
@@ -129,7 +129,7 @@ kubectl -n sbxr-system rollout status ds/sbxr-node
 kubectl delete -f https://github.com/albertsko/sbxr/releases/latest/download/sbxr-uninstall.yaml
 ```
 
-The first command replaces the installer with a DaemonSet that removes the label and annotation, removes the drop-in of every supported distribution, restarts containerd, and removes `/opt/sbxr` and `/opt/sbxr.old`. It also removes the shim link and the `sbxr` id range. While `sbxr` pods still exist (a directory under `/run/sbxr/pods`, or phase 1 state under `/run/sbxr/runc`), or a process still uses a retired bundle, or when containerd cannot restart, it keeps `/opt/sbxr`, writes the reason to `sbxr.dev/preflight`, and retries. It keeps `/run/sbxr.lock`, which goes away at reboot, and `/var/lib/sbxr/verify-after`, a timestamp that makes a later reinstall wait for a node status newer than this restart. If the node clock was ahead when that timestamp was written, delete the file to reinstall at once. The last command removes the RuntimeClass, the policies, and the namespace.
+The first command replaces the installer with a DaemonSet that removes the label and annotation, removes the drop-in of every supported distribution, restarts containerd, and removes `/opt/sbxr` and `/opt/sbxr.old`. It also removes the shim link and the `sbxr` id range. While `sbxr` pods still exist (a directory under `/run/sbxr/pods`, or phase 1 state under `/run/sbxr/runc`), or a process still uses a retired bundle, or when containerd cannot restart, it keeps `/opt/sbxr`, writes the reason to `sbxr.dev/preflight`, and retries. It keeps `/run/sbxr.lock`, which goes away at reboot. It removes `/var/lib/sbxr/verify-after`, which older installers left. The last command removes the RuntimeClass, the policies, and the namespace.
 
 ## kind
 
