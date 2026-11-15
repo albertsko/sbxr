@@ -74,7 +74,9 @@ func (r *reaper) dispatch(pid int, e exit) {
 	defer r.mu.Unlock()
 
 	for s := range r.subs {
-		s.deliver(pid, e)
+		if s.deliver(pid, e) {
+			delete(r.subs, s)
+		}
 	}
 }
 
@@ -89,7 +91,8 @@ func (r *reaper) subscribe() *subscription {
 	return s
 }
 
-func (s *subscription) deliver(pid int, e exit) {
+// deliver records the exit of pid and reports whether the subscription got its own exit and is done.
+func (s *subscription) deliver(pid int, e exit) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -98,7 +101,11 @@ func (s *subscription) deliver(pid int, e exit) {
 		s.early = append(s.early, pidExit{pid: pid, e: e})
 	case pid:
 		s.finish(e)
+
+		return true
 	}
+
+	return false
 }
 
 // finish sends the exit once. The caller holds s.mu.
@@ -110,15 +117,12 @@ func (s *subscription) finish(e exit) {
 
 	s.pid = -1 // Nothing more to deliver.
 	s.early = nil
-
-	go s.close() // dispatch holds the reaper lock.
 }
 
 // wait names the process's pid and returns a channel that receives its exit, also when the process already exited.
 // The latest early exit of pid counts: an earlier one belongs to a process that had the pid before.
 func (s *subscription) wait(pid int) <-chan exit {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	var (
 		last  exit
@@ -135,6 +139,13 @@ func (s *subscription) wait(pid int) <-chan exit {
 
 	if found {
 		s.finish(last)
+	}
+
+	s.mu.Unlock()
+
+	// The reaper lock comes before the subscription lock, so close only after unlocking.
+	if found {
+		s.close()
 	}
 
 	return s.done

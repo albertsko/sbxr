@@ -42,31 +42,36 @@ func TestReaperPIDReuse(t *testing.T) {
 func TestReaperEarlyExit(t *testing.T) {
 	t.Parallel()
 
-	r := newReaper()
-	sub := r.subscribe()
+	synctest.Test(t, func(t *testing.T) {
+		r := newReaper()
+		sub := r.subscribe()
 
-	r.dispatch(7, exit{Status: 1, At: time.Now()}) // An earlier process with pid 7.
-	r.dispatch(8, exit{Status: 2, At: time.Now()})
-	r.dispatch(7, exit{Status: 3, At: time.Now()}) // The subscribed process.
+		r.dispatch(7, exit{Status: 1, At: time.Now()}) // An earlier process with pid 7.
+		r.dispatch(8, exit{Status: 2, At: time.Now()})
+		r.dispatch(7, exit{Status: 3, At: time.Now()}) // The subscribed process.
 
-	if e := <-sub.wait(7); e.Status != 3 {
-		t.Errorf("exit %d, want 3", e.Status)
-	}
+		if e := <-sub.wait(7); e.Status != 3 {
+			t.Errorf("exit %d, want 3", e.Status)
+		}
 
-	// The finished subscription goes away, and later exits are dropped.
-	deadline := time.Now().Add(5 * time.Second)
+		// A process that exits after wait also ends its subscription.
+		late := r.subscribe()
+		ch := late.wait(9)
 
-	for time.Now().Before(deadline) {
+		r.dispatch(9, exit{Status: 4, At: time.Now()})
+
+		if e := <-ch; e.Status != 4 {
+			t.Errorf("late exit %d, want 4", e.Status)
+		}
+
+		synctest.Wait()
+
 		r.mu.Lock()
 		n := len(r.subs)
 		r.mu.Unlock()
 
-		if n == 0 {
-			return
+		if n != 0 {
+			t.Errorf("%d finished subscriptions stay, want none", n)
 		}
-
-		time.Sleep(time.Millisecond)
-	}
-
-	t.Error("the finished subscription stays")
+	})
 }
