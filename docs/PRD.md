@@ -403,7 +403,7 @@ On Linux, a text report with a failed check ends with the setup block from "Dist
 - Resource limits: each run allows at most 1024 established TCP connections and 256 UDP flows. Past the cap, new TCP connections get a reset and new UDP flows are dropped. The library alone limits only half-open TCP connections, and in testing a guest held 2000 connections, each costing one host file descriptor.
 - Published connections and DNS TCP connections count against the TCP cap. A published or DNS TCP connection past the cap gets a reset.
 - Gateway DNS: at most 64 queries resolve at once, and further queries are dropped. Each query has a 2-second timeout. A queries go to the host resolver, AAAA queries get an empty answer because the guest has no IPv6 route, and other types go to the nameservers in `/etc/resolv.conf`. Forwarded queries are rebuilt with one `IN` question, recursion desired, and no guest options. A truncated UDP answer is asked again over TCP. The gateway refuses non-`IN` classes and does not implement other opcodes or zone transfers.
-- The core defines a network backend interface. The userspace stack is one adapter used by the CLI. The phase 2 TAP network is another adapter. The core and the fake test VM do not depend on the userspace stack.
+- The core defines a network backend interface. The userspace stack is one adapter used by the CLI. The phase 2 TAP network is no adapter of it: it lives in `internal/podnet`, which only the shim and the agent use. The core and the fake test VM do not depend on the userspace stack.
 
 ### Run lifecycle
 

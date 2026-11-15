@@ -1,8 +1,8 @@
 # sbxr: Handoff
 
-Status: steps S1 to S7 are done. The PRD stays a living document. Last update: 2026-11-15.
+Status: steps S1 to S8 are done. The PRD stays a living document. Last update: 2026-11-15.
 
-**Next: step S8 (Kubernetes phase 2).**
+**Next: no build step is open.** Open questions and assumptions in the PRD remain.
 
 The design decisions in [PRD.md](PRD.md) are final unless a failed assumption or an open question reopens them (see "Changing a decision"). This handoff tells the next engineer or AI agent how to continue. It does not repeat the PRD. When the two disagree, the PRD wins, so fix this handoff.
 
@@ -47,7 +47,7 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
   - `internal/userns`: the Linux user namespace with `newuidmap` and `newgidmap`, and the `userns` check.
   - `internal/preflight`: doctor checks and the `doctor --json` report. The schema is [doctor.schema.json](doctor.schema.json).
   - `internal/cli`: cobra, fang, and output. The only package that imports them.
-  - `internal/scenario`: behavior scenarios, the scenario images and their registry, the `fake` and `cli` targets, and the `k8s-p1` target (build tag `kind`).
+  - `internal/scenario`: behavior scenarios, the scenario images and their registry, the `fake` and `cli` targets, and the `k8s-p1` and `k8s-p2` targets (build tag `kind`).
   - `internal/node` and `cmd/sbxr-node`: the node installer for phase 1 and phase 2 (`SBXR_PHASE`, default 2). `deploy/node` builds its image, with the node bundle, and holds the manifest template. [kubernetes.md](kubernetes.md) is the user guide.
   - `internal/shim` and `cmd/containerd-shim-sbxr-v1`: the phase 2 containerd shim (sandbox and task APIs) and, in its hidden `vm` mode, the VM process.
   - `internal/agent` and `cmd/sbxr-agent`: the phase 2 guest agent. `internal/podvm` is the contract between the shim and the agent. `internal/podnet` moves the pod network to a TAP device.
@@ -292,7 +292,7 @@ The PRD requires a core with no CLI, Kubernetes, or network-stack code (user sto
 - **Run spec and validation:** the run request and every input check. No I/O.
 - **Lifecycle runner:** the run states from PRD "Run lifecycle" and the cleanup guarantee.
 - **VM backend interface:** with a `fake` adapter (S1) and a `libkrun` adapter (S3).
-- **Network backend interface:** with the userspace network stack adapter (S5) and later the TAP adapter (S8).
+- **Network backend interface:** with the userspace network stack adapter (S5). The phase 2 TAP network lives outside the core, in `internal/podnet`.
 - **Image cache and root filesystem:** pull, unpack, per-run root.
 - **Preflight:** checks shared by `doctor` and `run`.
 - **Config writer.**
