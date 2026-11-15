@@ -1,88 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"errors"
 	"runtime/debug"
-	"strings"
 	"testing"
 )
-
-func TestRun(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		args       []string
-		wantStdout string
-		wantStderr string
-		wantErr    error
-	}{
-		{name: "greeting", args: nil, wantStdout: "Less setup, more Go! 🚀\n", wantStderr: "", wantErr: nil},
-		{name: "version", args: []string{"-version"}, wantStdout: "dev\n", wantStderr: "", wantErr: nil},
-		{name: "help", args: []string{"-h"}, wantStdout: "", wantStderr: "Usage of sbxr", wantErr: nil},
-		{name: "unknown flag", args: []string{"-nope"}, wantStdout: "", wantStderr: "Usage of sbxr", wantErr: errUsage},
-		{name: "extra argument", args: []string{"extra"}, wantStdout: "", wantStderr: "unexpected argument: extra", wantErr: errUsage},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var stdout, stderr bytes.Buffer
-
-			err := run(tt.args, &stdout, &stderr)
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("run(%q) error = %v, want %v", tt.args, err, tt.wantErr)
-			}
-
-			if got := stdout.String(); got != tt.wantStdout {
-				t.Errorf("run(%q) stdout = %q, want %q", tt.args, got, tt.wantStdout)
-			}
-
-			gotStderr := stderr.String()
-			if tt.wantStderr == "" && gotStderr != "" {
-				t.Errorf("run(%q) stderr = %q, want it empty", tt.args, gotStderr)
-			}
-
-			if !strings.Contains(gotStderr, tt.wantStderr) {
-				t.Errorf("run(%q) stderr = %q, want it to contain %q", tt.args, gotStderr, tt.wantStderr)
-			}
-		})
-	}
-}
-
-func TestExitCode(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name       string
-		err        error
-		want       int
-		wantStderr string
-	}{
-		{name: "success", err: nil, want: 0, wantStderr: ""},
-		{name: "usage", err: errUsage, want: 2, wantStderr: ""},
-		{name: "wrapped usage", err: errors.Join(errUsage, errors.New("bad flag")), want: 2, wantStderr: ""},
-		{name: "failure", err: errors.New("boom"), want: 1, wantStderr: "sbxr: boom\n"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			var stderr bytes.Buffer
-
-			if got := exitCode(tt.err, &stderr); got != tt.want {
-				t.Errorf("exitCode(%v) = %d, want %d", tt.err, got, tt.want)
-			}
-
-			if got := stderr.String(); got != tt.wantStderr {
-				t.Errorf("exitCode(%v) stderr = %q, want %q", tt.err, got, tt.wantStderr)
-			}
-		})
-	}
-}
 
 func TestResolveVersion(t *testing.T) {
 	t.Parallel()

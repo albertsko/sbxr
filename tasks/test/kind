@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run the scenarios against a kind cluster. Skips without a hypervisor unless SBXR_REQUIRE_HV=1"
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
+
+exec go test -tags kind -count=1 -run '^TestKind' ./internal/scenario "$@"

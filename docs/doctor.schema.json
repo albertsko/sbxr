@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/albertsko/sbxr/docs/doctor.schema.json",
+  "title": "sbxr doctor --json",
+  "description": "The report of sbxr doctor --json, schema version 1. See PRD \"sbxr doctor contract\".",
+  "type": "object",
+  "required": ["schemaVersion", "ok", "checks"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "ok": { "type": "boolean", "description": "True when every check passed." },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/check" }
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "required": ["id", "status", "detail"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "enum": ["hypervisor", "libkrun", "libkrunfw", "entitlement", "userns", "cache"] },
+        "status": { "enum": ["pass", "fail"] },
+        "detail": { "type": "string", "minLength": 1 },
+        "fix": { "type": "string", "minLength": 1 }
+      },
+      "if": { "properties": { "status": { "const": "fail" } } },
+      "then": { "required": ["fix"] },
+      "else": { "not": { "required": ["fix"] } }
+    }
+  }
+}

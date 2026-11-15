@@ -1,6 +1,6 @@
 # sbxr: Product Requirements
 
-Status: draft, written on the go. Last update: 2026-11-14.
+Status: draft, written on the go. Last update: 2026-11-15.
 
 ## Problem Statement
 
@@ -185,7 +185,7 @@ Delivery has two phases:
 - VMM: `libkrun` 1.x, minimum 1.19.8, and its `libkrunfw` kernel bundle, minimum 5.6.4. On Linux, `libkrun` must be built with network support (`NET=1`). One such build serves every Linux use; it behaves the same as a build without network support when no network device is added.
 - `sbxr` loads `libkrun` at runtime with `purego`. The binary builds with cgo off.
 - `sbxr` opens `libkrun` by its ABI 1 file name (`libkrun.so.1`, `libkrun.1.dylib`) as an absolute path in the library directory, never by bare name and never the unversioned link. A `libkrun` 2.x install is never loaded by mistake.
-- `libkrun` has no runtime version query. `sbxr` validates `libkrun` by checking that every required symbol exists, including the network functions, and validates `libkrunfw` by its reported version. A missing symbol or an old `libkrunfw` is a preflight failure.
+- `libkrun` has no runtime version query. `sbxr` validates `libkrun` by checking that every required symbol exists, including the network functions, and validates `libkrunfw` by its version. `krunfw_get_version` reports only the ABI version (5), so `sbxr` reads the full version from the resolved library path: `libkrunfw.so.5.6.4` on Linux, `Cellar/libkrunfw/5.6.4/` from Homebrew. A missing symbol or an old `libkrunfw` is a preflight failure.
 - Library directory: `SBXR_LIB_DIR` when set, otherwise the first of `/opt/homebrew/lib` (macOS), `/home/linuxbrew/.linuxbrew/lib`, `/usr/local/lib`, and the system library path that contains both `libkrun` and `libkrunfw`. `libkrun` loads `libkrunfw` by name, so the VM process starts with the library search path set to that directory.
 - macOS signing (v1): the `sbxr` binary is signed ad hoc, without hardened runtime, with one entitlement, `com.apple.security.hypervisor`. Hardened runtime is not used, because it removes the `DYLD_*` variables that `libkrun` needs to find `libkrunfw`, and `libkrun` offers no other way to pass that path. Without hardened runtime, macOS does not enforce library validation, so no other entitlement is needed. Every build, including test binaries, is signed. An unsigned binary fails the `entitlement` check instead of failing at VM start.
 - Linux: `sbxr` runs without root. It needs read-write access to `/dev/kvm` (usually the `kvm` group), `newuidmap` and `newgidmap` (package `uidmap`), and a subordinate uid and gid range for the user. `sbxr` maps ids with those helpers, because one direct mapping cannot cover image ids such as gid 42.
@@ -210,9 +210,12 @@ Delivery has two phases:
 
 - One VM equals one OS process, because `libkrun` takes over the process that starts the VM and exits with the workload's exit code. `libkrun` 2.0 keeps this behavior.
 - The `sbxr run` process (the parent) prepares the run, hosts the network stack, forwards signals and terminal size, and reports the exit code. It starts the VM in a child process, which is a hidden mode of the same `sbxr` binary.
-- On Linux, the child runs inside a new user namespace and mount namespace with the user's subordinate id range mapped. The child re-executes itself after the maps are written.
-- The child's stdin is the user's terminal only with `-i`. Otherwise it is empty.
-- A signal to the parent stops the VM at once (no graceful guest shutdown in the CLI). The parent then exits 130 or 143.
+- On Linux, `sbxr run` and `sbxr prune` run the preflight checks, then run the same command again inside a new user namespace and mount namespace with the user's subordinate id range mapped. The process inside executes itself once more after the maps are written, because only that execve grants it full capabilities in the namespace. It is the parent described above: it pulls and unpacks images, mounts the run root, and starts the VM process, which inherits the namespaces. The process outside forwards SIGINT, SIGTERM, and SIGHUP and returns the exit code. When it dies, the process inside gets SIGTERM and cleans up.
+- The child's stdin carries the user's input only with `-i`. Otherwise it is empty. Without `-t`, the parent relays stdin (with `-i`), stdout, and stderr through pipes, so the VM process never sees a terminal. When a write to stdout fails because its reader went away (EPIPE), the parent stops the VM like a signal does, cleans up, and exits 141 without an `sbxr` error line. Failed writes to stderr are ignored. `libkrun` sends output to a terminal through its console, which would mix the streams and lose stderr when only stdout is redirected.
+- A signal to the parent stops the VM at once (no graceful guest shutdown in the CLI). The parent then exits 130 or 143, or 129 after SIGHUP (closed terminal).
+- The VM process ignores SIGINT, SIGQUIT, and SIGHUP, so terminal signals end a run only through the parent, which removes the run state. A VM process that a signal ends anyway is an `sbxr` failure: exit 125 and `sbxr: vm: the VM process was killed by signal N; run again with --debug and report a bug`.
+- With `-i -t`, the parent restores the user's terminal mode as soon as the VM process exits, so that Ctrl-C can end a drain of terminal output that a slow reader holds back.
+- The VM process gets SIGWINCH from the parent after each terminal resize, because its pseudo-terminal is not its controlling terminal. `libkrun` 1.19.8 applies later resizes only on Linux. On macOS the guest keeps the size from the start.
 - `libkrun` aborts the process on some invalid inputs instead of returning an error. `sbxr` validates every value before it calls `libkrun`, so an abort is always an `sbxr` bug.
 - In Kubernetes phase 2, the containerd shim process is the VM process.
 
@@ -225,13 +228,14 @@ Delivery has two phases:
   - On Linux, the unpack runs inside the user namespace, so files get real mapped ownership. Cache files then belong to subordinate ids, and `sbxr prune` removes them inside the user namespace.
 - Per-run root:
   - On macOS, `sbxr` clones the cached image directory with an APFS clone (about 0.1 s and a few MB for a 250 MB image).
-  - On Linux, `sbxr` mounts an overlay inside the user namespace: the cached image as the lower layer, a per-run upper layer. Upper layers are never reused as lower layers.
+  - On Linux, `sbxr` mounts an overlay inside the user namespace: the cached image as the lower layer, a per-run upper layer, and the `userxattr` option. It uses the file system context API (`fsopen`), so cache paths may contain commas. Upper layers are never reused as lower layers.
 - The guest root is the per-run root, shared over virtio-fs. The exit code comes back through virtio-fs, so the root must be virtio-fs.
 
 ### Workload config
 
 - The workload command, env, working directory, uid, and gid reach the guest through a config file, `/.krun_config.json`, that `sbxr` writes into the per-run root. The kernel command line is not used, because it breaks on quotes and non-ASCII text and lets values override the file.
-- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device or disable socket forwarding, start. `sbxr` never calls the functions that set the exec command, working directory, or resource limits, and never passes a NULL env list or NULL port map.
+- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device (with `--net`), disable the implicit vsock device, on macOS add a vsock device without TSI features and without port map (it carries only the host time sync to the guest init), make the virtual terminal `tty0` the kernel console (only when no stdio stream is a terminal), start.
+- The `tty0` kernel console works around a `libkrun` 1.19.8 race. The default console `hvc0` appears only after a virtio handshake with the VM process. Under host load, the guest kernel starts the init before `hvc0` exists, the init starts with closed stdio, and its redirect to the `krun-stdout` port then leaves the workload without stdout (EBADF, about 1 in 4 runs with 16 parallel VMs on an M4 Pro Mac). `tty0` registers at boot on every architecture and shows nothing, so the init always has stdio. A rarer second race remains: when the guest init looks for the named ports before the handshake names them, the workload writes to the console, and its output is lost (about 1 in 80 runs at that load, none in 200 runs with 8 parallel VMs). With `-t`, the console is the workload's terminal, so it stays `hvc0` and only the first race applies. `libkrun` main fixed the closed-stdio case in its new init (upstream issue 749). `sbxr` never calls the functions that set the exec command, working directory, resource limits, or port map, and never passes a NULL env list.
 - The guest init parser treats any string as a possible key and takes the first match. The writer therefore follows this contract:
   - Keys appear once each, in this order: `uid`, `gid`, `WorkingDir`, `Env`, `Entrypoint` (always empty), `args`.
   - `uid` and `gid` are non-empty decimal strings. An empty uid would run the workload as root.
@@ -254,14 +258,14 @@ Delivery has two phases:
 
 Commands:
 
-| Command                                 | Purpose                                                                                 |
-| --------------------------------------- | --------------------------------------------------------------------------------------- |
-| `sbxr run [flags] IMAGE [CMD [ARG...]]` | Run a workload in a new VM, in the foreground, and remove it after exit                 |
-| `sbxr doctor [--json]`                  | Check the machine and print fix commands                                                |
-| `sbxr doctor apparmor-profile`          | Print the AppArmor profile to stdout (Linux)                                            |
-| `sbxr prune [--force]`                  | Remove cached images. Asks for confirmation on a terminal. Requires `--force` otherwise |
-| `sbxr completion SHELL`                 | Print shell completion (from fang)                                                      |
-| `sbxr --version`                        | Print version (from fang)                                                               |
+| Command                                 | Purpose                                                                                                              |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `sbxr run [flags] IMAGE [CMD [ARG...]]` | Run a workload in a new VM, in the foreground, and remove it after exit                                              |
+| `sbxr doctor [--json]`                  | Check the machine and print fix commands                                                                             |
+| `sbxr doctor apparmor-profile`          | Print the AppArmor profile to stdout (Linux)                                                                         |
+| `sbxr prune [--force]`                  | Remove cached images. Asks for confirmation on a terminal. Requires `--force` otherwise. Fails while a run is active |
+| `sbxr completion SHELL`                 | Print shell completion (from fang)                                                                                   |
+| `sbxr --version`                        | Print version (from fang)                                                                                            |
 
 `sbxr` without arguments prints a short usage text with example `run` commands, including one with `--net`.
 
@@ -308,7 +312,9 @@ Exit codes for `sbxr run`:
 | 125           | `sbxr` failed: invalid input, preflight, image, or VM setup |
 | 126           | The command exists in the image but cannot run              |
 | 127           | The command does not exist in the image                     |
+| 129           | Stopped by SIGHUP, for example a closed terminal            |
 | 130           | Interrupted by SIGINT                                       |
+| 141           | The reader of stdout went away, like SIGPIPE in a pipeline  |
 | 143           | Stopped by SIGTERM                                          |
 
 A workload that exits 125, 126, or 127 cannot be told apart from an `sbxr` failure by exit code. `sbxr` failures always print a message that starts with `sbxr:` on stderr. Other commands exit 0 on success, 1 on failure, and 2 on usage errors.
@@ -317,7 +323,7 @@ Output streams:
 
 - stdout carries only workload output (`run`) or the command result (`doctor --json`, `doctor apparmor-profile`).
 - stderr carries logs, progress, warnings, and errors.
-- Progress shows only when stderr is a terminal. `run` prints nothing of its own on success unless `--debug` is set. With `--debug`, each published port is logged, for example `published 127.0.0.1:8080 -> 80/tcp`.
+- Progress shows only when stderr is a terminal and `-q` is not set: one line, `Pulling IMAGE: layer N/M, X MB`, redrawn in place and cleared when the pull ends. It uses no escape codes. `run` prints nothing of its own on success unless `--debug` is set. With `--debug`, each published port is logged, for example `published 127.0.0.1:8080 -> 80/tcp`.
 - Errors are one line: `sbxr: <source> <quoted value>: <problem>; <fix>`, colored only on a terminal. Values are quoted so that control characters are visible. Examples:
 
   ```text
@@ -335,7 +341,7 @@ Output streams:
 | ------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
 | `hypervisor`  | all      | `kern.hv_support` is 1 (macOS), or `/dev/kvm` opens read-write and reports API version 12 (Linux)                |
 | `libkrun`     | all      | The ABI 1 library loads from the library directory and exports every required symbol                             |
-| `libkrunfw`   | all      | The library loads and reports version 5.6.4 or later                                                             |
+| `libkrunfw`   | all      | The library loads, reports ABI version 5, and its resolved path shows version 5.6.4 or later                     |
 | `entitlement` | macOS    | The running binary is signed with the hypervisor entitlement                                                     |
 | `userns`      | Linux    | Inside a new user namespace with the user's subordinate ids, a chown to uid 0 gid 42 and a private mount succeed |
 | `cache`       | all      | The cache directory is writable                                                                                  |
@@ -360,11 +366,11 @@ When the `userns` check fails and the AppArmor restriction is on, `sbxr doctor` 
 }
 ```
 
-`status` is `pass` or `fail`. `fix` is present only when `status` is `fail`.
+`status` is `pass` or `fail`. `fix` is present only when `status` is `fail`. The JSON schema is [doctor.schema.json](doctor.schema.json).
 
 ### Networking (CLI)
 
-- Default: no network. The VM has no network device and socket forwarding is disabled, so the guest can neither connect out nor listen on the host.
+- Default: no network. The VM has no network device, and its vsock device (macOS only) has no TSI features and no port map, so socket forwarding (TSI) is off and the guest can neither connect out nor listen on the host. A real-VM test checks TCP in both directions and a vsock connection to the host.
 - `--net`: the guest gets a virtio-net device connected to a userspace network stack inside the `sbxr` parent process. The guest configures itself with DHCP and uses the stack's gateway for DNS. No helper binary and no socket file are involved.
 - `libkrun` socket forwarding (TSI) is never used for CLI networking, because it exposes every guest listener on all host interfaces and cannot be limited.
 - Egress policy, enforced by `sbxr` for every new TCP connection and UDP flow:
@@ -383,9 +389,12 @@ When the `userns` check fails and the AppArmor restriction is on, `sbxr doctor` 
 States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `exited` -> `cleaned`.
 
 - Any failure before `running` goes to `cleaned` with exit 125.
-- A signal in any state goes to `cleaned` with exit 130 or 143.
+- A signal in any state goes to `cleaned` with exit 130, 143, or 129.
 - `cleaned` is reached on every path: the VM process is gone, the network stack and its listeners are closed, and the per-run root is removed. Run state never outlives the `sbxr run` process.
 - Concurrent runs share the image cache read-only. Writes to the cache (pull, unpack, prune) are locked. Each run has its own root and state.
+- Each run holds a shared lock on the cache from before the pull until its root is removed. `sbxr prune` takes the lock exclusively without waiting, so it fails with a message while any run is active.
+- When the parent dies without cleanup (for example by SIGKILL), the VM process sees its lifeline pipe close, unmounts the run root, removes the run directory, and exits.
+- Each run holds an exclusive lock on a lock file next to its run directory from before the directory exists. The VM process inherits this lock and the shared cache lock, so a VM that outlives its parent keeps its run root and the cache. When the parent and the VM process both die, `sbxr run` and `sbxr prune` remove the run directories whose lock is free.
 
 ### Kubernetes contract, both phases
 
@@ -456,9 +465,10 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 - Scenarios assert on behavior: stdout (or combined output), exit code, and a target-neutral error class. Error classes: `ok`, `invalid-spec`, `image`, `preflight`, `not-found`, `not-executable`, `interrupted`. Each target maps its own signals to these classes. Scenarios never assert the order across stdout and stderr.
 - After each scenario, the target verifies that no VM process, network listener, pod, or run state remains.
 - The fake target runs the real userspace network stack against a small simulated guest network, so port publishing, egress blocking, and cleanup are tested without a hypervisor.
-- The config file writer is tested with property and fuzz tests against a copy of the guest init parser. The hypervisor job also runs the fuzz seed corpus through the real guest init.
+- The config file writer is tested with property and fuzz tests against a copy of the guest init parser. The seed corpus lives in `internal/krunconfig/testdata/fuzz/FuzzMarshal`. The hypervisor job also boots every seed that the writer accepts through the real guest init and compares the arguments, env, uid, gid, and working directory that the workload sees.
 - Hypervisor detection uses the same rules as the `hypervisor` doctor check.
 - `SBXR_REQUIRE_HV=1` turns hypervisor skips into failures. CI sets it on hypervisor jobs.
+- The `fake` and `cli` targets pull the scenario images from a registry inside the test process on `127.0.0.1`, so both exercise pull, cache, and run root. The `fake` target builds them on a fake busybox image. The `cli` target builds them on `mirror.gcr.io/library/busybox`, which serves Docker Hub library images without its rate limit, and is the only external network use of the tests.
 - Every VM test has a hard timeout.
 - On macOS, every test binary that starts a real VM is signed before it runs. CLI tests run the built binary, not in-process commands.
 
