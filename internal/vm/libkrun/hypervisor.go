@@ -5,6 +5,7 @@ package libkrun
 import (
 	"fmt"
 	"math"
+	"net"
 
 	"github.com/albertsko/sbxr/internal/vm"
 )
@@ -26,5 +27,16 @@ func (h Hypervisor) Start(m vm.Machine) error {
 		return fmt.Errorf("VM CPU count %d is out of range", m.CPUs)
 	}
 
-	return Enter(dir, Config{Root: m.Root, CPUs: uint8(m.CPUs), MemoryMiB: m.MemoryMiB, Net: nil, LogLevel: m.LogLevel})
+	var netDev *Net
+
+	if m.Net != nil {
+		mac, err := net.ParseMAC(m.Net.MAC)
+		if err != nil || len(mac) != len(Net{}.MAC) {
+			return fmt.Errorf("VM MAC address %q is not valid", m.Net.MAC)
+		}
+
+		netDev = &Net{FD: m.Net.FD, MAC: [6]byte(mac)}
+	}
+
+	return Enter(dir, Config{Root: m.Root, CPUs: uint8(m.CPUs), MemoryMiB: m.MemoryMiB, Net: netDev, LogLevel: m.LogLevel})
 }

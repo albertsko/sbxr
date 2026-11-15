@@ -30,6 +30,19 @@ type Machine struct {
 	MemoryMiB uint32 `json:"memoryMiB"`
 	// LogLevel is the hypervisor log level, from 0 (off) to 5 (trace).
 	LogLevel uint32 `json:"logLevel"`
+	// Net, when set, attaches the VM to the network of the run. Without it the VM has no network device.
+	Net *Net `json:"net,omitempty"`
+}
+
+// NetFD is the VM process fd of the network socket, the last entry of exec.Cmd.ExtraFiles after the lifeline, the cache hold, and the run lock.
+const NetFD = 6
+
+// Net is the network device of a VM: a datagram socket that carries one Ethernet frame per message.
+type Net struct {
+	// FD is the socket fd in the VM process.
+	FD int `json:"fd"`
+	// MAC is the guest MAC address, for example 5a:94:ef:e4:0c:ee.
+	MAC string `json:"mac"`
 }
 
 // Hypervisor starts a VM in the calling process.
