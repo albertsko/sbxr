@@ -48,6 +48,11 @@ func (l *limiter) release() { l.active.Add(-1) }
 // forwardTCP handles a guest SYN that matches no endpoint. gvisor runs it in its own goroutine, so the relay runs here.
 func (n *Network) forwardTCP(r *tcp.ForwarderRequest) {
 	dst := destination(r.ID())
+	if dst == netip.AddrPortFrom(gatewayIP, portDNS) {
+		n.acceptDNS(r)
+		return
+	}
+
 	if !n.policy.allowDial(dst.Addr()) || !n.enter() {
 		r.Complete(true)
 		return

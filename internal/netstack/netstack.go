@@ -84,9 +84,10 @@ type Config struct {
 	// Tests and the fake target use it, because they have no external DNS.
 	Hosts map[string]netip.Addr
 
-	// udpIdle and resolver override the UDP flow idle timeout and the host resolver in tests.
-	udpIdle  time.Duration
-	resolver *net.Resolver
+	// udpIdle, resolver, and nameservers override the UDP flow idle timeout, the host resolver, and the host nameservers in tests.
+	udpIdle     time.Duration
+	resolver    *net.Resolver
+	nameservers []string
 }
 
 // Publish maps a host TCP address to a guest TCP port.
@@ -109,12 +110,12 @@ type Network struct {
 	tcp    limiter
 	udp    limiter
 
-	udpIdle  time.Duration
-	resolver *net.Resolver
+	udpIdle time.Duration
 
 	ctx    context.Context //nolint:containedctx // The stack lives until Close and cancels its flows through it.
 	cancel context.CancelFunc
 
+	dnsConns  chan net.Conn
 	stack     *stack.Stack
 	sw        *tap.Switch
 	vmFile    *os.File
@@ -145,15 +146,15 @@ func Start(ctx context.Context, cfg Config) (*Network, error) {
 
 	//nolint:exhaustruct_v5 // start sets the remaining fields.
 	n := &Network{
-		logger:   logger,
-		policy:   newPolicy(cfg.AllowLAN, publish),
-		dial:     cfg.Dial,
-		tcp:      newLimiter(cfg.MaxTCP, defaultMaxTCP),
-		udp:      newLimiter(cfg.MaxUDP, defaultMaxUDP),
-		udpIdle:  cmp.Or(cfg.udpIdle, udpIdleTimeout),
-		resolver: cfg.resolver,
+		logger:  logger,
+		policy:  newPolicy(cfg.AllowLAN, publish),
+		dial:    cfg.Dial,
+		tcp:     newLimiter(cfg.MaxTCP, defaultMaxTCP),
+		udp:     newLimiter(cfg.MaxUDP, defaultMaxUDP),
+		udpIdle: cmp.Or(cfg.udpIdle, udpIdleTimeout),
 	}
 	n.ctx, n.cancel = context.WithCancel(ctx)
+	n.dnsConns = make(chan net.Conn)
 
 	if n.dial == nil {
 		var d net.Dialer
@@ -161,7 +162,7 @@ func Start(ctx context.Context, cfg Config) (*Network, error) {
 		n.dial = d.DialContext
 	}
 
-	if err := n.start(cfg.Hosts, publish); err != nil {
+	if err := n.start(cfg, publish); err != nil {
 		return nil, errors.Join(err, n.Close())
 	}
 
@@ -172,7 +173,7 @@ func Start(ctx context.Context, cfg Config) (*Network, error) {
 	return n, nil
 }
 
-func (n *Network) start(hosts map[string]netip.Addr, publish []Publish) error {
+func (n *Network) start(cfg Config, publish []Publish) error {
 	if err := n.policy.refreshHostAddrs(); err != nil {
 		return err
 	}
@@ -198,7 +199,7 @@ func (n *Network) start(hosts map[string]netip.Addr, publish []Publish) error {
 		return err
 	}
 
-	if err := n.startServices(pool, hosts); err != nil {
+	if err := n.startServices(pool, cfg); err != nil {
 		return err
 	}
 
@@ -274,7 +275,7 @@ func (n *Network) newStack() (*tap.Switch, *tap.IPPool, error) {
 	return sw, pool, nil
 }
 
-func (n *Network) startServices(pool *tap.IPPool, hosts map[string]netip.Addr) error {
+func (n *Network) startServices(pool *tap.IPPool, cfg Config) error {
 	dnsAddr := tcpip.FullAddress{NIC: nicID, Addr: tcpAddr(gatewayIP), Port: portDNS}
 
 	dnsUDP, err := gonet.DialUDP(n.stack, &dnsAddr, nil, ipv4.ProtocolNumber)
@@ -284,17 +285,10 @@ func (n *Network) startServices(pool *tap.IPPool, hosts map[string]netip.Addr) e
 
 	n.services = append(n.services, dnsUDP)
 
-	dnsTCP, err := gonet.ListenTCP(n.stack, dnsAddr, ipv4.ProtocolNumber)
-	if err != nil {
-		return fmt.Errorf("dns: %w", err)
-	}
-
-	n.services = append(n.services, dnsTCP)
-
-	h := newDNSHandler(n.ctx, hosts, n.resolver)
+	h := newDNSHandler(n.ctx, cfg.Hosts, cfg.resolver, cfg.nameservers)
 	udpSrv := &dns.Server{PacketConn: dnsUDP, Handler: h}
 	tcpSrv := &dns.Server{
-		Listener:    &cappedListener{Listener: dnsTCP, limit: &n.tcp},
+		Listener:    &connListener{conns: n.dnsConns, done: n.ctx.Done()},
 		Handler:     h,
 		IdleTimeout: func() time.Duration { return dnsTimeout },
 	}

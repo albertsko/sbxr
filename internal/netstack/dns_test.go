@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -33,7 +35,7 @@ func blackholeResolver(t *testing.T) (*net.Resolver, func() int64) {
 	r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var nd net.Dialer
 
-		c, err := nd.DialContext(ctx, "udp", pc.LocalAddr().String())
+		c, err := nd.DialContext(ctx, "udp4", pc.LocalAddr().String())
 		if err != nil {
 			return nil, fmt.Errorf("blackhole dial: %w", err)
 		}
@@ -109,10 +111,29 @@ func TestDNSTCPCountsAgainstCap(t *testing.T) {
 	t.Parallel()
 
 	d := newTestDialer(t)
-	_, g := startNetwork(t, Config{MaxTCP: 1, Dial: d.dial, Hosts: map[string]netip.Addr{testHost: publicAddr}})
+	n, g := startNetwork(t, Config{MaxTCP: 1, Dial: d.dial, Hosts: map[string]netip.Addr{testHost: publicAddr}})
 
 	// The idle DNS connection holds the only TCP slot until the DNS server closes it.
 	queryOverTCP(t, g)
+
+	// DNS connections past the cap get a reset and leave no endpoint behind.
+	endpoints := len(n.stack.RegisteredEndpoints())
+
+	for range 5 {
+		start := time.Now()
+
+		if _, err := dialTCP(t, g, netip.AddrPortFrom(gatewayIP, 53).String(), 5*time.Second); err == nil {
+			t.Fatal("DNS TCP connection past the cap works")
+		}
+
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Errorf("DNS TCP connection past the cap failed after %v, want a reset", elapsed)
+		}
+	}
+
+	if got := len(n.stack.RegisteredEndpoints()); got != endpoints {
+		t.Errorf("stack endpoints = %d after rejected connections, want %d", got, endpoints)
+	}
 
 	dst := netip.AddrPortFrom(publicAddr, 80).String()
 	if c, err := dialTCP(t, g, dst, 5*time.Second); err == nil && roundTrip(c, "over", time.Second) == nil {
@@ -218,5 +239,180 @@ func queryOverTCP(t *testing.T, g *guestsim.Guest) {
 
 	if _, err := conn.ReadMsg(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// fakeNameserver serves UDP and TCP on one local port and records the queries it gets.
+// It answers TXT queries with the transport name. Over UDP, big.test gets a truncated answer.
+// Over TCP, tcpfail.test gets no answer.
+func fakeNameserver(t *testing.T) (string, func() []*dns.Msg) {
+	t.Helper()
+
+	var (
+		mu  sync.Mutex
+		got []*dns.Msg
+	)
+
+	handler := dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
+		mu.Lock()
+
+		got = append(got, r.Copy())
+
+		mu.Unlock()
+
+		network := w.LocalAddr().Network()
+		overTCP := network == "tcp"
+		name := r.Question[0].Name
+
+		if overTCP && name == "tcpfail.test." {
+			_ = w.Close()
+			return
+		}
+
+		m := new(dns.Msg)
+		m.SetReply(r)
+
+		if !overTCP && (name == "big.test." || name == "tcpfail.test.") {
+			m.Truncated = true
+		} else {
+			m.Answer = append(m.Answer, &dns.TXT{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeTXT, Class: dns.ClassINET}, Txt: []string{network}})
+		}
+
+		_ = w.WriteMsg(m)
+	})
+
+	var lc net.ListenConfig
+
+	pc, err := lc.ListenPacket(t.Context(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := lc.Listen(t.Context(), "tcp4", pc.LocalAddr().String())
+	if err != nil {
+		_ = pc.Close()
+
+		t.Skipf("TCP port of the fake nameserver is taken: %v", err)
+	}
+
+	for _, srv := range []*dns.Server{{PacketConn: pc, Handler: handler}, {Listener: ln, Handler: handler}} {
+		go func() { _ = srv.ActivateAndServe() }()
+
+		t.Cleanup(func() { _ = srv.Shutdown() })
+	}
+
+	return pc.LocalAddr().String(), func() []*dns.Msg {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return slices.Clone(got)
+	}
+}
+
+func TestDNSForward(t *testing.T) {
+	t.Parallel()
+
+	ns, received := fakeNameserver(t)
+
+	query := func(name string, qtype uint16) *dns.Msg {
+		m := new(dns.Msg)
+		m.SetQuestion(name, qtype)
+
+		return m
+	}
+
+	notify := new(dns.Msg)
+	notify.SetNotify("notify.test.")
+
+	chaos := query("version.bind.", dns.TypeTXT)
+	chaos.Question[0].Qclass = dns.ClassCHAOS
+
+	two := query("two.test.", dns.TypeTXT)
+	two.Question = append(two.Question, two.Question[0])
+
+	guestFlags := query("small.test.", dns.TypeTXT)
+	guestFlags.RecursionDesired = false
+	guestFlags.SetEdns0(1232, true)
+	guestFlags.IsEdns0().Option = append(guestFlags.IsEdns0().Option, &dns.EDNS0_COOKIE{Code: dns.EDNS0COOKIE, Cookie: "0123456789abcdef"})
+
+	tests := []struct {
+		name      string
+		msg       *dns.Msg
+		rcode     int
+		answer    string
+		truncated bool
+		forwarded bool
+	}{
+		{name: "notify", msg: notify, rcode: dns.RcodeNotImplemented},
+		{name: "chaos", msg: chaos, rcode: dns.RcodeRefused},
+		{name: "axfr", msg: query("zone.test.", dns.TypeAXFR), rcode: dns.RcodeNotImplemented},
+		{name: "two questions", msg: two, rcode: dns.RcodeFormatError},
+		{name: "rebuilt query", msg: guestFlags, rcode: dns.RcodeSuccess, answer: "udp", forwarded: true},
+		{name: "truncated udp then tcp", msg: query("big.test.", dns.TypeTXT), rcode: dns.RcodeSuccess, answer: "tcp", forwarded: true},
+		{name: "truncated after tcp fails", msg: query("tcpfail.test.", dns.TypeTXT), rcode: dns.RcodeSuccess, truncated: true, forwarded: true},
+	}
+
+	h := newDNSHandler(t.Context(), nil, nil, []string{ns})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := h.answer(t.Context(), tt.msg)
+
+			var answer string
+
+			if len(m.Answer) == 1 {
+				if txt, ok := m.Answer[0].(*dns.TXT); ok {
+					answer = strings.Join(txt.Txt, "")
+				}
+			}
+
+			if m.Rcode != tt.rcode || answer != tt.answer || m.Truncated != tt.truncated {
+				t.Errorf("reply rcode %s, answer %q, truncated %v, want %s, %q, %v",
+					dns.RcodeToString[m.Rcode], answer, m.Truncated, dns.RcodeToString[tt.rcode], tt.answer, tt.truncated)
+			}
+
+			var forwarded []*dns.Msg
+
+			for _, r := range received() {
+				if r.Question[0].Name == tt.msg.Question[0].Name {
+					forwarded = append(forwarded, r)
+				}
+			}
+
+			if (len(forwarded) > 0) != tt.forwarded {
+				t.Fatalf("nameserver got %d queries, want forwarded %v", len(forwarded), tt.forwarded)
+			}
+
+			for _, r := range forwarded {
+				opt := r.IsEdns0()
+				if !r.RecursionDesired || len(r.Question) != 1 || r.Question[0].Qclass != dns.ClassINET || opt == nil || len(opt.Option) != 0 || opt.Do() {
+					t.Errorf("forwarded query keeps guest flags or options:\n%v", r)
+				}
+			}
+		})
+	}
+}
+
+func TestDNSForwardWithoutNameserver(t *testing.T) {
+	t.Parallel()
+
+	var lc net.ListenConfig
+
+	// A closed port refuses the query at once.
+	pc, err := lc.ListenPacket(t.Context(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addr := pc.LocalAddr().String()
+	_ = pc.Close()
+
+	q := new(dns.Msg)
+	q.SetQuestion("example.org.", dns.TypeTXT)
+
+	if m := newDNSHandler(t.Context(), nil, nil, []string{addr}).answer(t.Context(), q); m.Rcode != dns.RcodeServerFailure {
+		t.Errorf("rcode = %s, want SERVFAIL", dns.RcodeToString[m.Rcode])
 	}
 }
