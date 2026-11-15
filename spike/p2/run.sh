@@ -25,7 +25,7 @@ done
 mkdir -p $W/u1/il $W/u1/iu $W/u1/iw $W/u1/m2 $W/u1/d
 echo plain >$W/u1/d/f
 chown 1000:1000 $W/u1/d/f
-if mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/d $W/u1/j; then
+if mount --bind -o "X-mount.idmap=b:0:$BASE:65536" $W/u1/d $W/u1/j; then
 	ls -ln $W/u1/j; umount $W/u1/j; result "U1 plain dir idmapped bind PASS"
 else
 	result "U1 plain dir idmapped bind FAIL"
@@ -34,7 +34,7 @@ umount $W/u1/m
 mkdir -p $W/u1/all/{l,u,w} $W/u1/allid
 echo hi >$W/u1/all/l/f
 chown 1000:1000 $W/u1/all/l/f
-mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $W/u1/all $W/u1/allid &&
+mount --bind -o "X-mount.idmap=b:0:$BASE:65536" $W/u1/all $W/u1/allid &&
 	if mount -t overlay overlay -o lowerdir=$W/u1/allid/l,upperdir=$W/u1/allid/u,workdir=$W/u1/allid/w $W/u1/m2; then
 		ls -ln $W/u1/m2; result "U1 overlay over one idmapped parent PASS"
 	else
@@ -133,7 +133,7 @@ mkdir -p $S/c1/rootfs
 chown -R $BASE:$BASE $S/c1
 umount $C/merged
 mkdir -p $W/ctr-id
-mount --bind -o "X-mount.idmap=b:$BASE:0:65536" $C $W/ctr-id
+mount --bind -o "X-mount.idmap=b:0:$BASE:65536" $C $W/ctr-id
 mount -t overlay overlay -o lowerdir=$W/ctr-id/lower,upperdir=$W/ctr-id/upper,workdir=$W/ctr-id/work $S/c1/rootfs
 ls -ln $S/c1/rootfs/data || result "U4 idmapped bind of container overlay FAIL"
 guest 'ls -ln /mnt/shared/c1/rootfs/data' 'echo new >/mnt/shared/c1/rootfs/data/new && chown 1000:1000 /mnt/shared/c1/rootfs/data/new && ls -ln /mnt/shared/c1/rootfs/data/new' | tee $W/u4.txt
