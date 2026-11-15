@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -120,7 +121,7 @@ func (img *Image) MountRoot(dir, root string) (release func() error, err error) 
 		}
 	}
 
-	err = mountOverlay(root, map[string]string{"lowerdir": img.Root, "upperdir": upper, "workdir": work})
+	err = mountOverlay(root, img.Root, upper, work)
 	if err != nil {
 		return noop, err
 	}
@@ -136,19 +137,34 @@ func (img *Image) MountRoot(dir, root string) (release func() error, err error) 
 }
 
 // mountOverlay mounts an overlay at target with the file system context API,
-// which takes each option separately, so paths may contain commas.
-func mountOverlay(target string, dirs map[string]string) error {
+// which takes each option separately, so paths may contain commas (Linux 6.5 and later).
+func mountOverlay(target, lower, upper, work string) error {
 	fsfd, err := unix.Fsopen("overlay", unix.FSOPEN_CLOEXEC)
 	if err != nil {
 		return fmt.Errorf("mount overlay: %w", err)
 	}
 	defer unix.Close(fsfd) //nolint:errcheck // The context is only used to create the mount.
 
-	for _, key := range []string{"lowerdir", "upperdir", "workdir"} {
-		err = unix.FsconfigSetString(fsfd, key, dirs[key])
-		if err != nil {
-			return fmt.Errorf("mount overlay: %s %s: %w", key, dirs[key], err)
+	// lowerdir+ (Linux 6.7 and later) takes one path. The older lowerdir splits its value at colons.
+	err = unix.FsconfigSetString(fsfd, "lowerdir+", lower)
+	if errors.Is(err, unix.EINVAL) {
+		if strings.Contains(lower, ":") {
+			return fmt.Errorf("mount overlay: the image cache path %s contains a colon, which this kernel cannot use; set SBXR_CACHE_DIR to a path without colons", lower)
 		}
+
+		err = unix.FsconfigSetString(fsfd, "lowerdir", lower)
+	}
+
+	if err == nil {
+		err = unix.FsconfigSetString(fsfd, "upperdir", upper)
+	}
+
+	if err == nil {
+		err = unix.FsconfigSetString(fsfd, "workdir", work)
+	}
+
+	if err != nil {
+		return fmt.Errorf("mount overlay of %s: %w", lower, err)
 	}
 
 	// userxattr keeps overlay metadata in user xattrs, which a user namespace may write.
