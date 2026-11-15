@@ -15,10 +15,12 @@ require (
 	github.com/google/go-containerregistry v0.22.1
 	github.com/insomniacslk/dhcp v0.0.0-20240710054256-ddd8a41251c9
 	github.com/miekg/dns v1.1.73
+	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/sirupsen/logrus v1.10.2
 	github.com/spf13/cobra v1.10.2
 	github.com/vishvananda/netlink v1.3.1
+	github.com/vishvananda/netns v0.0.5
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
 	google.golang.org/grpc v1.81.1
@@ -36,6 +38,7 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/containerd/log v0.1.0 // indirect
+	github.com/containerd/typeurl/v2 v2.3.0 // indirect
 	github.com/docker/cli v29.7.2+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.9.3 // indirect
 	github.com/go-logfmt/logfmt v0.6.1 // indirect
@@ -56,7 +59,6 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
-	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20250711185948-6ae5c78190dc // indirect
 	golang.org/x/net v0.59.0 // indirect

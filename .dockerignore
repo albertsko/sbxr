@@ -10,6 +10,9 @@
 !internal/podvm
 !internal/podnet
 !internal/vm
+!internal/krunconfig
+!internal/guestmount
+!internal/subid
 !deploy/node/collect.sh
 !deploy/node/fetch.sh
 !deploy/node/assemble.sh
