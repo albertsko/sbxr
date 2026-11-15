@@ -275,7 +275,7 @@ Exit criteria:
 
 ### S8: Kubernetes phase 2
 
-Done. Evidence: `kind-p2` job in run [43739885658](https://github.com/albertsko/sbxr/actions/runs/43739885658). Spike A7: run [43727468549](https://github.com/albertsko/sbxr/actions/runs/43727468549), tag `archive/spike-k8s-p2`. The release workflow builds the shim and the agent into the node image, behind the same `check` and `install` jobs.
+Done. Evidence: `kind-p2` job in run [43751384434](https://github.com/albertsko/sbxr/actions/runs/43751384434). Spike A7: run [43727468549](https://github.com/albertsko/sbxr/actions/runs/43727468549), tag `archive/spike-k8s-p2`. The release workflow builds the shim and the agent into the node image, behind the same `check` and `install` jobs.
 
 Scope:
 
