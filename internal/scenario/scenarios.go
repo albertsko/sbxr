@@ -95,11 +95,23 @@ func All() []Scenario {
 			Check: expect(Workload{Image: Busybox, Memory: 128, Args: []string{"sh", "-c", "x=$(yes | head -c 400000000); echo survived"}}, 137, OK),
 		},
 		{
-			Name:    "no network without --net",
-			Needs:   []Capability{NetOff},
-			Pending: "needs run: S5",
-			Check:   expect(Workload{Image: Busybox, Args: []string{"wget", "-T", "2", "-qO-", "http://1.1.1.1"}}, 1, OK),
+			Name:  "no network without --net",
+			Needs: []Capability{NetOff},
+			Check: expect(Workload{Image: Busybox, Args: wget("http://1.1.1.1")}, 1, OK),
 		},
+		{Name: "allow-lan reaches a host address", Needs: []Capability{Net, EgressGuard}, Check: reachHost(true)},
+		{Name: "net blocks host addresses without allow-lan", Needs: []Capability{Net, EgressGuard}, Check: reachHost(false)},
+		{
+			Name:  "allow-lan still blocks cloud metadata",
+			Needs: []Capability{Net, EgressGuard},
+			Check: expect(Workload{Image: Busybox, Net: true, AllowLAN: true, Args: wget("http://169.254.169.254/")}, 1, OK),
+		},
+		{
+			Name:  "dns resolves through the gateway",
+			Needs: []Capability{DNS, EgressGuard},
+			Check: expect(Workload{Image: Busybox, Net: true, Args: []string{"nslookup", "-type=a", "localhost"}}, 0, OK, stdoutContains("127.0.0.1")),
+		},
+		{Name: "publish reaches a guest port on 127.0.0.1", Needs: []Capability{Publish, Stdin}, Check: publishReachesGuest},
 	}
 }
 

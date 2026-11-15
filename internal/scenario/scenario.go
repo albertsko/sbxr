@@ -36,6 +36,8 @@ const (
 	SpecValidation Capability = "spec-validation"
 	// ExactConfig means that the workload sees the image config and the run flags and nothing that the platform adds.
 	ExactConfig Capability = "exact-config"
+	// EgressGuard means that Net and AllowLAN select the egress policy of PRD "Networking (CLI)", and that the host resolver answers DNS.
+	EgressGuard Capability = "egress-guard"
 )
 
 // ErrorClass is the target-neutral outcome of a run.
@@ -82,6 +84,13 @@ type Workload struct {
 	InterruptAfter string
 	// Terminate makes the interrupt a termination (SIGTERM) instead of Ctrl-C (SIGINT).
 	Terminate bool
+	// Net gives the workload outbound IPv4, and AllowLAN also LAN addresses.
+	Net      bool
+	AllowLAN bool
+	// Publish lists guest TCP ports that the target publishes on free ports of 127.0.0.1.
+	Publish []uint16
+	// Published is called once per published port with its host address, while the workload runs.
+	Published func(ctx context.Context, guestPort uint16, hostAddr string)
 }
 
 // Result is the outcome of one run.
@@ -132,6 +141,10 @@ func RunAll(t *testing.T, newTarget func(t *testing.T) Target) {
 			}
 
 			err := Verify(t.Context(), s, target)
+			if skip, ok := errors.AsType[skipError](err); ok {
+				t.Skip(string(skip))
+			}
+
 			if err != nil {
 				t.Error(err)
 			}
@@ -169,3 +182,8 @@ func Verify(ctx context.Context, s Scenario, t Target) error {
 
 	return errors.Join(checkErr, cleanErr)
 }
+
+// skipError makes a scenario skip, for example when the host lacks something that the scenario needs.
+type skipError string
+
+func (e skipError) Error() string { return "skip: " + string(e) }

@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -52,7 +54,7 @@ func Fake(t *testing.T, bin string, refs map[string]string) *Binary {
 		Images:   refs,
 		Flags:    nil,
 		Env:      nil,
-		Caps:     []Capability{Stdin, TTY, SplitStderr, SignalExit, SpecValidation, ExactConfig},
+		Caps:     []Capability{Stdin, TTY, SplitStderr, SignalExit, SpecValidation, ExactConfig, Net, NetOff, Publish, DNS, EgressGuard},
 	}
 }
 
@@ -68,10 +70,9 @@ func (b *Binary) Run(ctx context.Context, w Workload) (Result, error) {
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "SBXR_CACHE_DIR=" + b.CacheDir}, b.Env...)
 	cmd.Stdin = strings.NewReader(w.Stdin)
 
-	var stderr bytes.Buffer
-
 	stdout := newWatchWriter(w.InterruptAfter)
-	cmd.Stdout, cmd.Stderr = stdout, &stderr
+	stderr := &publishWatcher{ctx: ctx, onPublished: w.Published, mu: sync.Mutex{}, buf: bytes.Buffer{}, seen: map[string]bool{}}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 
 	err := cmd.Start()
 	if err != nil {
@@ -126,6 +127,19 @@ func (b *Binary) args(w Workload) []string {
 
 	if w.TTY {
 		args = append(args, "-t")
+	}
+
+	if w.Net {
+		args = append(args, "--net")
+	}
+
+	if w.AllowLAN {
+		args = append(args, "--allow-lan")
+	}
+
+	// The debug log names the bound address of each published port.
+	for _, p := range w.Publish {
+		args = append(args, "--debug", "-p", "127.0.0.1:0:"+strconv.Itoa(int(p)))
 	}
 
 	image := w.Image
@@ -197,4 +211,48 @@ func (w *watchWriter) String() string {
 	defer w.mu.Unlock()
 
 	return w.buf.String()
+}
+
+// publishedLine matches the debug log line of a published port, for example "published 127.0.0.1:8080 -> 80/tcp".
+var publishedLine = regexp.MustCompile(`published (\S+) -> (\d+)/tcp`)
+
+// publishWatcher collects stderr and calls onPublished in its own goroutine for each published port that the log names.
+type publishWatcher struct {
+	ctx         context.Context //nolint:containedctx // The callbacks run while the workload runs.
+	onPublished func(ctx context.Context, guestPort uint16, hostAddr string)
+
+	mu   sync.Mutex
+	buf  bytes.Buffer
+	seen map[string]bool
+}
+
+func (p *publishWatcher) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.buf.Write(b)
+
+	if p.onPublished == nil {
+		return len(b), nil
+	}
+
+	for _, m := range publishedLine.FindAllStringSubmatch(p.buf.String(), -1) {
+		port, err := strconv.ParseUint(m[2], 10, 16)
+		if err != nil || p.seen[m[0]] {
+			continue
+		}
+
+		p.seen[m[0]] = true
+
+		go p.onPublished(p.ctx, uint16(port), m[1])
+	}
+
+	return len(b), nil
+}
+
+func (p *publishWatcher) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.buf.String()
 }

@@ -123,6 +123,7 @@ linters:
         - 'gvisor\.dev/gvisor/.+'
         - 'github\.com/containers/gvisor-tap-vsock/.+'
         - 'github\.com/miekg/dns\..+'
+        - 'net/http\.(Server|Client|Transport)'
       # Types whose fields are optional by design.
       optional-patterns:
         - '.+/internal/run\.ImageConfig'
