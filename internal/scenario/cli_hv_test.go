@@ -433,7 +433,8 @@ func hvImages(t *testing.T) map[string]string {
 	return hvRefs
 }
 
-// TestHVVolumeSymlinksCannotEscape mounts a volume through symlinks in an earlier volume that lead to a reserved path or the guest root.
+// TestHVVolumeSymlinksCannotEscape mounts a volume through symlinks in an earlier volume that lead to a reserved path,
+// the guest root, or through a file.
 func TestHVVolumeSymlinksCannotEscape(t *testing.T) {
 	t.Parallel()
 
@@ -442,13 +443,17 @@ func TestHVVolumeSymlinksCannotEscape(t *testing.T) {
 	cacheDir := hvCacheDir(t)
 
 	links, target := t.TempDir(), t.TempDir()
-	for name, to := range map[string]string{"escape": "/missing/../proc", "root": "/"} {
+	if err := os.WriteFile(filepath.Join(links, "file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, to := range map[string]string{"escape": "/missing/../proc", "root": "/", "edge": "/a/file/../ok"} {
 		if err := os.Symlink(to, filepath.Join(links, name)); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	for name, want := range map[string]string{"escape": "reserved path /proc", "root": "resolves to the guest root"} {
+	for name, want := range map[string]string{"escape": "reserved path /proc", "root": "resolves to the guest root", "edge": "not a directory"} {
 		args := append(append([]string{"run", "-q"}, hvFlags...), "-v", links+":/a", "-v", target+":/a/"+name, refs[scenario.Busybox], "true")
 
 		out, code := sbxr(t, bin, hvEnv(cacheDir), args...)
