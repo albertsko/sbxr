@@ -104,6 +104,10 @@ func TestKind(t *testing.T) {
 	})
 
 	// These run after every other subtest, one at a time.
+	if phase == 2 {
+		t.Run("an upgrade keeps running pods working", func(t *testing.T) { testUpgradeKeepsPods(t, k.with(t)) })
+	}
+
 	t.Run("uninstall leaves nothing", func(t *testing.T) { testUninstall(t, k.with(t)) })                 //nolint:paralleltest // See above.
 	t.Run("preflight failure changes nothing", func(t *testing.T) { testPreflightFailure(t, k.with(t)) }) //nolint:paralleltest // See above.
 }

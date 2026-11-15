@@ -51,13 +51,9 @@ type vmProcess struct {
 
 // startVM starts the VM process for the pod directory dir: in the pod network namespace and in cgroup, as root of a new
 // user namespace that maps subid.PerPod ids from uid, with /dev/kvm access through its group when the device needs one.
-func startVM(dir, netnsPath string, uid int, cgroup, log *os.File) (*vmProcess, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("find shim binary: %w", err)
-	}
-
-	cmd := exec.Command(self, VMArg, dir) //nolint:noctx // The VM lives as long as the pod, not a request.
+// bundle becomes descriptor pinnedFD in the VM process.
+func startVM(dir, libDir, netnsPath string, uid int, bundle, cgroup, log *os.File) (*vmProcess, error) {
+	cmd := vmCommand(bundle, VMArg, dir)
 	cmd.Env = libkrun.Env(libDir)
 	cmd.Stdout, cmd.Stderr = log, log
 
@@ -111,6 +107,15 @@ func startVM(dir, netnsPath string, uid int, cgroup, log *os.File) (*vmProcess, 
 	}
 
 	return vm, nil
+}
+
+// vmCommand runs the shim binary of the pinned bundle with args. The child gets bundle as descriptor pinnedFD before
+// execve, so it executes the binary of that bundle even when an upgrade replaced the bundle path meanwhile.
+func vmCommand(bundle *os.File, args ...string) *exec.Cmd {
+	cmd := exec.Command(pinnedBundle+"/"+shimBinary, args...) //nolint:noctx // The VM lives as long as the pod, not a request.
+	cmd.ExtraFiles = []*os.File{bundle}                       // Descriptor 3, which is pinnedFD.
+
+	return cmd
 }
 
 func enterNetns(path string) error {

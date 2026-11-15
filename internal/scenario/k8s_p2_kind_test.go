@@ -218,3 +218,67 @@ func waitLog(k *kind, name, c, want string) {
 
 	k.t.Fatalf("logs of %s/%s lack %q", name, c, want)
 }
+
+// testUpgradeKeepsPods installs a changed bundle while a phase 2 pod runs. The pod's VM keeps its guest root,
+// so exec, exec probes, and graceful stop still work, and the next install removes the retired bundle.
+func testUpgradeKeepsPods(t *testing.T, k *kind) {
+	t.Helper()
+
+	k.apply(strings.Replace(pod("upgraded", "", `      image: sbxr-test/busybox:1
+      command: [sh, -c, "trap 'exit 0' TERM; touch /tmp/ready; while true; do sleep 0.2; done"]
+      readinessProbe: {exec: {command: [cat, /tmp/ready]}, periodSeconds: 1}
+`), "GracePeriodSeconds: 1", "GracePeriodSeconds: 30", 1))
+	k.run("", "-n", k.Namespace, "wait", "pod/upgraded", "--for=condition=Ready", "--timeout=60s")
+
+	reinstall := func() {
+		// The installer replaces a bundle whose SHA256SUMS differs from its own, as a new release does.
+		k.node("echo >>/opt/sbxr/SHA256SUMS")
+		k.run("", "-n", "sbxr-system", "rollout", "restart", "ds/sbxr-node")
+		k.run("", "-n", "sbxr-system", "rollout", "status", "ds/sbxr-node", "--timeout=8m")
+	}
+
+	reinstall()
+
+	if retired := k.node("ls /opt/sbxr.old | wc -l"); retired != "1" {
+		t.Errorf("%s retired bundles while the pod runs, want 1", retired)
+	}
+
+	if out := k.run("", "-n", k.Namespace, "exec", "upgraded", "--", "echo", "exec-ok"); out != "exec-ok" {
+		t.Errorf("kubectl exec after the upgrade: %q", out)
+	}
+
+	// The exec probe keeps passing.
+	time.Sleep(5 * time.Second)
+
+	if ready := k.run("", "-n", k.Namespace, "get", "pod", "upgraded", "-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`); ready != "True" {
+		t.Errorf("pod Ready %q after the upgrade, want True", ready)
+	}
+
+	uid := k.run("", "-n", k.Namespace, "get", "pod", "upgraded", "-o", "jsonpath={.metadata.uid}")
+	start := time.Now()
+
+	k.run("", "-n", k.Namespace, "delete", "pod", "upgraded", "--wait")
+
+	if took := time.Since(start); took > 10*time.Second {
+		t.Errorf("deletion took %s; the workload did not get SIGTERM", took)
+	}
+
+	if err := scenario.NoPodProcesses(t.Context(), k.Node, uid); err != nil {
+		t.Error(err)
+	}
+
+	// The pod's shim, which runs from the retired bundle too, ends when the kubelet removes the sandbox, about a minute later.
+	for i := 0; k.node("crictl pods -q --label io.kubernetes.pod.uid="+uid) != ""; i++ {
+		if i == 180 {
+			t.Fatal("the kubelet did not remove the sandbox within 3 minutes")
+		}
+
+		time.Sleep(time.Second)
+	}
+
+	reinstall()
+
+	if retired := k.node("ls /opt/sbxr.old 2>/dev/null | wc -l"); retired != "0" {
+		t.Errorf("%s retired bundles after the pod is gone, want 0", retired)
+	}
+}

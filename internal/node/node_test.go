@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -187,6 +188,7 @@ func newFakeNode(t *testing.T) (*fakeNode, *Installer) {
 		Poll:     time.Millisecond,
 		Timeout:  50 * time.Millisecond,
 		Log:      slog.New(slog.DiscardHandler),
+		Proc:     t.TempDir(),
 	}
 }
 
@@ -590,7 +592,7 @@ func TestInstallBundle(t *testing.T) {
 	dst := f.root + Prefix
 	bundles := []string{in.Bundle, newBundle(t, "crun v2")}
 
-	err := installBundle(bundles[0], dst)
+	err := installBundle(bundles[0], dst, dst+".old", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +620,7 @@ func TestInstallBundle(t *testing.T) {
 		}()
 
 		for i := range 20 {
-			err := installBundle(bundles[i%2], dst)
+			err := installBundle(bundles[i%2], dst, dst+".old", nil)
 			if err != nil {
 				t.Error(err)
 			}
@@ -627,7 +629,13 @@ func TestInstallBundle(t *testing.T) {
 		close(stop)
 		<-done
 
-		if missing.Load() > 0 || exists(dst+".new") || exists(dst+".old") {
+		// No process uses the previous bundles, so they all go.
+		kept, err := removeRetired(dst+".old", f.root, t.TempDir())
+		if err != nil || len(kept) > 0 {
+			t.Errorf("removeRetired: kept %v, %v", kept, err)
+		}
+
+		if entries, _ := os.ReadDir(dst + ".old"); missing.Load() > 0 || exists(dst+".new") || len(entries) > 0 {
 			t.Errorf("krun missing %d times, files %v", missing.Load(), files(t, f.root+"/opt"))
 		}
 	})
@@ -638,12 +646,12 @@ func TestInstallBundle(t *testing.T) {
 
 		before := read(t, dst+"/bin/crun")
 
-		err := installBundle(bad, dst)
+		err := installBundle(bad, dst, dst+".old", nil)
 		if err == nil || !strings.Contains(err.Error(), "bin/crun has SHA-256") {
 			t.Fatalf("error %v, want a checksum error", err)
 		}
 
-		if read(t, dst+"/bin/crun") != before || exists(dst+".new") {
+		if entries, _ := os.ReadDir(dst + ".old"); read(t, dst+"/bin/crun") != before || len(entries) > 0 {
 			t.Errorf("bundle changed: %v", files(t, f.root+"/opt"))
 		}
 	})
@@ -1044,5 +1052,203 @@ func TestReserveIDsChoosesUnderTheLock(t *testing.T) {
 
 	if got := <-seen; !strings.Contains(got, "sbxr:7340032:33554432") {
 		t.Errorf("the waiting useradd read %q, want the sbxr range", got)
+	}
+}
+
+// fakeProc builds a /proc where process pid has the given open file and mapped file, as host paths.
+func fakeProc(t *testing.T, proc string, pid int, fd, mapped string) {
+	t.Helper()
+
+	dir := filepath.Join(proc, strconv.Itoa(pid))
+
+	if fd != "" {
+		if err := os.MkdirAll(dir+"/fd", 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.Symlink(fd, dir+"/fd/3"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if mapped != "" {
+		write(t, dir+"/maps", "7f0000000000-7f0000001000 r-xp 00000000 08:01 1234   "+mapped+"\n")
+	}
+}
+
+func TestRemoveRetired(t *testing.T) {
+	t.Parallel()
+
+	root, proc := t.TempDir(), t.TempDir()
+	retired := root + RetiredRoot
+
+	for _, name := range []string{"a", "b", "c"} {
+		write(t, retired+"/"+name+"/guest/usr/bin/crun", "crun")
+	}
+
+	fakeProc(t, proc, 100, "/opt/sbxr.old/a/guest", "")                                      // A VM's guest root.
+	fakeProc(t, proc, 101, "", root+"/opt/sbxr.old/b/lib/libkrun.so.1")                      // A phase 1 VM's library, seen below the host root.
+	fakeProc(t, proc, 102, "/opt/sbxr.old/cc/guest", "/opt/sbxr/lib/libkrun.so.1 (deleted)") // Neither is c.
+
+	kept, err := removeRetired(retired, root, proc)
+	if err != nil || len(kept) != 2 || kept["a"] != 100 || kept["b"] != 101 {
+		t.Errorf("kept %v, %v; want a and b", kept, err)
+	}
+
+	if exists(retired+"/c") || !exists(retired+"/a/guest/usr/bin/crun") {
+		t.Errorf("files %v; want c gone and a kept", files(t, retired))
+	}
+}
+
+// TestUpgradeKeepsTheGuestRoot installs a new bundle while a phase 2 VM runs from the old one.
+// The old bundle stays until the VM is gone, and uninstall waits for it too.
+func TestUpgradeKeepsTheGuestRoot(t *testing.T) {
+	t.Parallel()
+
+	f, in := newFakeNode(t)
+
+	if err := in.Install(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The VM holds the guest root of the installed bundle. After the rename its fd shows the retired path,
+	// which the fake /proc names with the retired directory's real name below.
+	in.Bundle = newBundle(t, "crun v2")
+
+	if err := in.Install(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, _ := os.ReadDir(f.root + RetiredRoot)
+	if len(entries) != 0 {
+		t.Fatalf("retired %v without a VM, want them removed", entries)
+	}
+
+	in.Bundle = newBundle(t, "crun v3")
+	old := read(t, f.root+Prefix+"/bin/crun")
+
+	f.onKrun = func() {
+		// installBundle retired the previous bundle just before the installer checks the new one.
+		entries, _ := os.ReadDir(f.root + RetiredRoot)
+		for _, e := range entries {
+			fakeProc(t, in.Proc, 4242, RetiredRoot+"/"+e.Name()+"/guest", "")
+		}
+	}
+
+	if err := in.Install(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, _ = os.ReadDir(f.root + RetiredRoot)
+	if len(entries) != 1 || read(t, f.root+RetiredRoot+"/"+entries[0].Name()+"/bin/crun") != old {
+		t.Fatalf("retired %v, want the previous bundle kept for the VM", entries)
+	}
+
+	err := in.Uninstall(t.Context())
+	if err == nil || !strings.Contains(f.annotations[PreflightAnnotation], "process 4242 still uses the retired bundle") {
+		t.Errorf("uninstall: %v, annotations %v; want it to wait for the VM", err, f.annotations)
+	}
+
+	// The VM stopped.
+	if err := os.RemoveAll(filepath.Join(in.Proc, "4242")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := in.Uninstall(t.Context()); err != nil || exists(f.root+RetiredRoot) || exists(f.root+Prefix) {
+		t.Errorf("uninstall: %v, files %v", err, files(t, f.root+"/opt"))
+	}
+}
+
+// TestInstallBundleFailsAfterExchange stops an install right after the exchange, then retries. The previous bundle is
+// already in the retired directory, so neither the retry nor the cleanup deletes it while a VM holds its guest root.
+func TestInstallBundleFailsAfterExchange(t *testing.T) {
+	t.Parallel()
+
+	root, proc := t.TempDir(), t.TempDir()
+	dst, retired := root+Prefix, root+RetiredRoot
+	v1, v2 := newBundle(t, "crun v1"), newBundle(t, "crun v2")
+
+	if err := installBundle(v1, dst, retired, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	crash := errors.New("crash")
+
+	err := installBundle(v2, dst, retired, func() error {
+		// The VM of a running pod holds the guest root of the previous bundle.
+		entries, _ := os.ReadDir(retired)
+		for _, e := range entries {
+			fakeProc(t, proc, 4242, RetiredRoot+"/"+e.Name()+"/guest", "")
+		}
+
+		return crash
+	})
+	if !errors.Is(err, crash) {
+		t.Fatalf("install: %v, want the crash", err)
+	}
+
+	// The retry finds v2 installed, and the cleanup keeps the bundle that the VM uses.
+	if err := installBundle(v2, dst, retired, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	kept, err := removeRetired(retired, root, proc)
+	if err != nil || len(kept) != 1 {
+		t.Fatalf("kept %v, %v; want the previous bundle", kept, err)
+	}
+
+	for name := range kept {
+		if got := read(t, retired+"/"+name+"/bin/crun"); got != "crun v1" {
+			t.Errorf("retired crun %q, want crun v1", got)
+		}
+	}
+}
+
+func TestRemoveUnusedLegacyStaging(t *testing.T) {
+	t.Parallel()
+
+	root, proc := t.TempDir(), t.TempDir()
+	write(t, root+legacyStaged+"/guest/usr/bin/crun", "crun")
+	fakeProc(t, proc, 7, legacyStaged+"/guest", "")
+
+	if pid, err := removeUnused(root+legacyStaged, root, proc); err != nil || pid != 7 || !exists(root+legacyStaged+"/guest/usr/bin/crun") {
+		t.Errorf("removeUnused = %d, %v; want it kept for pid 7", pid, err)
+	}
+
+	if err := os.RemoveAll(proc + "/7"); err != nil {
+		t.Fatal(err)
+	}
+
+	if pid, err := removeUnused(root+legacyStaged, root, proc); err != nil || pid != 0 || exists(root+legacyStaged) {
+		t.Errorf("removeUnused = %d, %v; want it removed", pid, err)
+	}
+}
+
+func TestDirUsersErrors(t *testing.T) {
+	t.Parallel()
+
+	root, proc := t.TempDir(), t.TempDir()
+	dir := root + RetiredRoot + "/a"
+
+	if _, err := dirUsers(proc+"/missing", root, []string{dir}); err == nil {
+		t.Error("dirUsers without /proc: no error")
+	}
+
+	// A process that has exited leaves an empty directory: it uses nothing.
+	if err := os.MkdirAll(proc+"/10", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	users, err := dirUsers(proc, root, []string{dir})
+	if err != nil || len(users) != 0 {
+		t.Errorf("users %v, %v; want none", users, err)
+	}
+
+	// A process whose files cannot be listed may use anything.
+	write(t, proc+"/11/fd", "not a directory")
+
+	users, err = dirUsers(proc, root, []string{dir})
+	if err != nil || users[dir] != 11 {
+		t.Errorf("users %v, %v; want pid 11 for the unreadable process", users, err)
 	}
 }

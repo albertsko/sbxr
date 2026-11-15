@@ -3,10 +3,15 @@
 package shim
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -164,5 +169,110 @@ func TestPodShm(t *testing.T) {
 	shares := guestSpec(volume, "c1", "/run/sbxr/shared/c1")
 	if len(shares) != 1 || shm(volume).Source != "/run/sbxr/shared/c1/mounts/0" {
 		t.Errorf("shares %+v, /dev/shm %+v; want the volume shared", shares, shm(volume))
+	}
+}
+
+func TestOpenBundle(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "sbxr")
+	exe := filepath.Join(bundle, "bin", "containerd-shim-sbxr-v1")
+
+	for _, f := range []string{exe, filepath.Join(bundle, "guest", "usr", "bin", "crun")} {
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(f, []byte(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var self unix.Stat_t
+	if err := unix.Stat(exe, &self); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := openBundle(exe, self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	// An upgrade retires the bundle. Paths through the pinned descriptor still reach it.
+	if err := os.Rename(bundle, filepath.Join(dir, "retired")); err != nil {
+		t.Fatal(err)
+	}
+
+	pinned := "/proc/self/fd/" + strconv.Itoa(int(f.Fd())) + "/guest/usr/bin/crun"
+	if data, err := os.ReadFile(pinned); err != nil || !strings.HasSuffix(string(data), "/sbxr/guest/usr/bin/crun") {
+		t.Errorf("read %s: %q, %v", pinned, data, err)
+	}
+
+	// A new bundle at the old path holds another binary, so it is not this shim's bundle.
+	if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(exe, []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if g, err := openBundle(exe, self); err == nil {
+		_ = g.Close()
+
+		t.Error("openBundle accepted a bundle with another shim binary")
+	}
+
+	if _, err := openBundle("/tmp/shim.test", self); err == nil {
+		t.Error("openBundle accepted a binary outside a bundle")
+	}
+}
+
+// TestVMCommandRunsThePinnedBinary replaces the bundle between pinning and exec, as an upgrade can.
+// The VM process still runs the binary of the pinned bundle.
+func TestVMCommandRunsThePinnedBinary(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "sbxr")
+
+	newBundle := func(version string) string {
+		exe := filepath.Join(bundle, shimBinary)
+		if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(exe, []byte("#!/bin/sh\necho "+version+" \"$@\"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		return exe
+	}
+
+	exe := newBundle("old")
+
+	var self unix.Stat_t
+	if err := unix.Stat(exe, &self); err != nil {
+		t.Fatal(err)
+	}
+
+	pinned, err := openBundle(exe, self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+
+	// The upgrade exchanges the bundles before the shim starts its VM process.
+	if err := os.Rename(bundle, filepath.Join(dir, "retired")); err != nil {
+		t.Fatal(err)
+	}
+
+	newBundle("new")
+
+	out, err := vmCommand(pinned, "vm", "/run/sbxr/pods/p").Output()
+	if err != nil || string(out) != "old vm /run/sbxr/pods/p\n" {
+		t.Errorf("VM process printed %q, %v; want the old binary", out, err)
 	}
 }

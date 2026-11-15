@@ -143,16 +143,16 @@ func syncDir(dir string) error {
 const sumsFile = "SHA256SUMS"
 
 // installBundle installs the bundle at src to dst, unless dst already has the same SHA256SUMS.
-// It copies the bundle to dst.new, checks every file against SHA256SUMS, and then exchanges dst.new and dst atomically.
-// A failure leaves dst unchanged. Running VMs keep their open files after the exchange.
-func installBundle(src, dst string) error {
-	staged := dst + ".new"
-
-	err := os.RemoveAll(staged)
-	if err != nil {
-		return fmt.Errorf("install bundle: %w", err)
-	}
-
+//
+// It copies the bundle to a new directory below retired, checks every file against SHA256SUMS, and then exchanges that
+// directory and dst atomically, so the previous bundle lands in the retired directory in the same step. A failure leaves
+// dst unchanged, and a partial copy is a retired bundle that no process uses, which removeRetired deletes.
+//
+// The previous bundle must not go away while it is in use. A running phase 2 VM holds its guest root by a descriptor
+// that follows renames (libkrun's virtio-fs opens the root with O_PATH and looks up every path relative to it), and its
+// agent still runs crun from that root for each exec, probe, kill, and delete. Old shims and phase 1 VMs keep their
+// binaries and libraries there too. afterExchange is for tests and is nil otherwise.
+func installBundle(src, dst, retired string, afterExchange func() error) error {
 	want, err := os.ReadFile(filepath.Join(src, sumsFile))
 	if err != nil {
 		return fmt.Errorf("install bundle: %w", err)
@@ -163,29 +163,183 @@ func installBundle(src, dst string) error {
 		return nil
 	}
 
-	err = stageBundle(src, staged)
+	err = os.MkdirAll(retired, 0o755) //nolint:gosec // Like /opt/sbxr.
+	if err != nil {
+		return fmt.Errorf("install bundle: %w", err)
+	}
+
+	staged, err := os.MkdirTemp(retired, time.Now().UTC().Format("20060102T150405-"))
+	if err != nil {
+		return fmt.Errorf("install bundle: %w", err)
+	}
+
+	err = errors.Join(os.Remove(staged), stageBundle(src, staged))
 	if err != nil {
 		return errors.Join(fmt.Errorf("install bundle: %w", err), os.RemoveAll(staged))
 	}
 
-	_, err = os.Stat(dst)
-	if err == nil {
-		// staged now holds the previous bundle.
-		err = exchange(staged, dst)
-	} else {
+	if _, err := os.Stat(dst); err != nil {
 		err = os.Rename(staged, dst)
+		if err != nil {
+			return errors.Join(fmt.Errorf("install bundle: %w", err), os.RemoveAll(staged))
+		}
+
+		return syncDir(filepath.Dir(dst))
 	}
 
+	// Either both names change or neither does. staged then holds the previous bundle, already retired.
+	err = exchange(staged, dst)
 	if err != nil {
 		return errors.Join(fmt.Errorf("install bundle: %w", err), os.RemoveAll(staged))
 	}
 
-	err = errors.Join(syncDir(filepath.Dir(dst)), os.RemoveAll(staged))
+	if afterExchange != nil {
+		if err := afterExchange(); err != nil {
+			return err
+		}
+	}
+
+	err = errors.Join(syncDir(filepath.Dir(dst)), syncDir(retired))
 	if err != nil {
 		return fmt.Errorf("install bundle: %w", err)
 	}
 
 	return nil
+}
+
+// removeRetired deletes every retired bundle below retired that no process uses, and returns the bundles that stay,
+// each with a process that uses it. hostRoot is where the host file system is mounted, and proc is the host's /proc.
+func removeRetired(retired, hostRoot, proc string) (map[string]int, error) {
+	kept := map[string]int{}
+
+	entries, err := os.ReadDir(retired)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && len(entries) == 0) {
+		return kept, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("list retired bundles: %w", err)
+	}
+
+	dirs := make([]string, 0, len(entries))
+	for _, e := range entries {
+		dirs = append(dirs, filepath.Join(retired, e.Name()))
+	}
+
+	users, err := dirUsers(proc, hostRoot, dirs)
+	if err != nil {
+		return nil, err
+	}
+
+	var errs []error
+
+	for _, dir := range dirs {
+		if pid, ok := users[dir]; ok {
+			kept[filepath.Base(dir)] = pid
+
+			continue
+		}
+
+		errs = append(errs, os.RemoveAll(dir))
+	}
+
+	return kept, errors.Join(errs...)
+}
+
+// removeUnused deletes dir unless a process uses it, and returns that process.
+func removeUnused(dir, hostRoot, proc string) (int, error) {
+	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+
+	users, err := dirUsers(proc, hostRoot, []string{dir})
+	if err != nil {
+		return 0, err
+	}
+
+	if pid, ok := users[dir]; ok {
+		return pid, nil
+	}
+
+	return 0, os.RemoveAll(dir) //nolint:wrapcheck // os errors name the path.
+}
+
+// dirUsers returns, for each directory in dirs that some process uses, one such process. dirs are paths below hostRoot.
+//
+// A process uses a directory when its executable, working directory, root, an open file, or a mapped file is in it.
+// /proc shows these paths after renames, from the reader's root, so a file of the host shows with or without hostRoot.
+// A process that cannot be read, other than one that is gone, counts as using every directory.
+func dirUsers(proc, hostRoot string, dirs []string) (map[string]int, error) {
+	pids, err := os.ReadDir(proc)
+	if err != nil {
+		return nil, fmt.Errorf("list processes: %w", err)
+	}
+
+	users := map[string]int{}
+
+	note := func(pid int, path string) {
+		for _, dir := range dirs {
+			for _, d := range []string{dir, strings.TrimPrefix(dir, hostRoot)} {
+				if path == d || strings.HasPrefix(path, d+"/") {
+					users[dir] = pid
+				}
+			}
+		}
+	}
+
+	unreadable := func(pid int, err error) {
+		if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ESRCH) {
+			for _, dir := range dirs {
+				users[dir] = pid
+			}
+		}
+	}
+
+	for _, p := range pids {
+		pid, err := strconv.Atoi(p.Name())
+		if err != nil {
+			continue
+		}
+
+		scanProcess(filepath.Join(proc, p.Name()), func(path string) { note(pid, path) }, func(err error) { unreadable(pid, err) })
+	}
+
+	return users, nil
+}
+
+// scanProcess reports every file path that the process at dir uses, and every error other than a missing link.
+func scanProcess(dir string, path func(string), fail func(error)) {
+	for _, link := range []string{"exe", "cwd", "root"} {
+		target, err := os.Readlink(filepath.Join(dir, link))
+		if err == nil {
+			path(target)
+		} else {
+			// Kernel threads have no executable, and a process that just exited has no links.
+			fail(err)
+		}
+	}
+
+	fds, err := os.ReadDir(filepath.Join(dir, "fd"))
+	fail(err)
+
+	for _, fd := range fds {
+		target, err := os.Readlink(filepath.Join(dir, "fd", fd.Name()))
+		if err == nil {
+			path(target)
+		} else {
+			fail(err)
+		}
+	}
+
+	maps, err := os.ReadFile(filepath.Join(dir, "maps"))
+	fail(err)
+
+	for line := range strings.Lines(string(maps)) {
+		// The path is the sixth field. It may contain spaces, and it ends in " (deleted)" for removed files.
+		if f := strings.Fields(line); len(f) >= 6 {
+			path(strings.Join(f[5:], " "))
+		}
+	}
 }
 
 // stageBundle copies src to dst and fails unless every file matches SHA256SUMS and every listed file exists.
@@ -332,4 +486,14 @@ func unlinkShim(link string) error {
 	}
 
 	return nil
+}
+
+// anyRetired returns one of the kept retired bundles, the first by name.
+func anyRetired(kept map[string]int) (string, int, bool) {
+	names := slices.Sorted(maps.Keys(kept))
+	if len(names) == 0 {
+		return "", 0, false
+	}
+
+	return names[0], kept[names[0]], true
 }
