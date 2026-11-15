@@ -57,16 +57,25 @@ jobs:
       - run: brew --version
       # The fully qualified name taps and trusts the formula without a brew tap or brew trust step.
       - run: brew install --only-dependencies albertsko/tap/sbxr
+      # A file URL carries no version, so the snapshot version is set explicitly for brew test.
       # Later steps skip the auto-update, which would reset the edited formula.
       - name: Point the formula at the snapshot archive
         shell: bash
         run: |
           formula="$(brew --repo albertsko/tap)/Formula/sbxr.rb"
           sha="$(shasum -a 256 dist/sbxr_darwin_arm64.tar.gz | cut -d ' ' -f 1)"
-          sed -i '' -e "s|^  url \".*\"|  url \"file://$PWD/dist/sbxr_darwin_arm64.tar.gz\"|" -e "s|^  sha256 \".*\"|  sha256 \"$sha\"|" "$formula"
+          version="$(jq -r .version dist/metadata.json)"
+          sed -i '' -e "s|^  url \".*\"|  url \"file://$PWD/dist/sbxr_darwin_arm64.tar.gz\"\\
+            version \"$version\"|" -e "s|^  sha256 \".*\"|  sha256 \"$sha\"|" "$formula"
+          cat "$formula"
           echo HOMEBREW_NO_AUTO_UPDATE=1 >>"$GITHUB_ENV"
       - run: brew install albertsko/tap/sbxr
-      - run: brew trust
+      - run: brew test albertsko/tap/sbxr
+      - name: Only the formula is trusted, not the whole tap
+        shell: bash
+        run: |
+          brew trust --json=v1 | tee trust.json
+          jq -e '(.formulae | index("albertsko/tap/sbxr")) and (.taps | index("albertsko/tap") | not)' trust.json
       # Hosted macOS runners have no hypervisor, so every other check must pass.
       - name: sbxr doctor fails only the hypervisor check
         run: |
