@@ -8,6 +8,7 @@ require (
 	charm.land/log/v2 v2.0.1
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/creack/pty v1.1.24
+	github.com/ebitengine/purego v0.11.3
 	github.com/google/go-containerregistry v0.22.1
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.50.0

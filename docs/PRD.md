@@ -185,7 +185,7 @@ Delivery has two phases:
 - VMM: `libkrun` 1.x, minimum 1.19.8, and its `libkrunfw` kernel bundle, minimum 5.6.4. On Linux, `libkrun` must be built with network support (`NET=1`). One such build serves every Linux use; it behaves the same as a build without network support when no network device is added.
 - `sbxr` loads `libkrun` at runtime with `purego`. The binary builds with cgo off.
 - `sbxr` opens `libkrun` by its ABI 1 file name (`libkrun.so.1`, `libkrun.1.dylib`) as an absolute path in the library directory, never by bare name and never the unversioned link. A `libkrun` 2.x install is never loaded by mistake.
-- `libkrun` has no runtime version query. `sbxr` validates `libkrun` by checking that every required symbol exists, including the network functions, and validates `libkrunfw` by its reported version. A missing symbol or an old `libkrunfw` is a preflight failure.
+- `libkrun` has no runtime version query. `sbxr` validates `libkrun` by checking that every required symbol exists, including the network functions, and validates `libkrunfw` by its version. `krunfw_get_version` reports only the ABI version (5), so `sbxr` reads the full version from the resolved library path: `libkrunfw.so.5.6.4` on Linux, `Cellar/libkrunfw/5.6.4/` from Homebrew. A missing symbol or an old `libkrunfw` is a preflight failure.
 - Library directory: `SBXR_LIB_DIR` when set, otherwise the first of `/opt/homebrew/lib` (macOS), `/home/linuxbrew/.linuxbrew/lib`, `/usr/local/lib`, and the system library path that contains both `libkrun` and `libkrunfw`. `libkrun` loads `libkrunfw` by name, so the VM process starts with the library search path set to that directory.
 - macOS signing (v1): the `sbxr` binary is signed ad hoc, without hardened runtime, with one entitlement, `com.apple.security.hypervisor`. Hardened runtime is not used, because it removes the `DYLD_*` variables that `libkrun` needs to find `libkrunfw`, and `libkrun` offers no other way to pass that path. Without hardened runtime, macOS does not enforce library validation, so no other entitlement is needed. Every build, including test binaries, is signed. An unsigned binary fails the `entitlement` check instead of failing at VM start.
 - Linux: `sbxr` runs without root. It needs read-write access to `/dev/kvm` (usually the `kvm` group), `newuidmap` and `newgidmap` (package `uidmap`), and a subordinate uid and gid range for the user. `sbxr` maps ids with those helpers, because one direct mapping cannot cover image ids such as gid 42.
@@ -231,7 +231,7 @@ Delivery has two phases:
 ### Workload config
 
 - The workload command, env, working directory, uid, and gid reach the guest through a config file, `/.krun_config.json`, that `sbxr` writes into the per-run root. The kernel command line is not used, because it breaks on quotes and non-ASCII text and lets values override the file.
-- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device or disable socket forwarding, start. `sbxr` never calls the functions that set the exec command, working directory, or resource limits, and never passes a NULL env list or NULL port map.
+- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device (with `--net`), disable the implicit vsock device, start. `sbxr` never calls the functions that set the exec command, working directory, resource limits, or port map, and never passes a NULL env list.
 - The guest init parser treats any string as a possible key and takes the first match. The writer therefore follows this contract:
   - Keys appear once each, in this order: `uid`, `gid`, `WorkingDir`, `Env`, `Entrypoint` (always empty), `args`.
   - `uid` and `gid` are non-empty decimal strings. An empty uid would run the workload as root.
@@ -335,7 +335,7 @@ Output streams:
 | ------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
 | `hypervisor`  | all      | `kern.hv_support` is 1 (macOS), or `/dev/kvm` opens read-write and reports API version 12 (Linux)                |
 | `libkrun`     | all      | The ABI 1 library loads from the library directory and exports every required symbol                             |
-| `libkrunfw`   | all      | The library loads and reports version 5.6.4 or later                                                             |
+| `libkrunfw`   | all      | The library loads, reports ABI version 5, and its resolved path shows version 5.6.4 or later                     |
 | `entitlement` | macOS    | The running binary is signed with the hypervisor entitlement                                                     |
 | `userns`      | Linux    | Inside a new user namespace with the user's subordinate ids, a chown to uid 0 gid 42 and a private mount succeed |
 | `cache`       | all      | The cache directory is writable                                                                                  |
@@ -364,7 +364,7 @@ When the `userns` check fails and the AppArmor restriction is on, `sbxr doctor` 
 
 ### Networking (CLI)
 
-- Default: no network. The VM has no network device and socket forwarding is disabled, so the guest can neither connect out nor listen on the host.
+- Default: no network. The VM has no network device and no vsock device, so socket forwarding (TSI) is off and the guest can neither connect out nor listen on the host.
 - `--net`: the guest gets a virtio-net device connected to a userspace network stack inside the `sbxr` parent process. The guest configures itself with DHCP and uses the stack's gateway for DNS. No helper binary and no socket file are involved.
 - `libkrun` socket forwarding (TSI) is never used for CLI networking, because it exposes every guest listener on all host interfaces and cannot be limited.
 - Egress policy, enforced by `sbxr` for every new TCP connection and UDP flow:

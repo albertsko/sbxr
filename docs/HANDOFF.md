@@ -100,7 +100,11 @@ codesign --entitlements entitlements.plist --force -s - ./bin/sbxr
 
 Do not add `--options runtime`. Hardened runtime removes the `DYLD_*` variables at launch, and then `libkrun` cannot find `libkrunfw` (tested). PRD "Distribution" lists the options for a later notarized release.
 
-S3 also adds a small wrapper script for `go test -exec`. It signs the test binary and then runs it, so tests that start real VMs work on macOS.
+S3 also adds a small wrapper script for `go test -exec`. It signs the test binary and then runs it, so tests that start real VMs work on macOS. Pass it as an absolute path, because `go test` runs the `-exec` program from the package directory:
+
+```sh
+go test -tags hv -exec "$PWD/scripts/gotest-exec.sh" -count=1 ./internal/vm/libkrun/...
+```
 
 ## Running tests
 
