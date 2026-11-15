@@ -12,6 +12,9 @@ env:
 jobs:
   check:
     uses: ./.github/workflows/check.yml
+  # The install jobs test a snapshot of the tagged commit, so no release ships untested archives.
+  install:
+    uses: ./.github/workflows/install.yml
   node-image:
     name: node-image (${{ matrix.arch }})
     needs: check
@@ -93,7 +96,7 @@ jobs:
           retention-days: 1
   release:
     name: release
-    needs: [check, node-manifests]
+    needs: [check, install, node-manifests]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
