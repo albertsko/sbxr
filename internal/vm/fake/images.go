@@ -14,8 +14,8 @@ import (
 	"github.com/albertsko/sbxr/internal/spec"
 )
 
-// ErrImageNotFound means that the image directory has no image for the reference.
-var ErrImageNotFound = errors.New("image not found")
+// errImageNotFound means that the image directory has no image for the reference.
+var errImageNotFound = errors.New("image not found")
 
 // Images serves images from Dir. Each image is a directory named after the escaped reference,
 // with the root file system in rootfs/ and the image config in config.json.
@@ -29,7 +29,7 @@ func (s Images) Pull(_ context.Context, ref string, _ spec.Pull) (run.Image, err
 
 	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
 	if errors.Is(err, fs.ErrNotExist) {
-		return run.Image{}, ErrImageNotFound
+		return run.Image{}, errImageNotFound
 	}
 
 	if err != nil {

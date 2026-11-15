@@ -78,8 +78,8 @@ func TestImagesPullMissingImage(t *testing.T) {
 	t.Parallel()
 
 	_, err := fake.Images{Dir: t.TempDir()}.Pull(t.Context(), "nope", spec.PullMissing)
-	if err != fake.ErrImageNotFound { //nolint:errorlint // Pull returns the sentinel itself.
-		t.Errorf("Pull() error = %v, want %v", err, fake.ErrImageNotFound)
+	if err == nil || err.Error() != "image not found" {
+		t.Errorf("Pull() error = %v, want image not found", err)
 	}
 }
 
