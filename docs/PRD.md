@@ -251,12 +251,14 @@ Delivery has two phases:
   - The guest init matches keys case-insensitively and reads `Cmd` and `Cwd` as aliases for `args` and `WorkingDir`. The fixed key order keeps this safe, because no value before `args` can look like a key.
   - The file is written after removing any existing entry, with create-exclusive and no-follow semantics.
 - With `-v`, the guest init cannot mount the volumes itself: the `libkrun` 1.19.8 init mounts only system file systems and drops to the workload user before it runs the workload. `sbxr` therefore runs a small static mount helper first:
-  - `libkrun` serves the helper from memory at `/.sbxr-mount` in the root share (`krun_fs_add_overlay_file`), so the run root has no such file.
+  - `libkrun` serves the helper from memory at `/.sbxr-mount` in the root share (`krun_fs_add_overlay_file`), so the run root has no such file. The file is one-shot: after the init runs it, the workload does not see it.
   - The config keeps the contract below, with `uid` and `gid` set to `0` and `args` starting with the helper, then `UID:GID`, the working directory, the mount count, one `TAG:rw:PATH` or `TAG:ro:PATH` entry per volume, and the workload `args`. The tag is `sbxr-` and 16 hex digits of the SHA-256 of the guest path.
+  - The helper resolves symlinks in each guest path inside the guest, including symlinks in earlier volumes, and fails with exit 125 when the result is reserved (`/dev`, `/proc`, `/sys`, `/.sbxr-mount`, `/.krun_config.json`, `/init.krun`). `internal/spec` checks the same list on the path as typed.
   - The helper creates each mount point and mounts the virtio-fs tag with `nosuid` and `nodev`, plus `ro` for `:ro`. It then changes to the working directory again, drops the supplementary groups, sets the gid and uid like the init, and runs the workload with a `PATH` search like `execvp`. It keeps the init's messages and exit codes (126, 127, 125 for setup failures).
   - Runs without `-v` do not use the helper, and their config is unchanged.
 - Volume access:
   - `:ro` is enforced by the host: `libkrun` exposes the device read-only, and the guest also mounts it read-only.
+  - A mount point that does not exist inside an earlier volume is created in that volume, so it appears in the host directory. Under a `:ro` volume it cannot be created, and the run fails with exit 125.
   - macOS uses the `libkrun` permission semantics "Linux simplified": every guest user sees itself as the owner of the volume files and can read and write them, files that the guest creates belong to the invoking user on the host, and the guest cannot change ownership.
   - Linux uses the default semantics inside the user namespace. Guest root is the invoking user, so the workload as root reads and writes the user's files, and its new files belong to the invoking user. Other guest users map to the user's subordinate ids: they see the user's files as owned by root, get access only through the "other" permission bits, and their new files belong to subordinate ids on the host.
 - Commands are not resolved on the host. Bare names reach the guest init, which searches the image `PATH`.
