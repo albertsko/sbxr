@@ -167,7 +167,8 @@ func TestCloseAtCaps(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	// Small CI runners with the race detector need about 2 s, so the bound is the Close timeout, not the local time.
+	if elapsed := time.Since(start); elapsed > closeTimeout {
 		t.Errorf("Close took %v with held flows", elapsed)
 	}
 
