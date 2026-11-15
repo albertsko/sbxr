@@ -74,6 +74,8 @@ func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, hold, lock 
 	switch {
 	case err == nil:
 		return 0, nil
+	case errors.Is(err, errBrokenPipe):
+		return 128 + int(syscall.SIGPIPE), nil
 	case ctx.Err() != nil:
 		return ExitSetup, fmt.Errorf("vm process: %w", context.Cause(ctx))
 	case isExit && exit.Exited():
@@ -109,12 +111,20 @@ func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) 
 	defer stdout.close()
 	defer stderr.close()
 
-	outPipe, outDone, err := relay(stdout)
+	// A gone stdout reader stops the VM, like SIGPIPE stops a Unix pipeline. Stderr write errors are ignored.
+	broken := make(chan struct{})
+	breakOnce := sync.OnceFunc(func() { close(broken) })
+
+	outPipe, outDone, err := relay(stdout, func(err error) {
+		if errors.Is(err, syscall.EPIPE) {
+			breakOnce()
+		}
+	})
 	if err != nil {
 		return err
 	}
 
-	errPipe, errDone, err := relay(stderr)
+	errPipe, errDone, err := relay(stderr, func(error) {})
 	if err != nil {
 		_ = outPipe.Close() // The relay ends at once.
 
@@ -152,6 +162,17 @@ func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) 
 		}()
 	}
 
+	exited := make(chan struct{})
+	defer close(exited)
+
+	go func() {
+		select {
+		case <-broken:
+			_ = cmd.Process.Kill() // The VM process may have exited already.
+		case <-exited:
+		}
+	}()
+
 	err = cmd.Wait()
 
 	for _, done := range []<-chan struct{}{outDone, errDone} {
@@ -161,12 +182,20 @@ func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) 
 		}
 	}
 
-	return err //nolint:wrapcheck // start inspects the exec error.
+	select {
+	case <-broken:
+		return errBrokenPipe
+	default:
+		return err //nolint:wrapcheck // start inspects the exec error.
+	}
 }
 
+// errBrokenPipe means that the reader of the user's stdout went away, so the runner stopped the VM.
+var errBrokenPipe = errors.New("stdout reader is gone")
+
 // relay returns the write end of a new pipe and copies everything from its read end to w.
-// Write errors do not stop the copy, so that the VM never blocks on output. done closes at the end of the pipe.
-func relay(w io.Writer) (*os.File, <-chan struct{}, error) {
+// Write errors go to onError and do not stop the copy, so that the VM never blocks on output. done closes at the end of the pipe.
+func relay(w io.Writer, onError func(error)) (*os.File, <-chan struct{}, error) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return nil, nil, fmt.Errorf("create output pipe: %w", err)
@@ -182,7 +211,9 @@ func relay(w io.Writer) (*os.File, <-chan struct{}, error) {
 
 		for {
 			n, err := pr.Read(buf)
-			_, _ = w.Write(buf[:n]) // See above.
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				onError(werr)
+			}
 
 			if err != nil {
 				return

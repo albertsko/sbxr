@@ -211,7 +211,7 @@ Delivery has two phases:
 - One VM equals one OS process, because `libkrun` takes over the process that starts the VM and exits with the workload's exit code. `libkrun` 2.0 keeps this behavior.
 - The `sbxr run` process (the parent) prepares the run, hosts the network stack, forwards signals and terminal size, and reports the exit code. It starts the VM in a child process, which is a hidden mode of the same `sbxr` binary.
 - On Linux, `sbxr run` and `sbxr prune` run the preflight checks, then run the same command again inside a new user namespace and mount namespace with the user's subordinate id range mapped. The process inside executes itself once more after the maps are written, because only that execve grants it full capabilities in the namespace. It is the parent described above: it pulls and unpacks images, mounts the run root, and starts the VM process, which inherits the namespaces. The process outside forwards SIGINT, SIGTERM, and SIGHUP and returns the exit code. When it dies, the process inside gets SIGTERM and cleans up.
-- The child's stdin carries the user's input only with `-i`. Otherwise it is empty. Without `-t`, the parent relays stdin (with `-i`), stdout, and stderr through pipes, so the VM process never sees a terminal. `libkrun` sends output to a terminal through its console, which would mix the streams and lose stderr when only stdout is redirected.
+- The child's stdin carries the user's input only with `-i`. Otherwise it is empty. Without `-t`, the parent relays stdin (with `-i`), stdout, and stderr through pipes, so the VM process never sees a terminal. When a write to stdout fails because its reader went away (EPIPE), the parent stops the VM like a signal does, cleans up, and exits 141 without an `sbxr` error line. Failed writes to stderr are ignored. `libkrun` sends output to a terminal through its console, which would mix the streams and lose stderr when only stdout is redirected.
 - A signal to the parent stops the VM at once (no graceful guest shutdown in the CLI). The parent then exits 130 or 143, or 129 after SIGHUP (closed terminal).
 - The VM process ignores SIGINT, SIGQUIT, and SIGHUP, so terminal signals end a run only through the parent, which removes the run state. A VM process that a signal ends anyway is an `sbxr` failure: exit 125 and `sbxr: vm: the VM process was killed by signal N; run again with --debug and report a bug`.
 - With `-i -t`, the parent restores the user's terminal mode as soon as the VM process exits, so that Ctrl-C can end a drain of terminal output that a slow reader holds back.
@@ -315,6 +315,7 @@ Exit codes for `sbxr run`:
 | 129           | Stopped by SIGHUP, for example a closed terminal            |
 | 130           | Interrupted by SIGINT                                       |
 | 143           | Stopped by SIGTERM                                          |
+| 141           | The reader of stdout went away, like SIGPIPE in a pipeline  |
 
 A workload that exits 125, 126, or 127 cannot be told apart from an `sbxr` failure by exit code. `sbxr` failures always print a message that starts with `sbxr:` on stderr. Other commands exit 0 on success, 1 on failure, and 2 on usage errors.
 

@@ -16,7 +16,7 @@ import (
 )
 
 // Applets lists the commands of the fake busybox.
-var Applets = []string{"cat", "echo", "env", "false", "id", "pwd", "rm", "sh", "sleep", "stat", "stty", "true"}
+var Applets = []string{"cat", "echo", "env", "false", "id", "pwd", "rm", "sh", "sleep", "stat", "stty", "true", "yes"}
 
 // run runs one applet and returns its exit code.
 func (g *guest) run(applet string, args []string, stdio Stdio) int {
@@ -49,6 +49,8 @@ func (g *guest) run(applet string, args []string, stdio Stdio) int {
 		return stty(args, stdio)
 	case "true":
 		return 0
+	case "yes":
+		return yes(stdio)
 	default:
 		sayf(stdio.Err, "%s: applet not found\n", applet)
 
@@ -224,4 +226,14 @@ func (g *guest) stat(args []string, stdio Stdio) int {
 	).Replace(args[1])
 
 	return lines(stdio, out)
+}
+
+// yes prints y lines until a write fails.
+func yes(stdio Stdio) int {
+	for {
+		_, err := io.WriteString(stdio.Out, "y\n")
+		if err != nil {
+			return 1
+		}
+	}
 }

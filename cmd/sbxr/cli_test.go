@@ -1,6 +1,7 @@
 package main_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -870,31 +871,60 @@ func TestStderrOnTerminalWithPipedStdout(t *testing.T) {
 	}
 }
 
-func TestClosedStdoutReaderEndsTheRunNormally(t *testing.T) {
+func TestGoneStdoutReaderStopsTheRun(t *testing.T) {
 	t.Parallel()
 
 	environ := env(t)
+	cacheDir := cacheDirOf(environ)
 
-	pr, pw, err := os.Pipe()
+	cmd := exec.CommandContext(t.Context(), bin, "run", busybox, "yes")
+	cmd.Env = environ
+
+	var stderr bytes.Buffer
+
+	cmd.Stderr = &stderr
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Nobody reads stdout, so every write to it fails with EPIPE.
-	_ = pr.Close()
-
-	cmd := exec.CommandContext(t.Context(), bin, "run", busybox, "echo", "hi")
-	cmd.Env = environ
-	cmd.Stdout = pw
-
-	err = cmd.Run()
-	_ = pw.Close()
-
-	if code := cmd.ProcessState.ExitCode(); err != nil || code != 0 {
-		t.Errorf("sbxr run with a closed stdout reader = %d, %v; want 0", code, err)
+	err = cmd.Start()
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	err = scenario.CheckClean(cacheDirOf(environ))
+	// Like head -1, the reader takes one line and goes away.
+	_, err = bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = stdout.Close()
+
+	done := make(chan struct{})
+
+	go func() {
+		_ = cmd.Wait() // The exit code below shows the outcome.
+
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+
+		t.Fatal("sbxr kept running after its stdout reader went away")
+	}
+
+	if code := cmd.ProcessState.ExitCode(); code != 141 || stderr.Len() > 0 {
+		t.Errorf("sbxr run yes = %d, stderr %q; want 141 and no sbxr error", code, stderr.String())
+	}
+
+	waitForNoProcess(t, cacheDir)
+
+	err = scenario.CheckClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
