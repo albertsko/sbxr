@@ -2,6 +2,7 @@
 # Fetches one pinned source and fails unless it matches its pin.
 # Usage: fetch.sh git <repo-url> <tag> <commit> <dir>
 #        fetch.sh tar <url> <sha256> <dir> [strip-components]
+#        fetch.sh file <url> <sha256> <path>
 set -euo pipefail
 
 case $1 in
@@ -20,8 +21,12 @@ tar)
 	tar -xzf /tmp/fetch.tar.gz -C "$4" --strip-components="${5:-0}"
 	rm /tmp/fetch.tar.gz
 	;;
+file)
+	curl -fsSL -o "$4" "$2"
+	echo "$3  $4" | sha256sum -c -
+	;;
 *)
-	echo "usage: fetch.sh git|tar ..." >&2
+	echo "usage: fetch.sh git|tar|file ..." >&2
 	exit 2
 	;;
 esac

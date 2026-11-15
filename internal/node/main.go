@@ -28,11 +28,17 @@ func Main(ctx context.Context, args []string, log *slog.Logger) int {
 		return 1
 	}
 
+	phase := 2
+	if os.Getenv("SBXR_PHASE") == "1" {
+		phase = 1
+	}
+
 	in := &Installer{
 		API:      api,
 		Host:     nsenter,
 		HostRoot: "/host",
 		Bundle:   "/bundle",
+		Phase:    phase,
 		Poll:     2 * time.Second,
 		// With node leases, the kubelet posts an unchanged node status only every 5 minutes.
 		Timeout: 6 * time.Minute,

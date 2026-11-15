@@ -2,6 +2,15 @@
 !go.mod
 !go.sum
 !cmd/sbxr-node
+!cmd/containerd-shim-sbxr-v1
+!cmd/sbxr-agent
 !internal/node
+!internal/shim
+!internal/agent
+!internal/podvm
+!internal/podnet
+!internal/vm
 !deploy/node/collect.sh
 !deploy/node/fetch.sh
+!deploy/node/assemble.sh
+**/*_test.go

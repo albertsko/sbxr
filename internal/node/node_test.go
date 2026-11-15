@@ -100,6 +100,10 @@ func (f *fakeNode) host(_ context.Context, args ...string) (string, error) {
 		return "", nil
 	case "getconf GNU_LIBC_VERSION":
 		return "glibc 2.39\n", nil
+	case "uname -r":
+		return "6.8.0-1015-azure\n", nil
+	case "test -c /dev/net/tun":
+		return "", nil
 	case "/opt/sbxr/bin/krun --version":
 		if !f.krunFails {
 			return "crun version 1.31\n+SYSTEMD +SELINUX +LIBKRUN\n", nil
@@ -159,6 +163,7 @@ func newFakeNode(t *testing.T) (*fakeNode, *Installer) {
 		Host:     f.host,
 		HostRoot: f.root,
 		Bundle:   newBundle(t, "crun"),
+		Phase:    1,
 		Poll:     time.Millisecond,
 		Timeout:  50 * time.Millisecond,
 		Log:      slog.New(slog.DiscardHandler),
@@ -861,4 +866,29 @@ func sum(s string) string {
 	h := sha256.Sum256([]byte(s))
 
 	return hex.EncodeToString(h[:])
+}
+
+func TestInstallPhase2(t *testing.T) {
+	t.Parallel()
+
+	f, in := newFakeNode(t)
+	in.Phase = 2
+
+	err := in.Install(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dropIn := read(t, f.root+dropInPath)
+	if f.labels[ReadyLabel] != "true" || !strings.Contains(dropIn, `runtime_type = "io.containerd.sbxr.v1"`) {
+		t.Errorf("labels %v, drop-in:\n%s", f.labels, dropIn)
+	}
+
+	// A pod keeps the bundle in place.
+	write(t, f.root+PodsRoot+"/pod1/vm.pid", "42")
+
+	err = in.Uninstall(t.Context())
+	if err == nil || !strings.Contains(f.annotations[PreflightAnnotation], "1 sbxr containers still exist (pod1)") || !exists(f.root+Prefix) {
+		t.Errorf("error %v, annotations %v; want the bundle kept while pod1 exists", err, f.annotations)
+	}
 }

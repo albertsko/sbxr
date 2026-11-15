@@ -73,15 +73,19 @@ type facts struct {
 	config  string // Main containerd config.
 	systemd bool   // The node's runc runtime uses systemd cgroups.
 	dbus    bool   // The D-Bus system socket exists.
+	kernel  string // Output of "uname -r", for example "6.8.0-1015-azure".
+	tun     bool   // /dev/net/tun exists.
 }
 
 var (
 	minGlibc      = version{2, 35}
 	minContainerd = version{2, 2}
+	// Phase 2 mounts overlays on idmapped lower layers, which Linux supports since 5.19.
+	minKernel = version{5, 19}
 )
 
-// preflight returns the drop-in for d, or the reason why the node is not supported.
-func preflight(d distro, f facts) ([]byte, error) {
+// preflight returns the drop-in for d and phase, or the reason why the node is not supported.
+func preflight(d distro, f facts, phase int) ([]byte, error) {
 	if !f.kvm {
 		return nil, errors.New("/dev/kvm is missing")
 	}
@@ -105,18 +109,43 @@ func preflight(d distro, f facts) ([]byte, error) {
 		return nil, fmt.Errorf("%s does not import %s/*.toml", d.config, d.dropIn)
 	}
 
+	if phase == 2 {
+		kernel, ok := parseVersion(f.kernel)
+		if !ok || kernel.less(minKernel) {
+			return nil, fmt.Errorf("kernel %q is older than Linux %s", f.kernel, minKernel)
+		}
+
+		if !f.tun {
+			return nil, errors.New("/dev/net/tun is missing")
+		}
+
+		return renderDropIn(v, f.systemd, phase), nil
+	}
+
 	if f.systemd && !f.dbus {
 		return nil, errors.New("runc uses systemd cgroups, but /run/dbus/system_bus_socket is missing: install D-Bus")
 	}
 
-	return renderDropIn(v, f.systemd), nil
+	return renderDropIn(v, f.systemd, phase), nil
 }
 
 // renderDropIn returns the drop-in for handler sbxr. Its version must match the main config.
-func renderDropIn(version int, systemd bool) []byte {
+// Phase 1 runs crun with libkrun through the runc shim. Phase 2 uses the sbxr shim as the pod sandboxer.
+func renderDropIn(version int, systemd bool, phase int) []byte {
 	plugin := "io.containerd.grpc.v1.cri"
 	if version == 3 {
 		plugin = "io.containerd.cri.v1.runtime"
+	}
+
+	if phase == 2 {
+		return fmt.Appendf(nil, `# Written by the sbxr installer. sbxr-uninstall.yaml removes it.
+version = %d
+
+[plugins.%q.containerd.runtimes.sbxr]
+  runtime_type = "io.containerd.sbxr.v1"
+  runtime_path = "%s/bin/containerd-shim-sbxr-v1"
+  sandboxer = "shim"
+`, version, plugin, Prefix)
 	}
 
 	return fmt.Appendf(nil, `# Written by the sbxr installer. sbxr-uninstall.yaml removes it.

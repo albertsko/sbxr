@@ -30,8 +30,10 @@ const (
 const (
 	// lockFile serializes installer pods on one node. It is never removed, so every pod locks the same inode.
 	lockFile = "/run/sbxr.lock"
-	// RuntimeRoot is the crun state directory of handler sbxr. Each container of an sbxr pod has state there while it exists.
+	// RuntimeRoot is the crun state directory of handler sbxr in phase 1. Each container of an sbxr pod has state there while it exists.
 	RuntimeRoot = "/run/sbxr/runc"
+	// PodsRoot holds a directory for each phase 2 pod while it exists.
+	PodsRoot = "/run/sbxr/pods"
 	// stateDir holds installer state that must survive a bundle replacement.
 	stateDir = "/var/lib/sbxr"
 	// restartPending exists from a drop-in change until containerd restarts successfully. It holds the unit to restart.
@@ -50,6 +52,8 @@ type Installer struct {
 	HostRoot string
 	// Bundle is the node bundle directory with its SHA256SUMS file.
 	Bundle string
+	// Phase selects the runtime: 1 runs crun with libkrun per container, 2 runs the sbxr shim with one VM per pod.
+	Phase int
 	// Poll and Timeout bound the wait for the node to report handler sbxr.
 	Poll    time.Duration
 	Timeout time.Duration
@@ -315,7 +319,9 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, err
 
 	_, kvmErr := in.Host(ctx, "test", "-c", "/dev/kvm")
 	_, dbusErr := in.Host(ctx, "test", "-S", "/run/dbus/system_bus_socket")
+	_, tunErr := in.Host(ctx, "test", "-c", "/dev/net/tun")
 	glibc, _ := in.Host(ctx, "getconf", "GNU_LIBC_VERSION")
+	kernel, _ := in.Host(ctx, "uname", "-r")
 
 	dropIn, err := preflight(d, facts{
 		kvm:     kvmErr == nil,
@@ -324,7 +330,9 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, err
 		config:  string(config),
 		systemd: runcSystemdCgroup(append([]string{string(config)}, in.imported(string(config), d)...)...),
 		dbus:    dbusErr == nil,
-	})
+		kernel:  kernel,
+		tun:     tunErr == nil,
+	}, in.Phase)
 	if err != nil {
 		return distro{}, "", nil, rejection{err}
 	}

@@ -22,6 +22,8 @@ ARG CRUN_VERSION=1.31
 ARG CRUN_SHA256=17d04ba159fada1f1300a36b8afe869afb38bf1bbda28da052e83bb4bee20108
 
 ENV DEBIAN_FRONTEND=noninteractive
+# The assemble stage reads the crun version for the static guest build.
+ENV CRUN_VERSION=$CRUN_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends \
       autoconf automake build-essential ca-certificates clang curl git gperf libcap-dev \
       libclang-dev libjson-c-dev libseccomp-dev libsystemd-dev libtool patchelf \
@@ -58,18 +60,31 @@ RUN case "$(uname -m)" in x86_64) sum=$LIBKRUNFW_SHA256_X86_64 ;; aarch64) sum=$
 COPY deploy/node/collect.sh /src/collect.sh
 RUN /src/collect.sh /opt/sbxr
 
-FROM scratch AS bundle
-COPY --from=build /opt/sbxr /
-
-FROM golang:1.27@sha256:ec47ea3725fea0cc88f6de94919aef19f40f12fc1ec0e2d1b3426dbf15ecca04 AS installer
+# The installer, the phase 2 shim, and the guest agent: static Go programs.
+FROM golang:1.27@sha256:ec47ea3725fea0cc88f6de94919aef19f40f12fc1ec0e2d1b3426dbf15ecca04 AS go
 WORKDIR /src
 COPY go.mod go.sum ./
-COPY cmd/sbxr-node cmd/sbxr-node
-COPY internal/node internal/node
-RUN CGO_ENABLED=0 go build -trimpath -ldflags=-s -o /sbxr-node ./cmd/sbxr-node
+RUN go mod download
+COPY cmd cmd
+COPY internal internal
+RUN CGO_ENABLED=0 go build -trimpath -ldflags=-s -o /out/ ./cmd/sbxr-node ./cmd/containerd-shim-sbxr-v1 ./cmd/sbxr-agent \
+    && go list -deps -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Dir}}{{end}}{{end}}' \
+      ./cmd/sbxr-node ./cmd/containerd-shim-sbxr-v1 ./cmd/sbxr-agent | sort -u \
+      | while read -r mod dir; do mkdir -p "/out/licenses/go/$mod" && cp "$dir"/LICENSE* "$dir"/NOTICE* "/out/licenses/go/$mod/" 2>/dev/null; test -n "$(ls "/out/licenses/go/$mod")"; done
+
+FROM build AS assemble
+ARG CRUN_STATIC_SHA256_AMD64=44d493d4b00914ea2f153631ad825c7653aacfa09c373c50dfe08c61258ede9d
+ARG CRUN_STATIC_SHA256_ARM64=2fd023c8a110edd31a2eb2617a3d7633d2615364938250c89cb13fffd9f0ed38
+COPY --from=go /out /go-out
+COPY deploy/node/assemble.sh /src/assemble.sh
+RUN case "$(dpkg --print-architecture)" in amd64) sum=$CRUN_STATIC_SHA256_AMD64 ;; arm64) sum=$CRUN_STATIC_SHA256_ARM64 ;; esac \
+    && CRUN_STATIC_SHA256=$sum /src/assemble.sh /opt/sbxr /go-out
+
+FROM scratch AS bundle
+COPY --from=assemble /opt/sbxr /
 
 # busybox provides nsenter, which runs host commands in the host mount namespace.
 FROM busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
-COPY --from=build /opt/sbxr /bundle
-COPY --from=installer /sbxr-node /usr/local/bin/sbxr-node
+COPY --from=assemble /opt/sbxr /bundle
+COPY --from=go /out/sbxr-node /usr/local/bin/sbxr-node
 ENTRYPOINT ["/usr/local/bin/sbxr-node"]
