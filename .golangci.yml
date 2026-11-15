@@ -72,6 +72,7 @@ linters:
     - nilnil
     - nolintlint
     - prealloc
+    - protogetter
     - revive
     - unconvert
     - unparam
@@ -89,6 +90,9 @@ linters:
             - "!**/internal/netstack/**"
             - "!**/internal/scenario/**"
             - "!**/internal/vm/fake/**"
+            - "!**/internal/shim/**"
+            - "!**/internal/agent/**"
+            - "!**/internal/podnet/**"
           deny:
             - pkg: github.com/spf13/cobra
               desc: only internal/cli may use the CLI framework
@@ -102,6 +106,10 @@ linters:
               desc: only internal/netstack and internal/vm/fake may use the network stack
             - pkg: k8s.io
               desc: the core has no Kubernetes code
+            - pkg: github.com/containerd
+              desc: only the phase 2 adapters (internal/shim, internal/agent) may use containerd APIs
+            - pkg: github.com/vishvananda
+              desc: only the phase 2 adapters (internal/podnet, internal/agent) may use netlink
 
     dupl:
       threshold: 200
@@ -124,10 +132,17 @@ linters:
         - 'github\.com/containers/gvisor-tap-vsock/.+'
         - 'github\.com/miekg/dns\..+'
         - 'net/http\.(Server|Client|Transport)'
+        # Generated protobuf messages, netlink requests, and syscall structs have many optional fields.
+        - '.+/containerd/containerd/api/.+'
+        - '.+/vishvananda/netlink\..+'
+        - 'golang.org/x/sys/unix\..+'
+        - '.+/opencontainers/runtime-spec/specs-go\..+'
+        - 'syscall\.(SysProcAttr|Credential)'
       # Types whose fields are optional by design.
       optional-patterns:
         - '.+/internal/run\.ImageConfig'
         - '.+/internal/scenario\.(Scenario|Workload|Volume)'
+        - '.+/internal/vm/libkrun\.Config'
         - '.+/internal/spec\.Error'
 
     gocritic:
