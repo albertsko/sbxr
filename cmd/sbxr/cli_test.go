@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -101,29 +102,50 @@ func sbxrOnTerminal(t *testing.T, environ []string, args ...string) (string, int
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, bin, args...)
-
-	cmd.Env = append(slices.Clone(environ), "TERM=xterm-256color")
-
-	start := time.Now()
-
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 30, Cols: 100})
+	ptmx, tty, err := pty.Open()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ptmx.Close()
 
-	var out bytes.Buffer
+	// macOS drops unread output when the last terminal file closes, so the test keeps tty open.
+	defer tty.Close()
 
-	copied := make(chan struct{})
+	err = pty.Setsize(ptmx, &pty.Winsize{Rows: 30, Cols: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+
+	cmd.Env = append(slices.Clone(environ), "TERM=xterm-256color")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
+
+	var (
+		mu  sync.Mutex
+		out bytes.Buffer
+	)
 
 	go func() {
-		defer close(copied)
+		buf := make([]byte, 4096)
 
-		_, _ = io.Copy(&out, ptmx) // The copy ends with an I/O error when the terminal closes.
+		for {
+			n, err := ptmx.Read(buf)
+
+			mu.Lock()
+			out.Write(buf[:n])
+			mu.Unlock()
+
+			if err != nil {
+				return
+			}
+		}
 	}()
 
-	err = cmd.Wait()
+	start := time.Now()
+
+	err = cmd.Run()
 	elapsed := time.Since(start)
 
 	var exit *exec.ExitError
@@ -131,8 +153,21 @@ func sbxrOnTerminal(t *testing.T, environ []string, args ...string) (string, int
 		t.Fatal(err)
 	}
 
-	ptmx.Close()
-	<-copied
+	// Wait until the output stops growing.
+	for last := -1; ; time.Sleep(100 * time.Millisecond) {
+		mu.Lock()
+		n := out.Len()
+		mu.Unlock()
+
+		if n == last {
+			break
+		}
+
+		last = n
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
 
 	return out.String(), cmd.ProcessState.ExitCode(), elapsed
 }

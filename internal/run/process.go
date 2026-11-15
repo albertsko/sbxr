@@ -18,8 +18,11 @@ import (
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
-// drainTimeout bounds how long the runner copies terminal output after the VM process exits.
-const drainTimeout = time.Second
+// After the VM process exits, the runner copies terminal output until it is quiet for drainIdle, at most drainTimeout.
+const (
+	drainIdle    = 50 * time.Millisecond
+	drainTimeout = time.Second
+)
 
 // withSignals returns a context that a SIGINT or SIGTERM cancels with a signalError cause.
 func withSignals(ctx context.Context) (context.Context, func()) {
@@ -124,11 +127,16 @@ func (r *Runner) runTTY(cmd *exec.Cmd, interactive bool) error {
 	}
 	defer ptmx.Close() //nolint:errcheck // Closing the terminal ends the output copy.
 
+	// macOS drops unread output when the last terminal file closes, so the runner keeps tty open until the output is read.
+	defer tty.Close() //nolint:errcheck // See above.
+
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	cmd.SysProcAttr.Setsid, cmd.SysProcAttr.Setctty = true, true
 
 	userTerm := term.IsTerminal(int(r.Stdin.Fd()))
 	if userTerm {
+		_ = pty.InheritSize(r.Stdin, ptmx) // A failed resize keeps the default size.
+
 		stopResize := forwardResize(r.Stdin, ptmx)
 		defer stopResize()
 	}
@@ -143,9 +151,6 @@ func (r *Runner) runTTY(cmd *exec.Cmd, interactive bool) error {
 	}
 
 	err = cmd.Start()
-
-	_ = tty.Close() // Only the VM process keeps the terminal open, so its exit ends the output.
-
 	if err != nil {
 		return fmt.Errorf("start vm process: %w", err)
 	}
@@ -156,30 +161,54 @@ func (r *Runner) runTTY(cmd *exec.Cmd, interactive bool) error {
 		}()
 	}
 
-	output := make(chan struct{})
+	output := make(chan struct{}, 1)
 
 	go func() {
-		defer close(output)
+		buf := make([]byte, 32*1024)
 
-		_, _ = io.Copy(r.Stdout, ptmx) // The copy ends with an I/O error when the terminal closes.
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				_, _ = r.Stdout.Write(buf[:n]) // A closed stdout does not stop the VM.
+
+				select {
+				case output <- struct{}{}:
+				default:
+				}
+			}
+
+			if err != nil {
+				return
+			}
+		}
 	}()
 
 	err = cmd.Wait()
 
-	select {
-	case <-output:
-	case <-time.After(drainTimeout):
-	}
+	drain(output)
 
 	return err //nolint:wrapcheck // start inspects the exec error.
 }
 
-// forwardResize copies the terminal size of from to the pseudo-terminal now and on every SIGWINCH.
+// drain waits until output has been quiet for a moment, at most drainTimeout.
+func drain(output <-chan struct{}) {
+	deadline := time.After(drainTimeout)
+
+	for {
+		select {
+		case <-output:
+		case <-time.After(drainIdle):
+			return
+		case <-deadline:
+			return
+		}
+	}
+}
+
+// forwardResize copies the terminal size of from to the pseudo-terminal on every SIGWINCH.
 func forwardResize(from, ptmx *os.File) func() {
 	winch := make(chan os.Signal, 1)
 	signal.Notify(winch, syscall.SIGWINCH)
-
-	winch <- syscall.SIGWINCH
 
 	go func() {
 		for range winch {
