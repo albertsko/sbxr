@@ -251,7 +251,7 @@ Exit criteria:
 
 ### S7: Kubernetes phase 1
 
-Done. Evidence: `kind` job run [43719566597](https://github.com/albertsko/sbxr/actions/runs/43719566597). The release workflow jobs `node-image` and `node-manifests` have not run yet, because they run only for a release tag.
+Done. Evidence: `kind` job run [43723330626](https://github.com/albertsko/sbxr/actions/runs/43723330626). The release workflow jobs `node-image` and `node-manifests` have not run yet, because they run only for a release tag.
 
 Scope:
 
