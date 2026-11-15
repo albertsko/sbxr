@@ -15,6 +15,8 @@ import (
 	"path"
 	"strings"
 
+	"golang.org/x/term"
+
 	"github.com/albertsko/sbxr/internal/krunconfig"
 	"github.com/albertsko/sbxr/internal/vm"
 )
@@ -32,7 +34,12 @@ func (Hypervisor) Start(m vm.Machine) error {
 		return fmt.Errorf("open root: %w", err)
 	}
 
-	os.Exit(Boot(root, Stdio{In: os.Stdin, Out: os.Stdout, Err: os.Stderr}))
+	var in io.Reader = os.Stdin
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		in = console(os.Stdin)
+	}
+
+	os.Exit(Boot(root, Stdio{In: in, Out: os.Stdout, Err: os.Stderr}))
 
 	return nil
 }

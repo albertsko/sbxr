@@ -89,7 +89,7 @@ func reexec() error {
 
 func enter() error {
 	// The capabilities gained by the execve reset the parent death signal, so set it again.
-	err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(syscall.SIGKILL), 0, 0, 0)
+	err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(syscall.SIGTERM), 0, 0, 0)
 	if err != nil {
 		return fmt.Errorf("set parent death signal: %w", err)
 	}
@@ -140,7 +140,8 @@ func Start(ctx context.Context, cmd *exec.Cmd) error {
 	cmd.Env = append(cmd.Environ(), stageEnv+"="+stageWait)
 	cmd.SysProcAttr = &syscall.SysProcAttr{}
 	cmd.SysProcAttr.Cloneflags = syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS
-	cmd.SysProcAttr.Pdeathsig = syscall.SIGKILL
+	// SIGTERM lets a run clean up when the process outside dies.
+	cmd.SysProcAttr.Pdeathsig = syscall.SIGTERM
 
 	err = cmd.Start()
 	_ = r.Close() // Only the child reads the pipe.

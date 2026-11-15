@@ -1,13 +1,17 @@
 package run
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,11 +22,8 @@ import (
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
-// After the VM process exits, the runner copies terminal output until it is quiet for drainIdle, at most drainTimeout.
-const (
-	drainIdle    = 50 * time.Millisecond
-	drainTimeout = time.Second
-)
+// drainTimeout bounds the terminal output copy when the end marker could not be written.
+const drainTimeout = time.Second
 
 // withSignals returns a context that a SIGINT or SIGTERM cancels with a signalError cause.
 func withSignals(ctx context.Context) (context.Context, func()) {
@@ -65,15 +66,20 @@ func (r *Runner) start(ctx context.Context, s spec.Spec, dir string) (int, error
 		err = r.runPlain(cmd, s.Interactive)
 	}
 
-	var exit *exec.ExitError
+	exit, isExit := errors.AsType[*exec.ExitError](err)
 
 	switch {
 	case err == nil:
 		return 0, nil
-	case errors.As(err, &exit) && exit.Exited():
-		return exit.ExitCode(), nil
 	case ctx.Err() != nil:
 		return ExitSetup, fmt.Errorf("vm process: %w", context.Cause(ctx))
+	case isExit && exit.Exited():
+		return exit.ExitCode(), nil
+	case isExit:
+		// A signal that the runner did not send, such as Ctrl-C through the terminal, ends the VM like a workload.
+		status, _ := exit.Sys().(syscall.WaitStatus)
+
+		return 128 + int(status.Signal()), nil
 	default:
 		return ExitSetup, &spec.Error{Source: "vm", Problem: err.Error()}
 	}
@@ -120,29 +126,36 @@ func (r *Runner) copyStdin() (*os.File, error) {
 	return pr, nil
 }
 
-// runTTY gives the VM process a new pseudo-terminal as its controlling terminal.
+// runTTY gives the VM process a new pseudo-terminal for its output, and for its input only when interactive.
+// Without -i, the VM process reads an empty stdin, so it never reads the user's terminal.
 func (r *Runner) runTTY(cmd *exec.Cmd, interactive bool) error {
 	ptmx, tty, err := pty.Open()
 	if err != nil {
 		return fmt.Errorf("open pseudo-terminal: %w", err)
 	}
-	defer ptmx.Close() //nolint:errcheck // Closing the terminal ends the output copy.
+	defer ptmx.Close() //nolint:errcheck // The output copy has ended here.
 
-	// macOS drops unread output when the last terminal file closes, so the runner keeps tty open until the output is read.
+	// The runner keeps tty open until the output is copied, because macOS drops unread output at the last close.
 	defer tty.Close() //nolint:errcheck // See above.
 
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
-	cmd.SysProcAttr.Setsid, cmd.SysProcAttr.Setctty = true, true
+	// The terminal is not the VM process's controlling terminal, because the exit of a controlling process
+	// hangs the terminal up, and then macOS drops unread output and the end marker cannot be written.
+	cmd.Stdout, cmd.Stderr = tty, tty
+	cmd.SysProcAttr.Setpgid = true
 
-	userTerm := term.IsTerminal(int(r.Stdin.Fd()))
-	if userTerm {
+	if interactive {
+		cmd.Stdin = tty
+	}
+
+	if term.IsTerminal(int(r.Stdin.Fd())) {
 		_ = pty.InheritSize(r.Stdin, ptmx) // A failed resize keeps the default size.
 
 		stopResize := forwardResize(r.Stdin, ptmx)
 		defer stopResize()
 	}
 
-	if userTerm && interactive {
+	// validate ensures that the user's stdin is a terminal with -i -t.
+	if interactive {
 		state, err := term.MakeRaw(int(r.Stdin.Fd()))
 		if err != nil {
 			return fmt.Errorf("set terminal raw mode: %w", err)
@@ -162,48 +175,109 @@ func (r *Runner) runTTY(cmd *exec.Cmd, interactive bool) error {
 		}()
 	}
 
-	output := make(chan struct{}, 1)
+	marker := rand.Text()
+	out := &guardedWriter{mu: sync.Mutex{}, w: r.Stdout, closed: false}
+	copied := make(chan struct{})
 
 	go func() {
-		buf := make([]byte, 32*1024)
+		defer close(copied)
 
-		for {
-			n, err := ptmx.Read(buf)
-			if n > 0 {
-				_, _ = r.Stdout.Write(buf[:n]) // A closed stdout does not stop the VM.
-
-				select {
-				case output <- struct{}{}:
-				default:
-				}
-			}
-
-			if err != nil {
-				return
-			}
-		}
+		copyUntil(out, ptmx, []byte(marker))
 	}()
 
 	err = cmd.Wait()
 
-	drain(output)
+	// The marker follows all VM output through the terminal, so the copy ends exactly after that output.
+	_, markErr := io.WriteString(tty, marker)
+	if markErr != nil {
+		markErr = fmt.Errorf("end terminal output: %w", markErr)
+	}
 
-	return err //nolint:wrapcheck // start inspects the exec error.
+	select {
+	case <-copied:
+	case <-time.After(markerTimeout(markErr)):
+	}
+
+	out.close()
+
+	return errors.Join(err, markErr)
 }
 
-// drain waits until output has been quiet for a moment, at most drainTimeout.
-func drain(output <-chan struct{}) {
-	deadline := time.After(drainTimeout)
+// markerTimeout waits for the copy without limit, unless the marker could not be written.
+func markerTimeout(markErr error) time.Duration {
+	if markErr != nil {
+		return drainTimeout
+	}
+
+	return math.MaxInt64
+}
+
+// copyUntil copies src to dst until it reads marker, which it drops.
+// It also ends at a read error. Write errors do not stop it, so that the VM never blocks on output.
+func copyUntil(dst io.Writer, src io.Reader, marker []byte) {
+	buf := make([]byte, 32*1024)
+
+	var pending []byte
 
 	for {
-		select {
-		case <-output:
-		case <-time.After(drainIdle):
+		n, err := src.Read(buf)
+		pending = append(pending, buf[:n]...)
+
+		if i := bytes.Index(pending, marker); i >= 0 {
+			_, _ = dst.Write(pending[:i])
+
 			return
-		case <-deadline:
+		}
+
+		keep := 0
+		if err == nil {
+			keep = markerStart(pending, marker)
+		}
+
+		_, _ = dst.Write(pending[:len(pending)-keep])
+		pending = append(pending[:0], pending[len(pending)-keep:]...)
+
+		if err != nil {
 			return
 		}
 	}
+}
+
+// markerStart returns the length of the longest end of b that starts marker.
+// Only those bytes wait for the next read, so that output never stalls.
+func markerStart(b, marker []byte) int {
+	for n := min(len(b), len(marker)-1); n > 0; n-- {
+		if bytes.HasSuffix(b, marker[:n]) {
+			return n
+		}
+	}
+
+	return 0
+}
+
+// guardedWriter drops writes after close, so that no output appears after the run ends.
+type guardedWriter struct {
+	mu     sync.Mutex
+	w      io.Writer
+	closed bool
+}
+
+func (g *guardedWriter) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.closed {
+		return 0, io.ErrClosedPipe
+	}
+
+	return g.w.Write(p) //nolint:wrapcheck // This is a plain write.
+}
+
+func (g *guardedWriter) close() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.closed = true
 }
 
 // forwardResize copies the terminal size of from to the pseudo-terminal on every SIGWINCH.

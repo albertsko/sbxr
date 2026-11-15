@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"golang.org/x/term"
+
 	"github.com/albertsko/sbxr/internal/krunconfig"
 	"github.com/albertsko/sbxr/internal/preflight"
 	"github.com/albertsko/sbxr/internal/spec"
@@ -118,6 +120,11 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 
 	r.Log.Debug("run state", "state", "preparing")
 
+	cfg, err := r.workload(s, img)
+	if err != nil {
+		return ExitSetup, err
+	}
+
 	err = os.MkdirAll(r.RunsDir, 0o700)
 	if err != nil {
 		return ExitSetup, fmt.Errorf("create runs directory: %w", err)
@@ -131,7 +138,7 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 	release := func() error { return nil }
 	defer func() { r.cleanup(dir, release) }()
 
-	release, err = r.prepare(ctx, s, img, dir)
+	release, err = r.prepare(ctx, s, img, cfg, dir)
 	if err != nil {
 		return ExitSetup, err
 	}
@@ -146,6 +153,10 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 }
 
 func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
+	if s.Interactive && s.TTY && !term.IsTerminal(int(r.Stdin.Fd())) {
+		return &spec.Error{Source: "-t", Problem: "the input device is not a terminal", Fix: "drop -t, or run sbxr from a terminal"}
+	}
+
 	err := preflight.Run(ctx, r.Checks).Err()
 	if err != nil {
 		return err //nolint:wrapcheck // The preflight error is a complete user message.
@@ -162,18 +173,8 @@ func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
 	return nil
 }
 
-// prepare creates the run root and writes the workload config and the machine into the run directory.
-// It returns the release function of the root, also on error.
-func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, dir string) (func() error, error) {
-	rootPath, release, err := r.Images.NewRoot(ctx, img, dir)
-	if err != nil {
-		return func() error { return nil }, imageError(s, err)
-	}
-
-	return release, r.configure(s, img, dir, rootPath)
-}
-
-func (r *Runner) configure(s spec.Spec, img Image, dir, rootPath string) error {
+// workload resolves and checks the guest init config before any run state exists.
+func (r *Runner) workload(s spec.Spec, img Image) (krunconfig.Config, error) {
 	resolveUser := func(user string) (uint32, uint32, error) {
 		uid, gid, err := r.Images.ResolveUser(img, user)
 		if err != nil {
@@ -185,7 +186,7 @@ func (r *Runner) configure(s spec.Spec, img Image, dir, rootPath string) error {
 
 	cfg, warnings, err := Workload(s, img.Config, resolveUser)
 	if err != nil {
-		return err
+		return krunconfig.Config{}, err
 	}
 
 	for _, w := range warnings {
@@ -194,9 +195,24 @@ func (r *Runner) configure(s spec.Spec, img Image, dir, rootPath string) error {
 
 	_, err = krunconfig.Marshal(cfg)
 	if err != nil {
-		return &spec.Error{Source: "workload", Problem: err.Error()}
+		return krunconfig.Config{}, &spec.Error{Source: "workload", Problem: err.Error()}
 	}
 
+	return cfg, nil
+}
+
+// prepare creates the run root and writes the workload config and the machine into the run directory.
+// It returns the release function of the root, also on error.
+func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, cfg krunconfig.Config, dir string) (func() error, error) {
+	rootPath, release, err := r.Images.NewRoot(ctx, img, dir)
+	if err != nil {
+		return func() error { return nil }, imageError(s, err)
+	}
+
+	return release, r.configure(s, cfg, dir, rootPath)
+}
+
+func (r *Runner) configure(s spec.Spec, cfg krunconfig.Config, dir, rootPath string) error {
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		return fmt.Errorf("open run root: %w", err)

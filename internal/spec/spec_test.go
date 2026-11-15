@@ -1,6 +1,7 @@
 package spec_test
 
 import (
+	"errors"
 	"net/netip"
 	"reflect"
 	"testing"
@@ -29,7 +30,6 @@ func TestParseAcceptsValidInput(t *testing.T) {
 		Pull:        "never",
 		Interactive: true,
 		TTY:         true,
-		Quiet:       true,
 	}
 
 	got, err := spec.Parse(in, 4)
@@ -54,12 +54,11 @@ func TestParseAcceptsValidInput(t *testing.T) {
 		Net:         true,
 		AllowLAN:    true,
 		Workdir:     "/app",
-		User:        &spec.User{UID: 1000, GID: 42, HasGID: true},
+		User:        &spec.User{UID: 1000, GID: 42},
 		Entrypoint:  &entrypoint,
 		Pull:        spec.PullNever,
 		Interactive: true,
 		TTY:         true,
-		Quiet:       true,
 	}
 
 	if !reflect.DeepEqual(got, want) {
@@ -130,8 +129,10 @@ func TestParseRejectsInvalidInput(t *testing.T) {
 		{name: "allow-lan without net", in: spec.Input{Image: "alpine", AllowLAN: true}, want: `--allow-lan: requires --net`},
 		{name: "relative workdir", in: spec.Input{Image: "alpine", Workdir: "app"}, want: `-w "app": must be absolute; for example /app`},
 		{name: "control character in workdir", in: spec.Input{Image: "alpine", Workdir: "/a\x00"}, want: `-w "/a\x00": control character U+0000; only tab and newline are allowed`},
-		{name: "user name", in: spec.Input{Image: "alpine", User: "root"}, want: `-u "root": must be UID or UID:GID with decimal numbers; for example -u 1000:1000`},
-		{name: "empty group", in: spec.Input{Image: "alpine", User: "1000:"}, want: `-u "1000:": must be UID or UID:GID with decimal numbers; for example -u 1000:1000`},
+		{name: "user name", in: spec.Input{Image: "alpine", User: "root"}, want: `-u "root": must be UID or UID:GID with decimal numbers below 4294967295; for example -u 1000:1000`},
+		{name: "uid -1", in: spec.Input{Image: "alpine", User: "4294967295"}, want: `-u "4294967295": must be UID or UID:GID with decimal numbers below 4294967295; for example -u 1000:1000`},
+		{name: "gid -1", in: spec.Input{Image: "alpine", User: "0:4294967295"}, want: `-u "0:4294967295": must be UID or UID:GID with decimal numbers below 4294967295; for example -u 1000:1000`},
+		{name: "empty group", in: spec.Input{Image: "alpine", User: "1000:"}, want: `-u "1000:": must be UID or UID:GID with decimal numbers below 4294967295; for example -u 1000:1000`},
 		{name: "control character in entrypoint", in: spec.Input{Image: "alpine", Entrypoint: new("\x7f")}, want: `--entrypoint "\x7f": control character U+007F; only tab and newline are allowed`},
 		{name: "unknown pull policy", in: spec.Input{Image: "alpine", Pull: "sometimes"}, want: `--pull "sometimes": unknown policy; use missing, always, or never`},
 	}
@@ -150,4 +151,51 @@ func TestParseRejectsInvalidInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEnvFileMatchesEnvFlag(t *testing.T) {
+	t.Parallel()
+
+	entries := []string{"A=1", "A= spaced value ", "A=tab\tinside", "A=", "A==", "A=#not a comment", " A=1", "KRUN_X=1", "HOSTNAME=x", "1A=x", "A=\x1b", "A"}
+
+	for _, kv := range entries {
+		t.Run(kv, func(t *testing.T) {
+			t.Parallel()
+
+			fromFlag, flagErr := spec.Parse(spec.Input{Image: "alpine", Env: []string{kv}}, 1)
+			fromFile, fileErr := spec.Parse(spec.Input{Image: "alpine", EnvFiles: []spec.EnvFile{{Path: "a.env", Data: []byte(kv + "\n")}}}, 1)
+
+			if !reflect.DeepEqual(fromFlag.Env, fromFile.Env) {
+				t.Errorf("env from -e = %q, from --env-file = %q", fromFlag.Env, fromFile.Env)
+			}
+
+			if problem(flagErr) != problem(fileErr) {
+				t.Errorf("error from -e = %v, from --env-file = %v", flagErr, fileErr)
+			}
+		})
+	}
+}
+
+func TestEnvFileSkipsBlankAndCommentLinesAndCR(t *testing.T) {
+	t.Parallel()
+
+	data := "# comment\r\n  # indented comment\n \t\nA=1\r\nB=two words \n"
+
+	got, err := spec.Parse(spec.Input{Image: "alpine", EnvFiles: []spec.EnvFile{{Path: "a.env", Data: []byte(data)}}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if want := []string{"A=1", "B=two words "}; !reflect.DeepEqual(got.Env, want) {
+		t.Errorf("Env = %q, want %q", got.Env, want)
+	}
+}
+
+// problem returns the error without its source, so that -e and --env-file errors compare equal.
+func problem(err error) string {
+	if e, ok := errors.AsType[*spec.Error](err); ok {
+		return e.Value + ": " + e.Problem + "; " + e.Fix
+	}
+
+	return ""
 }

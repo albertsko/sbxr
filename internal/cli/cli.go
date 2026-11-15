@@ -16,6 +16,7 @@ import (
 	"charm.land/lipgloss/v2"
 	charmlog "charm.land/log/v2"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/preflight"
@@ -83,7 +84,10 @@ type app struct {
 
 // Main runs the sbxr command line with args and returns the process exit code.
 func Main(args []string, version string, b Backend) int {
-	cobra.EnableTraverseRunHooks = true
+	// Without a terminal on stdout, no output has colors, including stderr.
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		_ = os.Setenv("NO_COLOR", "1") // Setenv fails only on invalid names.
+	}
 
 	stdout, err := hideStdout()
 	if err != nil {
@@ -171,7 +175,7 @@ func (a *app) setup(cmd *cobra.Command) error {
 	}
 
 	a.level = level
-	logger := charmlog.NewWithOptions(cmd.ErrOrStderr(), charmlog.Options{Level: level, Prefix: "sbxr"})
+	logger := charmlog.NewWithOptions(cmd.ErrOrStderr(), charmlog.Options{Level: level})
 	a.log = slog.New(logger)
 
 	return nil

@@ -54,7 +54,12 @@ func WriteMachine(dir string, m Machine) error {
 // Child runs the child mode with the arguments after ChildArg and returns the exit code.
 // It returns only when the VM could not start.
 func Child(args []string, h Hypervisor, stderr io.Writer) int {
-	watchLifeline()
+	runDir := ""
+	if len(args) == 1 {
+		runDir = args[0]
+	}
+
+	watchLifeline(runDir)
 
 	err := child(args, h)
 

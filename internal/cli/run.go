@@ -63,7 +63,8 @@ func (a *app) runCommand() *cobra.Command {
 	flags.StringVar(&in.Pull, "pull", string(spec.PullMissing), "When to download the image: missing, always, or never")
 	flags.BoolVarP(&in.Interactive, "interactive", "i", false, "Keep stdin open")
 	flags.BoolVarP(&in.TTY, "tty", "t", false, "Allocate a terminal")
-	flags.BoolVarP(&in.Quiet, "quiet", "q", false, "Hide progress output")
+	// Progress output comes with image pull in S4. The flag exists now, so that scripts can pass it.
+	flags.BoolVarP(new(bool), "quiet", "q", false, "Hide progress output")
 
 	return cmd
 }
