@@ -45,7 +45,7 @@ func TestHVCLITarget(t *testing.T) {
 
 		return &scenario.Binary{
 			Path:     bin,
-			CacheDir: filepath.Join(t.TempDir(), "cache"),
+			CacheDir: hvCacheDir(t),
 			Images:   refs,
 			Flags:    hvFlags,
 			Env:      hvEnv(),
@@ -58,7 +58,7 @@ func TestHVDoctorPasses(t *testing.T) {
 	t.Parallel()
 
 	bin := hvBinary(t)
-	out, code := sbxr(t, bin, hvEnv(t.TempDir()), "doctor", "--json")
+	out, code := sbxr(t, bin, hvEnv(hvCacheDir(t)), "doctor", "--json")
 
 	var report struct {
 		OK     bool `json:"ok"`
@@ -79,15 +79,15 @@ func TestHVFailedPreflightStartsNoVM(t *testing.T) {
 
 	bin := hvBinary(t)
 	refs := hvImages(t)
-	dir := t.TempDir()
-	environ := append(hvEnv(dir), "SBXR_LIB_DIR="+filepath.Join(dir, "nolib"))
+	cacheDir := hvCacheDir(t)
+	environ := append(hvEnv(cacheDir), "SBXR_LIB_DIR="+filepath.Join(t.TempDir(), "nolib"))
 
 	out, code := sbxr(t, bin, environ, "run", refs[scenario.Busybox], "echo", "hi")
 	if code != 125 || !strings.HasPrefix(out, `sbxr: preflight "libkrun": `) {
 		t.Errorf("sbxr run = %d, %q; want 125 and a libkrun preflight error", code, out)
 	}
 
-	err := scenario.CheckClean(filepath.Join(dir, "cache"))
+	err := scenario.CheckClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
@@ -116,7 +116,7 @@ func TestHVAppArmorNeedsInstallPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, code := sbxr(t, bin, hvEnv(t.TempDir()), "doctor")
+	out, code := sbxr(t, bin, hvEnv(hvCacheDir(t)), "doctor")
 	if code != 1 || !strings.Contains(out, "fail  userns") || !strings.Contains(out, "install sbxr to /usr/local/bin") || strings.Contains(out, "apparmor_parser") {
 		t.Errorf("sbxr doctor = %d, %q; want a userns failure that asks for /usr/local/bin and prints no profile command", code, out)
 	}
@@ -148,7 +148,7 @@ func TestHVInteractiveShell(t *testing.T) {
 	args := append(append([]string{"run", "-it"}, hvFlags...), refs[scenario.Busybox], "sh")
 	cmd := exec.CommandContext(ctx, bin, args...)
 
-	cmd.Env = append(hvEnv(t.TempDir()), "TERM=xterm")
+	cmd.Env = append(hvEnv(hvCacheDir(t)), "TERM=xterm")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 
@@ -268,16 +268,36 @@ func sbxr(t *testing.T, bin string, environ []string, args ...string) (string, i
 	return string(out), cmd.ProcessState.ExitCode()
 }
 
-// hvEnv returns the environment for sbxr: PATH, SBXR_LIB_DIR when set, and a cache in dir when given.
-func hvEnv(dir ...string) []string {
+// hvCacheDir returns a cache directory for one test.
+// On Linux, cache files belong to subordinate ids, so a cleanup prunes the cache before the temporary directory goes.
+func hvCacheDir(t *testing.T) string {
+	t.Helper()
+
+	bin := hvBinary(t)
+	dir := filepath.Join(t.TempDir(), "cache")
+
+	t.Cleanup(func() {
+		cmd := exec.CommandContext(context.Background(), bin, "prune", "--force")
+		cmd.Env = hvEnv(dir)
+
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Logf("prune %s: %v: %s", dir, err, out)
+		}
+	})
+
+	return dir
+}
+
+// hvEnv returns the environment for sbxr: PATH, SBXR_LIB_DIR when set, and the cache directory when given.
+func hvEnv(cacheDir ...string) []string {
 	environ := []string{"PATH=" + os.Getenv("PATH")}
 
 	if lib := os.Getenv("SBXR_LIB_DIR"); lib != "" {
 		environ = append(environ, "SBXR_LIB_DIR="+lib)
 	}
 
-	if len(dir) > 0 {
-		environ = append(environ, "SBXR_CACHE_DIR="+filepath.Join(dir[0], "cache"))
+	if len(cacheDir) > 0 {
+		environ = append(environ, "SBXR_CACHE_DIR="+cacheDir[0])
 	}
 
 	return environ
