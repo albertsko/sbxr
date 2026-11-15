@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -124,13 +125,14 @@ func (p *process) started() {
 }
 
 // watch records the process's exit when it comes.
-func (p *process) watch(pid int, exited <-chan exit) {
+func (p *process) watch(pid int, exited <-chan exit, log *slog.Logger) {
 	p.mu.Lock()
 	p.pid = pid
 	p.mu.Unlock()
 
 	go func() {
 		e := <-exited
+		log.Info("exited", "pid", pid, "status", e.Status)
 
 		p.mu.Lock()
 		p.exit = e
