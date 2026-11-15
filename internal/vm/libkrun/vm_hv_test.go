@@ -94,6 +94,7 @@ func TestVM(t *testing.T) {
 		}
 
 		out, code := runVM(t, libDir, guest, onLine, "net", "0.0.0.0:"+guestPort, hostAddr)
+		// The TCP dials catch TSI. The vsock dial catches a vsock port that libkrun maps to the host.
 		if want := "listening\ndial failed " + hostAddr + "\nvsock dial failed\n"; code != 0 || out != want {
 			t.Errorf("exit code %d, stdout %q, want 0 and %q", code, out, want)
 		}
