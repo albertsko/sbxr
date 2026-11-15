@@ -78,14 +78,16 @@ func TestCRIHandlers(t *testing.T) {
 	}
 }
 
-func TestParseHandlersRejectsBadInput(t *testing.T) {
+func TestParseHandlers(t *testing.T) {
 	t.Parallel()
 
-	nameless := protowire.AppendBytes(protowire.AppendTag(nil, fieldRuntimeHandlers, protowire.BytesType), nil)
+	if got, err := parseHandlers([]byte{0x1a, 0x05, 0x0a}); err == nil {
+		t.Errorf("parseHandlers of a truncated response = %q, want an error", got)
+	}
 
-	for name, b := range map[string][]byte{"truncated": {0x1a, 0x05, 0x0a}, "no name": nameless} {
-		if got, err := parseHandlers(b); err == nil {
-			t.Errorf("%s: parseHandlers = %q, want an error", name, got)
-		}
+	// containerd lists its default handler with the empty name, which protobuf omits.
+	nameless := protowire.AppendBytes(protowire.AppendTag(nil, fieldRuntimeHandlers, protowire.BytesType), nil)
+	if got, err := parseHandlers(nameless); err != nil || !slices.Equal(got, []string{""}) {
+		t.Errorf("parseHandlers of the default handler = %q, %v", got, err)
 	}
 }

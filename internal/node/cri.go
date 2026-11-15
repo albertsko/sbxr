@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"google.golang.org/grpc"
@@ -80,6 +79,7 @@ func parseHandlers(b []byte) ([]string, error) {
 	return names, nil
 }
 
+// handlerName returns the name of a RuntimeHandler. The default handler has the empty name, which protobuf omits.
 func handlerName(b []byte) (string, error) {
 	for len(b) > 0 {
 		num, typ, n := protowire.ConsumeTag(b)
@@ -106,7 +106,7 @@ func handlerName(b []byte) (string, error) {
 		b = b[m:]
 	}
 
-	return "", errors.New("CRI runtime handler has no name")
+	return "", nil
 }
 
 // rawCodec sends and receives protobuf messages that are already encoded.
