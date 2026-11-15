@@ -884,11 +884,24 @@ func TestInstallPhase2(t *testing.T) {
 		t.Errorf("labels %v, drop-in:\n%s", f.labels, dropIn)
 	}
 
+	if target, err := os.Readlink(f.root + ShimLink); err != nil || target != "/opt/sbxr/bin/containerd-shim-sbxr-v1" {
+		t.Errorf("shim link: %q, %v", target, err)
+	}
+
 	// A pod keeps the bundle in place.
 	write(t, f.root+PodsRoot+"/pod1/vm.pid", "42")
 
 	err = in.Uninstall(t.Context())
 	if err == nil || !strings.Contains(f.annotations[PreflightAnnotation], "1 sbxr containers still exist (pod1)") || !exists(f.root+Prefix) {
 		t.Errorf("error %v, annotations %v; want the bundle kept while pod1 exists", err, f.annotations)
+	}
+
+	err = os.RemoveAll(f.root + PodsRoot)
+	if err == nil {
+		err = in.Uninstall(t.Context())
+	}
+
+	if _, lerr := os.Lstat(f.root + ShimLink); err != nil || lerr == nil {
+		t.Errorf("uninstall: %v; shim link: %v, want removed", err, lerr)
 	}
 }

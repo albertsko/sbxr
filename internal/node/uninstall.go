@@ -41,7 +41,7 @@ func (in *Installer) Uninstall(ctx context.Context) error {
 	// Keep verifyAfter: the kubelet may still post the handler of the removed drop-in, and a reinstall must not trust it.
 	err = errors.Join(
 		os.RemoveAll(in.HostRoot+Prefix), os.RemoveAll(in.HostRoot+Prefix+".new"),
-		os.RemoveAll(in.HostRoot+filepath.Dir(RuntimeRoot)),
+		os.RemoveAll(in.HostRoot+filepath.Dir(RuntimeRoot)), unlinkShim(in.HostRoot+ShimLink),
 	)
 	if err != nil {
 		return in.fail(ctx, fmt.Errorf("remove files: %w", err))

@@ -34,6 +34,10 @@ const (
 	RuntimeRoot = "/run/sbxr/runc"
 	// PodsRoot holds a directory for each phase 2 pod while it exists.
 	PodsRoot = "/run/sbxr/pods"
+	// ShimLink makes the phase 2 shim visible to containerd. containerd's shim sandboxer finds a shim only by its name,
+	// in PATH or next to the containerd binary, and ignores runtime_path.
+	ShimLink = "/usr/local/bin/containerd-shim-sbxr-v1"
+	shimPath = Prefix + "/bin/containerd-shim-sbxr-v1"
 	// stateDir holds installer state that must survive a bundle replacement.
 	stateDir = "/var/lib/sbxr"
 	// restartPending exists from a drop-in change until containerd restarts successfully. It holds the unit to restart.
@@ -101,6 +105,13 @@ func (in *Installer) Install(ctx context.Context) error {
 	out, err := in.Host(ctx, Prefix+"/bin/krun", "--version")
 	if err != nil || !strings.Contains(out, "+LIBKRUN") {
 		return in.reject(ctx, fmt.Sprintf("bundle: krun --version on the host: %v: %s", err, out))
+	}
+
+	if in.Phase == 2 {
+		err = linkShim(in.HostRoot + ShimLink)
+		if err != nil {
+			return err
+		}
 	}
 
 	return in.configure(ctx, in.HostRoot+d.dropInFile(), unit, dropIn, pending)

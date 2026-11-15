@@ -251,3 +251,39 @@ func copyFile(src, dst string) (string, error) {
 
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// linkShim points link at the installed shim. It replaces the link atomically.
+func linkShim(link string) error {
+	tmp := link + ".tmp"
+	_ = os.Remove(tmp)
+
+	err := os.MkdirAll(filepath.Dir(link), 0o755) //nolint:gosec // A bin directory.
+	if err == nil {
+		err = os.Symlink(shimPath, tmp)
+	}
+
+	if err == nil {
+		err = os.Rename(tmp, link)
+	}
+
+	if err != nil {
+		return fmt.Errorf("link the shim at %s: %w", link, err)
+	}
+
+	return nil
+}
+
+// unlinkShim removes link when it points at the installed shim.
+func unlinkShim(link string) error {
+	target, err := os.Readlink(link)
+	if err != nil || target != shimPath {
+		return nil //nolint:nilerr // Not ours, or gone.
+	}
+
+	err = os.Remove(link)
+	if err != nil {
+		return fmt.Errorf("remove %s: %w", link, err)
+	}
+
+	return nil
+}
