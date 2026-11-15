@@ -2,6 +2,7 @@ package guestmount
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path"
@@ -29,9 +30,11 @@ func Reserved(p string) string {
 	return ""
 }
 
-// Resolve returns the guest path p with each symlink resolved inside root, the directory that holds the guest root.
-// The first missing component ends the lookup, and the rest of p stays as it is.
-func Resolve(root, p string) (string, error) {
+// MountPoint walks the guest path p inside root, the directory that holds the guest root, like the kernel resolves it.
+// It follows each symlink and creates each missing component as a directory, so `..` and symlinks after it apply to real directories.
+// It returns the resolved guest path, which the mount must use. It fails when the result is reserved,
+// and it never creates a directory in a reserved path.
+func MountPoint(root, p string) (string, error) {
 	rest := strings.Split(p, "/")
 	cur := "/"
 	links := 0
@@ -50,20 +53,30 @@ func Resolve(root, p string) (string, error) {
 		}
 
 		next := path.Join(cur, c)
+		host := filepath.Join(root, next)
 
-		target, err := os.Readlink(filepath.Join(root, next))
+		target, err := os.Readlink(host)
 
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			return path.Join(append([]string{next}, rest...)...), nil
+			if r := Reserved(next); r != "" {
+				return "", reservedError(p, next, r)
+			}
+
+			// Workload users other than root must reach the mount point.
+			if err := os.Mkdir(host, 0o755); err != nil { //nolint:gosec // See above.
+				return "", err //nolint:wrapcheck // The error names the path.
+			}
+
+			cur = next
 		case errors.Is(err, syscall.EINVAL):
 			cur = next // Not a symlink.
 		case err != nil:
-			return "", err //nolint:wrapcheck // The caller names the path.
+			return "", err //nolint:wrapcheck // The error names the path.
 		default:
 			links++
 			if links > maxSymlinks {
-				return "", syscall.ELOOP
+				return "", fmt.Errorf("%s: %w", p, syscall.ELOOP)
 			}
 
 			if path.IsAbs(target) {
@@ -74,5 +87,13 @@ func Resolve(root, p string) (string, error) {
 		}
 	}
 
+	if r := Reserved(cur); r != "" {
+		return "", reservedError(p, cur, r)
+	}
+
 	return cur, nil
+}
+
+func reservedError(p, resolved, reserved string) error {
+	return fmt.Errorf("%s resolves to %s, which is under the reserved path %s", p, resolved, reserved)
 }

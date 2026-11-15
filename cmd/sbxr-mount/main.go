@@ -67,16 +67,9 @@ func exitCode(err error) int {
 // mount mounts m on its guest path with symlinks resolved, so that an image symlink cannot put a volume over a reserved path.
 // Earlier volumes are mounted already, so symlinks inside them count too.
 func mount(m guestmount.Mount) error {
-	target, err := guestmount.Resolve("/", m.Path)
+	// The same walk resolves, checks, and creates the mount point, so nothing can disagree with the check.
+	target, err := guestmount.MountPoint("/", m.Path)
 	if err != nil {
-		return err //nolint:wrapcheck // The caller names the mount.
-	}
-
-	if r := guestmount.Reserved(target); r != "" {
-		return fmt.Errorf("%s resolves to %s, which is under the reserved path %s", m.Path, target, r)
-	}
-
-	if err := os.MkdirAll(target, 0o755); err != nil { //nolint:gosec // Workload users other than root must reach the mount point.
 		return err //nolint:wrapcheck // The caller names the mount.
 	}
 
