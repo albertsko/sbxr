@@ -60,7 +60,7 @@ func main() {
 }
 
 func mount(m guestmount.Mount) error {
-	if err := os.MkdirAll(m.Path, 0o755); err != nil {
+	if err := os.MkdirAll(m.Path, 0o755); err != nil { //nolint:gosec // Workload users other than root must reach the mount point.
 		return err //nolint:wrapcheck // The caller names the mount.
 	}
 
