@@ -2,7 +2,7 @@
 
 Status: steps S1 to S8 are done. The PRD stays a living document. Last update: 2026-11-15.
 
-**Next: no build step is open.** Open questions and assumptions in the PRD remain.
+**Next: no build step is open.** See "Open work" for what remains.
 
 The design decisions in [PRD.md](PRD.md) are final unless a failed assumption or an open question reopens them (see "Changing a decision"). This handoff tells the next engineer or AI agent how to continue. It does not repeat the PRD. When the two disagree, the PRD wins, so fix this handoff.
 
@@ -34,7 +34,7 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - The fake VM runs `internal/netstack/guestsim`, a small gvisor guest stack with DHCP, so the network scenarios run without a hypervisor. Its busybox has `wget`, `nc`, and `nslookup`.
 - The connection caps have no scenario, because the fake busybox has no loops or background jobs. The netstack tests cover them: `TestTCPCap`, `TestUDPCap`, and `TestCloseAtCaps` (guest connections past the cap fail, and the stack keeps working and closes at once).
 - `-v` shares host directories as virtio-fs devices. A small static helper (`cmd/sbxr-mount`, embedded through `internal/guestmount` by `go generate`) mounts them in the guest before the workload, because the `libkrun` init cannot. See PRD "Workload config". Build with `mise run build`, or run `go generate ./internal/guestmount` first, because a bare `go build` embeds whatever helper is on disk.
-- Distribution (S6): goreleaser builds the release archives on `v*` tags. The formula `albertsko/homebrew-tap/Formula/sbxr.rb` installs `sbxr_darwin_arm64` and signs it, and has a placeholder version until the first release. The Linux setup block lives in `internal/preflight/setup.go` and the README, and a test keeps them equal. The `install` workflow installs a goreleaser snapshot on fresh `ubuntu-latest` and `macos-15` runners (PRD "CI contract").
+- Distribution (S6): goreleaser builds the release archives on `v*` tags. The formula `albertsko/homebrew-tap/Formula/sbxr.rb` installs `sbxr_darwin_arm64` and signs it, and has a placeholder version (`v0.0.0`) until the first release. No release tag exists yet. The Linux setup block lives in `internal/preflight/setup.go` and the README, and a test keeps them equal. The `install` workflow installs a goreleaser snapshot on fresh `ubuntu-latest` and `macos-15` runners (PRD "CI contract").
 - Packages:
   - `internal/spec`: run input validation, no I/O.
   - `internal/krunconfig`: the config writer.
@@ -54,6 +54,14 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - `mise run ci` passes on macOS and Ubuntu. `mise run test:hv` passes on an Apple silicon Mac, in the `hv` job, and in an Ubuntu 24.04 arm64 VM with nested KVM. The `kind` job runs the `k8s-p1` target and the PRD phase 1 criteria. The `kind-p2` job installs phase 1, upgrades the node to phase 2, and runs the `k8s-p2` target, the phase 2 criteria, and the phase 1 criteria that still apply.
 - A cached `sbxr run alpine true` takes about 0.14 s on an M4 Pro Mac (median of 20 runs).
 - Deviation from the S3 plan: no checked-in fixture root. S3 and S4 landed together, and the `cli` target uses pulled busybox images (PRD "Test contract").
+
+## Open work
+
+- **First release.** The release workflow jobs `node-image`, `node-manifests`, and `release` run only on a `v*` tag and have never run. The first tag tests them. After it, update the tap formula version and checksum by hand (PRD "Distribution"), and check that the README install commands and the `releases/latest/download/` manifest URLs work.
+- **Node distributions.** The installer runs in CI only on kind. k3s, RKE2, k0s, and kubeadm-style nodes are untested end to end. Assumption A4 covers only their drop-in imports.
+- **arm64 hosts.** No CI runner for arm64 has KVM. `test:hv` passes in a local Ubuntu 24.04 arm64 VM with nested KVM, but no job runs it. Phase 1 and phase 2 have not run on an arm64 node, and only the release workflow builds the arm64 node image.
+- **PRD assumptions A1, A6, and A9** are still open, and open question Q1 (upstream `libkrun` bug reports) waits for the project owner. See PRD "Assumptions and Open Questions".
+- **Known limits that stay:** the rare `hvc0` console race can still lose guest output under heavy host load (PRD "Workload config"), terminal resizes reach the guest only on Linux (`libkrun` 1.19.8), and the phase 1 and phase 2 limits in [kubernetes.md](kubernetes.md).
 
 ## Development environment
 
@@ -125,17 +133,18 @@ go test -tags hv -exec "$PWD/scripts/gotest-exec.sh" -count=1 ./internal/vm/libk
 
 ## Running tests
 
-| Tier                            | Command              | macOS arm64 (local) | Ubuntu x86_64 | Ubuntu arm64              | CI job                          |
-| ------------------------------- | -------------------- | ------------------- | ------------- | ------------------------- | ------------------------------- |
-| `fake` target, unit, fuzz smoke | `mise run test`      | yes                 | yes           | yes                       | `check`, `linux-arm64`, `macos` |
-| `cli` target (real VM)          | `mise run test:hv`   | yes                 | yes           | local or self-hosted only | `hv` (Ubuntu x86_64)            |
-| `k8s-p1` target                 | `mise run test:kind` | no                  | yes           | no                        | `kind`                          |
+| Tier                            | Command                           | macOS arm64 (local) | Ubuntu x86_64 | Ubuntu arm64              | CI job                          |
+| ------------------------------- | --------------------------------- | ------------------- | ------------- | ------------------------- | ------------------------------- |
+| `fake` target, unit, fuzz smoke | `mise run test`                   | yes                 | yes           | yes                       | `check`, `linux-arm64`, `macos` |
+| `cli` target (real VM)          | `mise run test:hv`                | yes                 | yes           | local or self-hosted only | `hv` (Ubuntu x86_64)            |
+| `k8s-p1` target                 | `SBXR_PHASE=1 mise run test:kind` | no                  | yes           | no                        | `kind`                          |
+| `k8s-p2` target                 | `mise run test:kind`              | no                  | yes           | no                        | `kind-p2`                       |
 
 - `mise run fuzz [DURATION]` fuzzes the config writer against the guest init parser copy (default `1m`). The nightly `fuzz` CI job runs it for 15 minutes.
 - `mise run test` never needs a hypervisor or external network. Real-VM tests live behind a build tag or in a separate package.
 - `test:hv` and `test:kind` skip with exit 0 when no hypervisor exists. With `SBXR_REQUIRE_HV=1`, they fail instead. CI sets this variable.
 - `test:hv` and `test:kind` run with `-count=1`, because Go's test cache does not notice changes to the built binary or to `libkrun`.
-- `test:kind` needs Docker, kind, and kubectl. It creates the kind cluster `sbxr` from `kind.yaml` or reuses it (`SBXR_KIND_CLUSTER`), builds the installer image unless `SBXR_NODE_IMAGE` names one, installs `sbxr`, and uninstalls it at the end. The first local image build compiles `libkrun` and takes about 10 minutes.
+- `test:kind` needs Docker, kind, and kubectl. It creates the kind cluster `sbxr` from `kind.yaml` or reuses it (`SBXR_KIND_CLUSTER`), builds the installer image unless `SBXR_NODE_IMAGE` names one, installs `sbxr`, and uninstalls it at the end. `SBXR_PHASE` selects the phase (default 2), and `SBXR_UPGRADE_FROM=1` installs phase 1 first and then upgrades, as the `kind-p2` job does. The first local image build compiles `libkrun` and takes about 10 minutes.
 - CI setup that a local machine usually does not need:
 
   ```sh
@@ -259,7 +268,7 @@ Exit criteria:
 
 ### S7: Kubernetes phase 1
 
-Done. Evidence: `kind` job run [43723330626](https://github.com/albertsko/sbxr/actions/runs/43723330626). The release workflow jobs `node-image` and `node-manifests` have not run yet, because they run only for a release tag.
+Done. Evidence: `kind` job run [43723330626](https://github.com/albertsko/sbxr/actions/runs/43723330626).
 
 Scope:
 
@@ -275,7 +284,7 @@ Exit criteria:
 
 ### S8: Kubernetes phase 2
 
-Done. Evidence: `kind-p2` job in run [43751384434](https://github.com/albertsko/sbxr/actions/runs/43751384434). Spike A7: run [43727468549](https://github.com/albertsko/sbxr/actions/runs/43727468549), tag `archive/spike-k8s-p2`. The release workflow builds the shim and the agent into the node image, behind the same `check` and `install` jobs.
+Done. Evidence: `kind-p2` job in run [43751384434](https://github.com/albertsko/sbxr/actions/runs/43751384434). Spike A7: run [43727468549](https://github.com/albertsko/sbxr/actions/runs/43727468549), tag `archive/spike-k8s-p2`.
 
 Scope:
 
