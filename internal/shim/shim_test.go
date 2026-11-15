@@ -166,3 +166,17 @@ func TestPodShm(t *testing.T) {
 		t.Errorf("shares %+v, /dev/shm %+v; want the volume shared", shares, shm(volume))
 	}
 }
+
+func TestBundleOf(t *testing.T) {
+	t.Parallel()
+
+	for exe, want := range map[string]string{
+		"/opt/sbxr/bin/containerd-shim-sbxr-v1":                               "/opt/sbxr",
+		"/opt/sbxr.old/20261115T195118.213163000/bin/containerd-shim-sbxr-v1": "/opt/sbxr.old/20261115T195118.213163000",
+		"/tmp/shim.test": "/opt/sbxr",
+	} {
+		if got := bundleOf(exe); got != want {
+			t.Errorf("bundleOf(%q) = %q, want %q", exe, got, want)
+		}
+	}
+}

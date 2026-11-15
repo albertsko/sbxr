@@ -33,11 +33,31 @@ import (
 
 // Install paths from the node installer.
 const (
-	libDir    = "/opt/sbxr/lib"
-	guestRoot = "/opt/sbxr/guest"
-	runDir    = "/run/sbxr"
-	podsDir   = runDir + "/pods"
+	defaultBundle = "/opt/sbxr"
+	runDir        = "/run/sbxr"
+	podsDir       = runDir + "/pods"
 )
+
+// bundleOf returns the node bundle of the shim binary exe, which is <bundle>/bin/containerd-shim-sbxr-v1.
+// After an upgrade, a shim that started before it lives in a retired copy of the bundle and keeps using that copy's
+// libraries and guest root, so its VM matches it.
+func bundleOf(exe string) string {
+	if filepath.Base(filepath.Dir(exe)) != "bin" {
+		return defaultBundle
+	}
+
+	return filepath.Dir(filepath.Dir(exe))
+}
+
+// shimBundle returns the node bundle of this shim.
+func shimBundle() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return defaultBundle
+	}
+
+	return bundleOf(exe)
+}
 
 // Paths in a pod directory.
 const (
@@ -251,8 +271,9 @@ func (s *service) boot(ctx context.Context, sb *sandbox) error {
 
 // startPodVM writes the VM config and starts the VM process in the pod cgroup.
 func (s *service) startPodVM(sb *sandbox, guest podnet.Guest) (*vmProcess, error) {
+	bundle := shimBundle()
 	m := machine{
-		LibDir: libDir, GuestRoot: guestRoot, Share: sb.dir.join(shareDir),
+		LibDir: filepath.Join(bundle, "lib"), GuestRoot: filepath.Join(bundle, "guest"), Share: sb.dir.join(shareDir),
 		ControlSocket: sb.dir.join(controlSocket), StreamSocket: sb.dir.join(streamSocket),
 		TAP: podnet.TAP, MAC: guest.MAC.String(),
 		CPUs: vmCPUs(sb.config), MemoryMiB: vmMemoryMiB(sb.config), LogLevel: 0,
@@ -281,7 +302,7 @@ func (s *service) startPodVM(sb *sandbox, guest podnet.Guest) (*vmProcess, error
 	}
 	defer cgroup.Close() //nolint:errcheck // Only needed to start the VM process.
 
-	return startVM(sb.dir.path, sb.netns, sb.uid, cgroup, log)
+	return startVM(sb.dir.path, m.LibDir, sb.netns, sb.uid, cgroup, log)
 }
 
 // connectAgent waits until the guest agent answers, or the boot timeout passes, or the VM exits.

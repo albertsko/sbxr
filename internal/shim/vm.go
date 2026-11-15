@@ -51,7 +51,7 @@ type vmProcess struct {
 
 // startVM starts the VM process for the pod directory dir: in the pod network namespace and in cgroup, as root of a new
 // user namespace that maps subid.PerPod ids from uid, with /dev/kvm access through its group when the device needs one.
-func startVM(dir, netnsPath string, uid int, cgroup, log *os.File) (*vmProcess, error) {
+func startVM(dir, libDir, netnsPath string, uid int, cgroup, log *os.File) (*vmProcess, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("find shim binary: %w", err)
