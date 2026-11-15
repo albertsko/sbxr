@@ -77,6 +77,11 @@ func (n *Network) forwardInbound(c net.Conn, guestPort uint16) {
 	if !n.tcp.acquire() {
 		n.logger.Debug("netstack: tcp cap reached", "guest_port", guestPort)
 
+		// Linger 0 makes Close send a reset, so the host client fails at once.
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetLinger(0)
+		}
+
 		_ = c.Close()
 
 		return

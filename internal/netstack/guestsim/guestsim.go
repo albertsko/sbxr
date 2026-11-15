@@ -65,6 +65,7 @@ func Start(ctx context.Context, f *os.File, mac net.HardwareAddr) (*Guest, error
 	})
 
 	pumpCtx, cancel := context.WithCancel(context.Background())
+	//nolint:exhaustruct_v5 // configure sets the address fields after DHCP.
 	g := &Guest{stack: s, link: link, conn: conn, cancel: cancel}
 
 	if err := s.CreateNIC(nicID, ethernet.New(link)); err != nil {

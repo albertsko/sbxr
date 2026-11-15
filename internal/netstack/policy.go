@@ -1,6 +1,7 @@
 package netstack
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -13,6 +14,7 @@ const (
 	etherTypeIPv4  = 0x0800
 	etherTypeARP   = 0x0806
 	ipv4MinLen     = 20
+	arpLen         = 28
 	protoTCP       = 6
 	protoUDP       = 17
 	portDNS        = 53
@@ -42,6 +44,8 @@ type policy struct {
 	allowLAN bool
 	subnet   netip.Prefix
 	gateway  netip.Addr
+	guestIP  netip.Addr
+	guestMAC net.HardwareAddr
 
 	// published holds the guest TCP ports that the host can reach. The guest answers those connections from the published port to the gateway.
 	published map[uint16]bool
@@ -97,18 +101,29 @@ func (p *policy) allowDial(dst netip.Addr) bool {
 
 // allowFrame reports whether a guest Ethernet frame may reach the network stack.
 func (p *policy) allowFrame(frame []byte) bool {
-	if len(frame) < etherHeaderLen {
+	if len(frame) < etherHeaderLen || !bytes.Equal(frame[6:12], p.guestMAC) {
 		return false
 	}
 
 	switch binary.BigEndian.Uint16(frame[12:14]) {
 	case etherTypeARP:
-		return true
+		return p.allowARP(frame[etherHeaderLen:])
 	case etherTypeIPv4:
 		return p.allowIPv4(frame[etherHeaderLen:])
 	default:
 		return false
 	}
+}
+
+// allowARP accepts ARP only for the guest's own addresses, so the switch learns no other MAC address.
+func (p *policy) allowARP(pkt []byte) bool {
+	if len(pkt) < arpLen {
+		return false
+	}
+
+	senderIP := netip.AddrFrom4([4]byte(pkt[14:18]))
+
+	return bytes.Equal(pkt[8:14], p.guestMAC) && (senderIP == p.guestIP || senderIP == netip.IPv4Unspecified())
 }
 
 func (p *policy) allowIPv4(pkt []byte) bool {
@@ -122,17 +137,26 @@ func (p *policy) allowIPv4(pkt []byte) bool {
 	}
 
 	dst := netip.AddrFrom4([4]byte(pkt[16:20]))
+	proto := pkt[9]
+
+	// Only a frame that is not fragmented has both ports, and only the first fragment has any.
+	whole := binary.BigEndian.Uint16(pkt[6:8])&0x3fff == 0 && len(pkt) >= hdrLen+4
+	firstFragment := binary.BigEndian.Uint16(pkt[6:8])&0x1fff == 0 && len(pkt) >= hdrLen+4
+
 	if dst != p.gateway && dst != limitedBroadcast {
+		// DHCP goes only to the gateway or as broadcast.
+		if proto == protoUDP && firstFragment && binary.BigEndian.Uint16(pkt[hdrLen+2:hdrLen+4]) == portDHCP {
+			return false
+		}
+
 		return p.allowDial(dst)
 	}
 
 	// Gateway and broadcast traffic needs port checks, so fragments that can hide the ports are dropped.
-	fragmented := binary.BigEndian.Uint16(pkt[6:8])&0x3fff != 0
-	if fragmented || len(pkt) < hdrLen+4 {
+	if !whole {
 		return false
 	}
 
-	proto := pkt[9]
 	srcPort := binary.BigEndian.Uint16(pkt[hdrLen : hdrLen+2])
 	dstPort := binary.BigEndian.Uint16(pkt[hdrLen+2 : hdrLen+4])
 

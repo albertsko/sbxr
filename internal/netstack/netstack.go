@@ -15,13 +15,15 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/services/dhcp"
-	"github.com/containers/gvisor-tap-vsock/pkg/services/dns"
 	"github.com/containers/gvisor-tap-vsock/pkg/tap"
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
+	"github.com/miekg/dns"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
 	"gvisor.dev/gvisor/pkg/tcpip/network/arp"
@@ -50,6 +52,9 @@ var (
 	gatewayMAC = "5a:94:ef:e4:0c:dd"
 	guestMAC   = "5a:94:ef:e4:0c:ee"
 	loopback   = netip.MustParseAddr("127.0.0.1")
+
+	guestHWAddr   = mustParseMAC(guestMAC)
+	gatewayHWAddr = mustParseMAC(gatewayMAC)
 )
 
 // DialFunc opens a host connection for a guest flow. It has the signature of [net.Dialer.DialContext].
@@ -75,11 +80,13 @@ type Config struct {
 	Dial DialFunc
 
 	// Hosts maps DNS names to addresses that the gateway DNS answers without asking the host resolver.
-	// Names are lowercase without the trailing dot. Tests and the fake target use it, because they have no external DNS.
+	// Names are lowercase without the trailing dot. Other query types for these names get an empty answer.
+	// Tests and the fake target use it, because they have no external DNS.
 	Hosts map[string]netip.Addr
 
-	// udpIdle overrides the UDP flow idle timeout in tests.
-	udpIdle time.Duration
+	// udpIdle and resolver override the UDP flow idle timeout and the host resolver in tests.
+	udpIdle  time.Duration
+	resolver *net.Resolver
 }
 
 // Publish maps a host TCP address to a guest TCP port.
@@ -102,12 +109,14 @@ type Network struct {
 	tcp    limiter
 	udp    limiter
 
-	udpIdle time.Duration
+	udpIdle  time.Duration
+	resolver *net.Resolver
 
 	ctx    context.Context //nolint:containedctx // The stack lives until Close and cancels its flows through it.
 	cancel context.CancelFunc
 
 	stack     *stack.Stack
+	sw        *tap.Switch
 	vmFile    *os.File
 	vmConn    net.Conn
 	services  []io.Closer
@@ -134,13 +143,15 @@ func Start(ctx context.Context, cfg Config) (*Network, error) {
 		return nil, err
 	}
 
+	//nolint:exhaustruct_v5 // start sets the remaining fields.
 	n := &Network{
-		logger:  logger,
-		policy:  newPolicy(cfg.AllowLAN, publish),
-		dial:    cfg.Dial,
-		tcp:     newLimiter(cfg.MaxTCP, defaultMaxTCP),
-		udp:     newLimiter(cfg.MaxUDP, defaultMaxUDP),
-		udpIdle: cmp.Or(cfg.udpIdle, udpIdleTimeout),
+		logger:   logger,
+		policy:   newPolicy(cfg.AllowLAN, publish),
+		dial:     cfg.Dial,
+		tcp:      newLimiter(cfg.MaxTCP, defaultMaxTCP),
+		udp:      newLimiter(cfg.MaxUDP, defaultMaxUDP),
+		udpIdle:  cmp.Or(cfg.udpIdle, udpIdleTimeout),
+		resolver: cfg.resolver,
 	}
 	n.ctx, n.cancel = context.WithCancel(ctx)
 
@@ -223,6 +234,7 @@ func (n *Network) newStack() (*tap.Switch, *tap.IPPool, error) {
 	}
 
 	sw := tap.NewSwitch(false)
+	n.sw = sw
 	ep.Connect(sw)
 	sw.Connect(ep)
 
@@ -279,11 +291,12 @@ func (n *Network) startServices(pool *tap.IPPool, hosts map[string]netip.Addr) e
 
 	n.services = append(n.services, dnsTCP)
 
-	upstream := &resolver{Resolver: net.DefaultResolver, hosts: hosts}
-
-	dnsSrv, err := dns.NewWithUpstreamResolver(dnsUDP, dnsTCP, nil, upstream)
-	if err != nil {
-		return fmt.Errorf("dns: %w", err)
+	h := newDNSHandler(n.ctx, hosts, n.resolver)
+	udpSrv := &dns.Server{PacketConn: dnsUDP, Handler: h}
+	tcpSrv := &dns.Server{
+		Listener:    &cappedListener{Listener: dnsTCP, limit: &n.tcp},
+		Handler:     h,
+		IdleTimeout: func() time.Duration { return dnsTimeout },
 	}
 
 	gvCfg := &types.Configuration{
@@ -300,8 +313,8 @@ func (n *Network) startServices(pool *tap.IPPool, hosts map[string]netip.Addr) e
 
 	n.services = append(n.services, dhcpSrv.Underlying)
 
-	n.wg.Go(func() { _ = dnsSrv.Serve() })
-	n.wg.Go(func() { _ = dnsSrv.ServeTCP() })
+	n.wg.Go(func() { _ = udpSrv.ActivateAndServe() })
+	n.wg.Go(func() { _ = tcpSrv.ActivateAndServe() })
 	n.wg.Go(func() { _ = dhcpSrv.Serve() })
 
 	return nil
@@ -329,17 +342,13 @@ func (n *Network) refreshHostAddrs() {
 func (n *Network) VMFile() *os.File { return n.vmFile }
 
 // GuestMAC returns the MAC address that the VM must use, because DHCP has a static lease for it.
-func (n *Network) GuestMAC() net.HardwareAddr {
-	mac, _ := net.ParseMAC(guestMAC)
-
-	return mac
-}
+func (*Network) GuestMAC() net.HardwareAddr { return slices.Clone(guestHWAddr) }
 
 // GuestIP returns the address that DHCP gives the guest.
 func (*Network) GuestIP() netip.Addr { return guestIP }
 
 // Published returns the bound publish addresses, with the real port when the request asked for port 0.
-func (n *Network) Published() []Publish { return n.published }
+func (n *Network) Published() []Publish { return slices.Clone(n.published) }
 
 // Close stops the listeners, the flows, the services, and the stack.
 // It does not wait for blocked relays longer than a few seconds, so it never blocks the process exit.
@@ -369,6 +378,11 @@ func (n *Network) Close() error {
 
 	for _, s := range n.services {
 		_ = s.Close()
+	}
+
+	// Aborting every stack endpoint unblocks workers that read from the guest, such as an idle DNS TCP connection.
+	if n.stack != nil {
+		n.stack.Close()
 	}
 
 	var errs []error
@@ -449,7 +463,24 @@ func newPolicy(allowLAN bool, publish []Publish) *policy {
 		ports[p.Guest] = true
 	}
 
-	return &policy{allowLAN: allowLAN, subnet: subnet, gateway: gatewayIP, published: ports}
+	return &policy{
+		allowLAN:  allowLAN,
+		subnet:    subnet,
+		gateway:   gatewayIP,
+		guestIP:   guestIP,
+		guestMAC:  guestHWAddr,
+		published: ports,
+		hostAddrs: atomic.Pointer[map[netip.Addr]bool]{},
+	}
+}
+
+func mustParseMAC(s string) net.HardwareAddr {
+	mac, err := net.ParseMAC(s)
+	if err != nil {
+		panic(err)
+	}
+
+	return mac
 }
 
 func tcpAddr(a netip.Addr) tcpip.Address { return tcpip.AddrFrom4(a.As4()) }

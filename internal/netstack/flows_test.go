@@ -2,8 +2,10 @@ package netstack
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -26,7 +28,12 @@ func TestTCPCap(t *testing.T) {
 	t.Parallel()
 
 	d := newTestDialer(t)
-	_, g := startNetwork(t, Config{MaxTCP: 2, Dial: d.dial, Hosts: map[string]netip.Addr{"example.test": publicAddr}})
+	n, g := startNetwork(t, Config{
+		MaxTCP:  2,
+		Dial:    d.dial,
+		Hosts:   map[string]netip.Addr{testHost: publicAddr},
+		Publish: []Publish{{Guest: 80}},
+	})
 	dst := netip.AddrPortFrom(publicAddr, 80).String()
 
 	held := make([]net.Conn, 2)
@@ -57,16 +64,30 @@ func TestTCPCap(t *testing.T) {
 		t.Errorf("connection past the cap failed after %v, want a reset", elapsed)
 	}
 
+	// A published connection past the cap gets a reset too.
+	var nd net.Dialer
+
+	pub, err := nd.DialContext(t.Context(), "tcp", n.Published()[0].Host.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pub.Close()
+
+	_ = pub.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := pub.Read(make([]byte, 1)); !errors.Is(err, syscall.ECONNRESET) {
+		t.Errorf("published connection past the cap: read error %v, want a reset", err)
+	}
+
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 
-	if _, err := g.LookupHost(ctx, "example.test"); err != nil {
+	if _, err := g.LookupHost(ctx, testHost); err != nil {
 		t.Errorf("DNS at the TCP cap: %v", err)
 	}
 
 	_ = held[0].Close()
 
-	err := eventually(5*time.Second, func() error {
+	err = eventually(5*time.Second, func() error {
 		c, err := dialTCP(t, g, dst, time.Second)
 		if err != nil {
 			return err

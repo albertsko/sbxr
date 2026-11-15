@@ -14,7 +14,11 @@ import (
 	"time"
 
 	"github.com/albertsko/sbxr/internal/netstack/guestsim"
+	"github.com/miekg/dns"
 )
+
+// testHost is a name that the tests map to publicAddr through Config.Hosts.
+const testHost = "example.test"
 
 // publicAddr is a documentation address (TEST-NET-3). The egress policy treats it as public.
 var publicAddr = netip.MustParseAddr("203.0.113.10")
@@ -217,7 +221,7 @@ func TestGuestGetsLeaseAndReachesPublicAddresses(t *testing.T) {
 	t.Parallel()
 
 	d := newTestDialer(t)
-	n, g := startNetwork(t, Config{Dial: d.dial, Hosts: map[string]netip.Addr{"example.test": publicAddr}})
+	n, g := startNetwork(t, Config{Dial: d.dial, Hosts: map[string]netip.Addr{testHost: publicAddr}})
 
 	if g.Addr() != n.GuestIP() {
 		t.Errorf("guest address = %v, want %v", g.Addr(), n.GuestIP())
@@ -232,6 +236,24 @@ func TestGuestGetsLeaseAndReachesPublicAddresses(t *testing.T) {
 		got, err := g.LookupHost(ctx, "Example.Test")
 		if err != nil || len(got) != 1 || got[0] != publicAddr {
 			t.Errorf("LookupHost = %v, %v, want [%v]", got, err, publicAddr)
+		}
+
+		// Other types for a name in Hosts get an empty answer without the host resolver.
+		c := dialUDP(t, g, netip.AddrPortFrom(gatewayIP, 53).String())
+
+		q := new(dns.Msg)
+		q.SetQuestion("example.test.", dns.TypeAAAA)
+
+		conn := &dns.Conn{Conn: c}
+		if err := conn.WriteMsg(q); err != nil {
+			t.Fatal(err)
+		}
+
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+		r, err := conn.ReadMsg()
+		if err != nil || r.Rcode != dns.RcodeSuccess || len(r.Answer) != 0 {
+			t.Errorf("AAAA answer = %v, %v, want empty success", r, err)
 		}
 	})
 
@@ -333,14 +355,22 @@ func TestEgressPolicy(t *testing.T) {
 
 				dst := netip.AddrPortFrom(addr, 9)
 
-				// A blocked TCP connection times out, because the frame filter drops the SYN.
-				c, err := dialTCP(t, g, dst.String(), time.Second)
+				// A blocked TCP connection gets a reset from the frame filter, so it fails long before the dial timeout.
+				start := time.Now()
+
+				c, err := dialTCP(t, g, dst.String(), 5*time.Second)
 				if err == nil {
 					err = roundTrip(c, "tcp", time.Second)
 				}
 
 				if got := err == nil; got != want {
 					t.Errorf("tcp works = %v (%v), want %v", got, err, want)
+				}
+
+				// The guest stack never sends to loopback or unspecified addresses, so those dials time out in the guest.
+				local := addr.IsLoopback() || addr.IsUnspecified()
+				if elapsed := time.Since(start); !want && !local && elapsed > 2*time.Second {
+					t.Errorf("blocked tcp failed after %v, want a reset", elapsed)
 				}
 
 				u := dialUDP(t, g, dst.String())

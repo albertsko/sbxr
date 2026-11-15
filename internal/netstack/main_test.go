@@ -2,16 +2,19 @@ package netstack
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
+	"gvisor.dev/gvisor/pkg/tcpip"
 )
 
 // TestMain fails the package when a test leaves goroutines or file descriptors of the network stack behind.
@@ -28,7 +31,8 @@ func TestMain(m *testing.M) {
 	fds := openFDs()
 	code := m.Run()
 
-	if code == 0 {
+	// The fuzzing engine keeps descriptors open for its workers, so fuzzing runs skip the check.
+	if fuzz := flag.Lookup("test.fuzz"); code == 0 && (fuzz == nil || fuzz.Value.String() == "") {
 		if err := checkLeaks(fds); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 
@@ -248,5 +252,66 @@ func TestBlockedFramesNeverReachHost(t *testing.T) {
 
 	if dials := d.Dials(); len(dials) != 1 {
 		t.Errorf("host dials = %v, want only the canary", dials)
+	}
+}
+
+func TestSpoofedFramesDoNotGrowSwitch(t *testing.T) {
+	t.Parallel()
+
+	var lc net.ListenConfig
+
+	pc, err := lc.ListenPacket(t.Context(), "udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+
+	d := &testDialer{udp: pc.LocalAddr().String(), routed: []netip.Addr{publicAddr}}
+
+	n, err := Start(t.Context(), Config{Dial: d.dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+
+	vm, err := net.FileConn(n.VMFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer vm.Close()
+
+	for i := range 10_000 {
+		mac := tcpip.LinkAddress([]byte{0x02, 0, 0, byte(i >> 16), byte(i >> 8), byte(i)})
+		writeFrame(t, vm, arpFrame(mac, mac, guestIP))
+	}
+
+	port := netip.MustParseAddrPort(pc.LocalAddr().String()).Port()
+	writeFrame(t, vm, ipv4Frame(publicAddr, protoUDP, 40001, port, []byte("canary")))
+
+	_ = pc.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, _, err := pc.ReadFrom(make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+
+	if cam := n.sw.CAM(); len(cam) != 1 {
+		t.Errorf("switch learned %d MAC addresses, want only the guest", len(cam))
+	}
+}
+
+// writeFrame writes one frame and retries while the socket queue is full, which macOS reports as ENOBUFS.
+func writeFrame(t *testing.T, c net.Conn, frame []byte) {
+	t.Helper()
+
+	for {
+		_, err := c.Write(frame)
+		if !errors.Is(err, syscall.ENOBUFS) {
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return
+		}
+
+		time.Sleep(time.Millisecond)
 	}
 }

@@ -1,13 +1,14 @@
 package netstack
 
 import (
-	"context"
+	"bytes"
 	"fmt"
 	"net"
-	"net/netip"
 	"os"
-	"strings"
 	"syscall"
+
+	"gvisor.dev/gvisor/pkg/tcpip"
+	"gvisor.dev/gvisor/pkg/tcpip/header"
 )
 
 // sockBufSize is the send and receive buffer of both socket ends.
@@ -66,20 +67,58 @@ func (c *filterConn) Read(b []byte) (int, error) {
 		if err != nil || c.policy.allowFrame(b[:n]) {
 			return n, err //nolint:wrapcheck // The switch only logs the error.
 		}
+
+		if rst := c.policy.reset(b[:n]); rst != nil {
+			_, _ = c.Write(rst)
+		}
 	}
 }
 
-// resolver answers names in hosts itself and asks the host resolver for everything else.
-type resolver struct {
-	*net.Resolver
-
-	hosts map[string]netip.Addr
-}
-
-func (r *resolver) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
-	if a, ok := r.hosts[strings.TrimSuffix(strings.ToLower(host), ".")]; ok {
-		return []net.IPAddr{{IP: a.AsSlice()}}, nil
+// reset returns a TCP reset for a blocked guest SYN, so the guest connection fails at once instead of timing out.
+// It returns nil for every other frame.
+func (p *policy) reset(frame []byte) []byte {
+	if len(frame) < etherHeaderLen || !bytes.Equal(frame[6:12], p.guestMAC) || header.Ethernet(frame).Type() != header.IPv4ProtocolNumber {
+		return nil
 	}
 
-	return r.Resolver.LookupIPAddr(ctx, host) //nolint:wrapcheck // The DNS server only reports the error to the guest.
+	ip := header.IPv4(frame[etherHeaderLen:])
+	if !ip.IsValid(len(ip)) || ip.TransportProtocol() != header.TCPProtocolNumber || ip.More() || ip.FragmentOffset() != 0 {
+		return nil
+	}
+
+	syn := header.TCP(ip.Payload())
+	if len(syn) < header.TCPMinimumSize || syn.Flags() != header.TCPFlagSyn {
+		return nil
+	}
+
+	b := make([]byte, etherHeaderLen+header.IPv4MinimumSize+header.TCPMinimumSize)
+	header.Ethernet(b).Encode(&header.EthernetFields{
+		SrcAddr: tcpip.LinkAddress(gatewayHWAddr),
+		DstAddr: tcpip.LinkAddress(p.guestMAC),
+		Type:    header.IPv4ProtocolNumber,
+	})
+
+	rip := header.IPv4(b[etherHeaderLen:])
+	rip.Encode(&header.IPv4Fields{
+		TotalLength: header.IPv4MinimumSize + header.TCPMinimumSize,
+		TTL:         64,
+		Protocol:    uint8(header.TCPProtocolNumber),
+		SrcAddr:     ip.DestinationAddress(),
+		DstAddr:     ip.SourceAddress(),
+	})
+	rip.SetChecksum(^rip.CalculateChecksum())
+
+	rst := header.TCP(rip[header.IPv4MinimumSize:])
+	rst.Encode(&header.TCPFields{
+		SrcPort:    syn.DestinationPort(),
+		DstPort:    syn.SourcePort(),
+		AckNum:     syn.SequenceNumber() + 1,
+		DataOffset: header.TCPMinimumSize,
+		Flags:      header.TCPFlagRst | header.TCPFlagAck,
+	})
+
+	sum := header.PseudoHeaderChecksum(header.TCPProtocolNumber, rip.SourceAddress(), rip.DestinationAddress(), header.TCPMinimumSize)
+	rst.SetChecksum(^rst.CalculateChecksum(sum))
+
+	return b
 }

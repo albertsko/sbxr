@@ -27,7 +27,7 @@ type limiter struct {
 }
 
 func newLimiter(limit, fallback int) limiter {
-	return limiter{max: int64(cmp.Or(limit, fallback))}
+	return limiter{active: atomic.Int64{}, max: int64(cmp.Or(limit, fallback))}
 }
 
 func (l *limiter) acquire() bool {

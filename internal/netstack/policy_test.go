@@ -1,6 +1,7 @@
 package netstack
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net/netip"
 	"testing"
@@ -99,6 +100,7 @@ func TestAllowDialHostAddrsChange(t *testing.T) {
 var (
 	testGuestMAC   = tcpip.LinkAddress([]byte{0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee})
 	testGatewayMAC = tcpip.LinkAddress([]byte{0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xdd})
+	otherMAC       = tcpip.LinkAddress([]byte{0x02, 0, 0, 0, 0, 0x01})
 )
 
 // ipv4Frame builds an Ethernet frame from the guest with an IPv4 header and a UDP or TCP header with ports.
@@ -143,6 +145,28 @@ func etherFrame(etherType uint16, payloadLen int) []byte {
 	return b
 }
 
+// arpFrame builds an ARP request with the given Ethernet source and sender addresses.
+func arpFrame(src, sender tcpip.LinkAddress, senderIP netip.Addr) []byte {
+	b := make([]byte, header.EthernetMinimumSize+header.ARPSize)
+	header.Ethernet(b).Encode(&header.EthernetFields{SrcAddr: src, DstAddr: header.EthernetBroadcastAddress, Type: header.ARPProtocolNumber})
+
+	arp := header.ARP(b[header.EthernetMinimumSize:])
+	arp.SetIPv4OverEthernet()
+	arp.SetOp(header.ARPRequest)
+	copy(arp.HardwareAddressSender(), sender)
+	copy(arp.ProtocolAddressSender(), senderIP.AsSlice())
+	copy(arp.ProtocolAddressTarget(), gatewayIP.AsSlice())
+
+	return b
+}
+
+// spoofMAC sets the Ethernet source address of frame to another MAC address.
+func spoofMAC(frame []byte) []byte {
+	copy(frame[6:12], otherMAC)
+
+	return frame
+}
+
 func modify(b []byte, f func(ip []byte)) []byte {
 	f(b[header.EthernetMinimumSize:])
 
@@ -167,7 +191,16 @@ func TestAllowFrame(t *testing.T) {
 		{name: "public fragment", frame: modify(ipv4Frame(public, protoUDP, 1, 2, nil), fragment), want: true, wantLAN: true},
 		{name: "public later fragment without ports", frame: modify(ipv4Frame(public, protoUDP, 1, 2, nil), func(ip []byte) { ip[7] = 0x10 })[:header.EthernetMinimumSize+header.IPv4MinimumSize], want: true, wantLAN: true},
 		{name: "public with options", frame: modify(ipv4Frame(public, protoTCP, 1, 2, nil), func(ip []byte) { ip[0] = 0x46 }), want: true, wantLAN: true},
-		{name: "arp", frame: etherFrame(etherTypeARP, 28), want: true, wantLAN: true},
+		{name: "arp", frame: arpFrame(testGuestMAC, testGuestMAC, guestIP), want: true, wantLAN: true},
+		{name: "arp probe", frame: arpFrame(testGuestMAC, testGuestMAC, netip.IPv4Unspecified()), want: true, wantLAN: true},
+		{name: "arp from another mac", frame: arpFrame(otherMAC, otherMAC, guestIP)},
+		{name: "arp with another sender mac", frame: arpFrame(testGuestMAC, otherMAC, guestIP)},
+		{name: "arp with another sender ip", frame: arpFrame(testGuestMAC, testGuestMAC, netip.MustParseAddr("192.168.127.3"))},
+		{name: "short arp", frame: arpFrame(testGuestMAC, testGuestMAC, guestIP)[:header.EthernetMinimumSize+27]},
+		{name: "spoofed source mac", frame: spoofMAC(ipv4Frame(public, protoTCP, 40000, 443, nil))},
+		{name: "spoofed source mac to gateway dns", frame: spoofMAC(ipv4Frame(gatewayIP, protoUDP, 40000, 53, nil))},
+		{name: "dhcp to public", frame: ipv4Frame(public, protoUDP, 68, 67, nil)},
+		{name: "dhcp later fragment to public", frame: modify(ipv4Frame(public, protoUDP, 68, 67, nil), func(ip []byte) { ip[7] = 1 }), want: true, wantLAN: true},
 		{name: "rfc1918", frame: ipv4Frame(netip.MustParseAddr("10.1.2.3"), protoTCP, 1, 80, nil), wantLAN: true},
 		{name: "cgnat", frame: ipv4Frame(netip.MustParseAddr("100.64.0.1"), protoUDP, 1, 80, nil), wantLAN: true},
 		{name: "host address", frame: ipv4Frame(hostAddr, protoTCP, 1, 80, nil), wantLAN: true},
@@ -222,14 +255,21 @@ func FuzzAllowFrame(f *testing.F) {
 	f.Add(ipv4Frame(netip.MustParseAddr("203.0.113.10"), protoUDP, 1, 2, []byte("x")))
 	f.Add(ipv4Frame(gatewayIP, protoTCP, 80, 40000, nil))
 	f.Add(ipv4Frame(limitedBroadcast, protoUDP, 68, 67, nil))
-	f.Add(etherFrame(etherTypeARP, 28))
+	f.Add(arpFrame(testGuestMAC, testGuestMAC, guestIP))
 	f.Add(etherFrame(0x86dd, 40))
+	f.Add(ipv4Frame(netip.MustParseAddr("127.0.0.1"), protoTCP, 40000, 22, nil))
 
 	p := testPolicy(false)
 
 	f.Fuzz(func(t *testing.T, frame []byte) {
 		if !p.allowFrame(frame) {
+			_ = p.reset(frame)
+
 			return
+		}
+
+		if !bytes.Equal(frame[6:12], []byte(testGuestMAC)) {
+			t.Fatalf("allowed source MAC %x", frame[6:12])
 		}
 
 		if typ := binary.BigEndian.Uint16(frame[12:14]); typ != etherTypeARP && typ != etherTypeIPv4 {
