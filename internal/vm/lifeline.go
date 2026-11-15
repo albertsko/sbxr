@@ -44,7 +44,8 @@ func watchLifeline(runDir string) {
 
 		if runDir != "" {
 			unmountUnder(runDir)
-			_ = os.RemoveAll(runDir) // Nobody is left to report a failure to.
+			_ = os.RemoveAll(runDir)        // Nobody is left to report a failure to.
+			_ = os.Remove(runDir + ".lock") // The run lock next to the directory, see run.newRunDir.
 		}
 
 		os.Exit(ExitSetup)
