@@ -1,8 +1,8 @@
 # sbxr: Handoff
 
-Status: steps S1 to S4 and S7 are done. The PRD stays a living document. Last update: 2026-11-15.
+Status: steps S1 to S7 are done, except volumes (`-v`) from S5. The PRD stays a living document. Last update: 2026-11-15.
 
-**Next: start step S5 (networking), after the A10 spike in "Run first, in parallel".**
+**Next: volumes (`-v`, the rest of PRD "Networking and mounts"), then step S8.**
 
 The design decisions in [PRD.md](PRD.md) are final unless a failed assumption or an open question reopens them (see "Changing a decision"). This handoff tells the next engineer or AI agent how to continue. It does not repeat the PRD. When the two disagree, the PRD wins, so fix this handoff.
 
@@ -30,13 +30,16 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - Images come from registries through `internal/image`: pull policy, a cache with a shared run lock, `User` name lookup, and a run root per run (APFS clone on macOS, overlay in the user namespace on Linux).
 - On Linux, `sbxr run` and `sbxr prune` run again inside a user namespace (`internal/userns`) after the checks. See PRD "Process model".
 - The fake build (`-tags sbxrfake`) replaces only the hypervisor and the doctor checks. It pulls images like the release build and keeps ownership in xattrs on every platform, so it needs no user namespace.
-- Not built yet: `--net`, `-p`, and `-v` (S5).
+- `--net`, `--allow-lan`, and `-p` work. The `sbxr run` process hosts the userspace network stack (`internal/netstack`) and passes the VM end of a datagram socket pair to the VM process, which adds it with `krun_add_net_unixgram` in fd mode without `NET_FLAG_VFKIT`. The A10 spike passed: at the caps (1024 TCP, 256 UDP), the stack closes in milliseconds on macOS.
+- The fake VM runs `internal/netstack/guestsim`, a small gvisor guest stack with DHCP, so the network scenarios run without a hypervisor. Its busybox has `wget`, `nc`, and `nslookup`.
+- Not built yet: `-v`.
 - Distribution (S6): goreleaser builds the release archives on `v*` tags. The formula `albertsko/homebrew-tap/Formula/sbxr.rb` installs `sbxr_darwin_arm64` and signs it, and has a placeholder version until the first release. The Linux setup block lives in `internal/preflight/setup.go` and the README, and a test keeps them equal. The `install` workflow installs a goreleaser snapshot on fresh `ubuntu-latest` and `macos-15` runners (PRD "CI contract").
 - Packages:
   - `internal/spec`: run input validation, no I/O.
   - `internal/krunconfig`: the config writer.
   - `internal/run`: the run lifecycle, the VM process, stdio, terminal, signals, and cleanup.
   - `internal/vm`: the VM process side, with the parent lifeline. `internal/vm/libkrun` is the `libkrun` binding. `internal/vm/fake` is the fake hypervisor, its busybox image, and its doctor checks.
+  - `internal/netstack`: the userspace network stack, the egress guard, the caps, the gateway DNS, and `-p`. `guestsim` is the simulated guest for tests and the fake VM.
   - `internal/hv`: hypervisor detection and the macOS entitlement check, shared by doctor and tests.
   - `internal/image`: pull, unpack, cache, run root, and the store that the runner uses.
   - `internal/userns`: the Linux user namespace with `newuidmap` and `newgidmap`, and the `userns` check.

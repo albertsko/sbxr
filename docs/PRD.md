@@ -464,19 +464,21 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 
 - Behavior scenarios are written once and run against several targets: `fake` (no hypervisor), `cli` (real VM), `k8s-p1` (kind cluster with phase 1), and later `k8s-p2`.
 - Each target declares its capabilities. Each scenario declares the capabilities it needs and runs only on targets that have them. Scenarios never check the target name.
-- Capabilities: `stdin`, `tty`, `split-stderr`, `signal-exit`, `graceful-stop`, `exec`, `net`, `net-off`, `publish`, `dns`, `volumes`, `memory-limit`, `probes`, `spec-validation`, `exact-config`.
+- Capabilities: `stdin`, `tty`, `split-stderr`, `signal-exit`, `graceful-stop`, `exec`, `net`, `net-off`, `publish`, `dns`, `volumes`, `memory-limit`, `probes`, `spec-validation`, `exact-config`, `egress-guard`.
 - `spec-validation`: the target rejects invalid run input (relative workdir, control characters, reserved env names) before anything starts. `exact-config`: the workload sees the image config and the run flags and nothing else. Kubernetes targets lack both, because Kubernetes accepts such input, adds service env and `HOSTNAME`, and does not apply the group of a numeric image `USER`.
+- `egress-guard`: `--net` and `--allow-lan` select the egress policy of "Networking (CLI)", and the host resolver answers DNS. Kubernetes targets lack it, because pods use the pod network and cluster DNS.
 
-  | Target   | Capabilities                                                                                                                    |
-  | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
-  | `fake`   | `stdin`, `tty`, `split-stderr`, `signal-exit`, `net`, `net-off`, `publish`, `dns`, `volumes`, `spec-validation`, `exact-config` |
-  | `cli`    | same as `fake`                                                                                                                  |
-  | `k8s-p1` | `net`, `publish`, `dns`, `memory-limit`, `probes`                                                                               |
-  | `k8s-p2` | `k8s-p1` plus `exec`, `graceful-stop`                                                                                           |
+  | Target   | Capabilities                                                                                                                                    |
+  | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `fake`   | `stdin`, `tty`, `split-stderr`, `signal-exit`, `net`, `net-off`, `publish`, `dns`, `volumes`, `spec-validation`, `exact-config`, `egress-guard` |
+  | `cli`    | same as `fake`                                                                                                                                  |
+  | `k8s-p1` | `net`, `publish`, `dns`, `memory-limit`, `probes`                                                                                               |
+  | `k8s-p2` | `k8s-p1` plus `exec`, `graceful-stop`                                                                                                           |
 
 - Scenarios assert on behavior: stdout (or combined output), exit code, and a target-neutral error class. Error classes: `ok`, `invalid-spec`, `image`, `preflight`, `not-found`, `not-executable`, `interrupted`. Each target maps its own signals to these classes. Scenarios never assert the order across stdout and stderr.
 - After each scenario, the target verifies that no VM process, network listener, pod, or run state remains.
 - The fake target runs the real userspace network stack against a small simulated guest network, so port publishing, egress blocking, and cleanup are tested without a hypervisor.
+- Network scenarios need no public address. They serve HTTP on a non-loopback address of the host, which the guest reaches only with `--allow-lan`, and publish a guest port on a free port of `127.0.0.1`. The netstack unit tests cover public destinations through a dial hook.
 - The config file writer is tested with property and fuzz tests against a copy of the guest init parser. The seed corpus lives in `internal/krunconfig/testdata/fuzz/FuzzMarshal`. The hypervisor job also boots every seed that the writer accepts through the real guest init and compares the arguments, env, uid, gid, and working directory that the workload sees.
 - Hypervisor detection uses the same rules as the `hypervisor` doctor check.
 - `SBXR_REQUIRE_HV=1` turns hypervisor skips into failures. CI sets it on hypervisor jobs.
