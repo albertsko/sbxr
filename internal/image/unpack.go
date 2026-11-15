@@ -41,7 +41,7 @@ const (
 // Unpacker applies image layers to a directory.
 type Unpacker struct {
 	Ownership Ownership
-	// Progress, when set, receives the progress of Unpack after each read and once when it is done.
+	// Progress, when set, receives the progress of Unpack after each read and once when it ends, also on failure.
 	// The layers download while they unpack, so this is also the download progress.
 	Progress func(Progress)
 }
@@ -96,6 +96,12 @@ func (u Unpacker) Unpack(img v1.Image, dst string) error {
 
 	p := Progress{Layer: 0, Layers: len(layers), Bytes: 0, Done: false}
 
+	// The final report comes on every path, so that a caller can always clear its progress display.
+	defer func() {
+		p.Done = true
+		report(p)
+	}()
+
 	for i, layer := range layers {
 		p.Layer = i + 1
 
@@ -107,9 +113,6 @@ func (u Unpacker) Unpack(img v1.Image, dst string) error {
 			return fmt.Errorf("layer %d: %w", i+1, err)
 		}
 	}
-
-	p.Done = true
-	report(p)
 
 	return nil
 }

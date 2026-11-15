@@ -144,9 +144,15 @@ func TestPullRejectsALayerWithTheWrongDigest(t *testing.T) {
 	reg.swap(t, good, layer(t, file("a", "evil")))
 	c, dir := openCache(t)
 
-	_, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
+	var last image.Progress
+
+	_, err := c.Pull(t.Context(), ref, image.PullMissing, func(p image.Progress) { last = p })
 	if err == nil || !strings.Contains(err.Error(), "checksum") {
 		t.Fatalf("Pull error = %v, want a digest mismatch", err)
+	}
+
+	if !last.Done {
+		t.Errorf("last progress %+v, want a final report after the failure", last)
 	}
 
 	assertNoCacheEntry(t, dir)
