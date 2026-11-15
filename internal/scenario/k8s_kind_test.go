@@ -465,13 +465,13 @@ func testOverhead(t *testing.T, k *kind) {
 			time.Sleep(time.Second)
 		}
 
-		// Phase 1 runs the VM in the container cgroup. Phase 2 runs it in the sbxr-vm cgroup under the pod cgroup.
+		// Phase 1 runs the VM in the container cgroup. Phase 2 runs it in a child of the pod cgroup, which holds nothing else.
 		script := `cat /sys/fs/cgroup$(cut -d: -f3 /proc/$(crictl inspect -o go-template --template '{{.info.pid}}' ` +
 			strings.TrimPrefix(k.run("", "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.status.containerStatuses[0].containerID}"), "containerd://") +
 			`)/cgroup)/memory.current`
 		if k.Phase == 2 {
 			uid := strings.ReplaceAll(k.run("", "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.metadata.uid}"), "-", "_")
-			script = `cat $(find /sys/fs/cgroup -type d -path '*pod` + uid + `.slice/sbxr-vm')/memory.current`
+			script = `cat $(find /sys/fs/cgroup -type d -name '*pod` + uid + `.slice')/memory.current`
 		}
 
 		current, _ := strconv.Atoi(k.node(script))
