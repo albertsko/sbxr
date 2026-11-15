@@ -229,3 +229,50 @@ func TestOpenBundle(t *testing.T) {
 		t.Error("openBundle accepted a binary outside a bundle")
 	}
 }
+
+// TestVMCommandRunsThePinnedBinary replaces the bundle between pinning and exec, as an upgrade can.
+// The VM process still runs the binary of the pinned bundle.
+func TestVMCommandRunsThePinnedBinary(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "sbxr")
+
+	newBundle := func(version string) string {
+		exe := filepath.Join(bundle, shimBinary)
+		if err := os.MkdirAll(filepath.Dir(exe), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(exe, []byte("#!/bin/sh\necho "+version+" \"$@\"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		return exe
+	}
+
+	exe := newBundle("old")
+
+	var self unix.Stat_t
+	if err := unix.Stat(exe, &self); err != nil {
+		t.Fatal(err)
+	}
+
+	pinned, err := openBundle(exe, self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+
+	// The upgrade exchanges the bundles before the shim starts its VM process.
+	if err := os.Rename(bundle, filepath.Join(dir, "retired")); err != nil {
+		t.Fatal(err)
+	}
+
+	newBundle("new")
+
+	out, err := vmCommand(pinned, "vm", "/run/sbxr/pods/p").Output()
+	if err != nil || string(out) != "old vm /run/sbxr/pods/p\n" {
+		t.Errorf("VM process printed %q, %v; want the old binary", out, err)
+	}
+}

@@ -42,6 +42,8 @@ const (
 const (
 	pinnedFD     = 3
 	pinnedBundle = "/proc/self/fd/3"
+	// shimBinary is the shim in a bundle. The VM process is this binary, run from the pinned bundle.
+	shimBinary = "bin/containerd-shim-sbxr-v1"
 )
 
 // pinBundle opens the node bundle of this shim's own binary, <bundle>/bin/containerd-shim-sbxr-v1. An upgrade can
@@ -91,7 +93,7 @@ func openBundle(exe string, self unix.Stat_t) (*os.File, error) {
 
 	var st unix.Stat_t
 
-	err = unix.Fstatat(fd, filepath.Join("bin", filepath.Base(exe)), &st, unix.AT_SYMLINK_NOFOLLOW)
+	err = unix.Fstatat(fd, shimBinary, &st, unix.AT_SYMLINK_NOFOLLOW)
 	if err == nil && (st.Dev != self.Dev || st.Ino != self.Ino) {
 		err = errors.New("it holds another shim binary now")
 	}
