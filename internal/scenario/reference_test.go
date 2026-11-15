@@ -36,7 +36,7 @@ func newReference(t *testing.T, refs map[string]string) *reference {
 		t.Fatal(err)
 	}
 
-	return &reference{images: image.Store{Cache: cache, Overlay: false}, refs: refs, cacheDir: cacheDir}
+	return &reference{images: image.Store{Cache: cache, Overlay: false, Progress: nil}, refs: refs, cacheDir: cacheDir}
 }
 
 func (r *reference) Capabilities() []scenario.Capability {

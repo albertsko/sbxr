@@ -41,6 +41,18 @@ const (
 // Unpacker applies image layers to a directory.
 type Unpacker struct {
 	Ownership Ownership
+	// Progress, when set, receives the progress of Unpack after each read and once when it is done.
+	// The layers download while they unpack, so this is also the download progress.
+	Progress func(Progress)
+}
+
+// Progress is how far an unpack is.
+type Progress struct {
+	// Layer is the 1-based layer being unpacked, of Layers.
+	Layer, Layers int
+	// Bytes counts the uncompressed bytes of all layers read so far.
+	Bytes int64
+	Done  bool
 }
 
 // entryMeta is the owner, group, and mode of one image file.
@@ -77,14 +89,42 @@ func (u Unpacker) Unpack(img v1.Image, dst string) error {
 		return err
 	}
 
+	report := u.Progress
+	if report == nil {
+		report = func(Progress) {}
+	}
+
+	p := Progress{Layer: 0, Layers: len(layers), Bytes: 0, Done: false}
+
 	for i, layer := range layers {
-		err := l.apply(layer)
+		p.Layer = i + 1
+
+		err := l.apply(layer, func(n int) {
+			p.Bytes += int64(n)
+			report(p)
+		})
 		if err != nil {
 			return fmt.Errorf("layer %d: %w", i+1, err)
 		}
 	}
 
+	p.Done = true
+	report(p)
+
 	return nil
+}
+
+// countingReader calls count with the size of each read.
+type countingReader struct {
+	r     io.Reader
+	count func(int)
+}
+
+func (c countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.count(n)
+
+	return n, err //nolint:wrapcheck // This is a plain read.
 }
 
 // layerApplier writes layers into one root directory.
@@ -97,14 +137,14 @@ type layerApplier struct {
 	cases map[string]string
 }
 
-func (l layerApplier) apply(layer v1.Layer) error {
+func (l layerApplier) apply(layer v1.Layer, count func(int)) error {
 	rc, err := layer.Uncompressed()
 	if err != nil {
 		return fmt.Errorf("read layer: %w", err)
 	}
 	defer func() { _ = rc.Close() }()
 
-	tr := tar.NewReader(rc)
+	tr := tar.NewReader(countingReader{r: rc, count: count})
 	written := map[string]bool{}
 
 	for {

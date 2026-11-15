@@ -65,8 +65,8 @@ const hostPlatform = "linux/" + runtime.GOARCH
 
 // Pull returns the cached image for ref, and downloads and unpacks it first when policy requires.
 // Concurrent pulls of one reference download it once. Errors do not repeat ref, so callers name it.
-// The caller holds Hold while it pulls and uses the image.
-func (c *Cache) Pull(ctx context.Context, ref string, policy PullPolicy) (*Image, error) {
+// The caller holds Hold while it pulls and uses the image. A non-nil progress receives the download progress.
+func (c *Cache) Pull(ctx context.Context, ref string, policy PullPolicy, progress func(Progress)) (*Image, error) {
 	r, err := name.ParseReference(ref)
 	if err != nil {
 		return nil, fmt.Errorf("invalid reference: %w", err)
@@ -104,7 +104,7 @@ func (c *Cache) Pull(ctx context.Context, ref string, policy PullPolicy) (*Image
 		return nil, err
 	}
 
-	return c.store(key, img)
+	return c.store(key, img, progress)
 }
 
 // lookup returns the cached image for a reference key, or nil when the cache does not have it.
@@ -206,7 +206,7 @@ func (c *Cache) fetch(ctx context.Context, r name.Reference) (v1.Image, error) {
 }
 
 // store unpacks img into the cache under a temporary name, renames it into place, and records the reference.
-func (c *Cache) store(key string, img v1.Image) (*Image, error) {
+func (c *Cache) store(key string, img v1.Image, progress func(Progress)) (*Image, error) {
 	digest, err := img.Digest()
 	if err != nil {
 		return nil, fmt.Errorf("read image digest: %w", err)
@@ -216,7 +216,7 @@ func (c *Cache) store(key string, img v1.Image) (*Image, error) {
 
 	_, err = os.Stat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
-		err = c.unpack(img, dir)
+		err = c.unpack(img, dir, progress)
 	}
 
 	if err != nil {
@@ -231,7 +231,7 @@ func (c *Cache) store(key string, img v1.Image) (*Image, error) {
 	return c.load(digest.String())
 }
 
-func (c *Cache) unpack(img v1.Image, dir string) error {
+func (c *Cache) unpack(img v1.Image, dir string, progress func(Progress)) error {
 	cf, err := img.ConfigFile()
 	if err != nil {
 		return fmt.Errorf("read image config: %w", err)
@@ -262,7 +262,7 @@ func (c *Cache) unpack(img v1.Image, dir string) error {
 		return fmt.Errorf("create image root: %w", err)
 	}
 
-	err = c.unpacker.Unpack(img, filepath.Join(tmp, "rootfs"))
+	err = Unpacker{Ownership: c.own, Progress: progress}.Unpack(img, filepath.Join(tmp, "rootfs"))
 	if err != nil {
 		return err
 	}

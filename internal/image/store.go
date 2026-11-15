@@ -15,6 +15,8 @@ type Store struct {
 	// Overlay mounts each run root as an overlay of the cached root instead of cloning it.
 	// It needs the mount privileges of a user namespace (Linux).
 	Overlay bool
+	// Progress, when set, receives the download progress of each pull.
+	Progress func(Progress)
 }
 
 // Hold holds the cache, so that prune cannot remove images while the run lasts.
@@ -24,7 +26,7 @@ func (s Store) Hold(ctx context.Context) (io.Closer, error) {
 
 // Pull returns the image for ref. The image ID is its cached root directory.
 func (s Store) Pull(ctx context.Context, ref string, policy spec.Pull) (run.Image, error) {
-	img, err := s.Cache.Pull(ctx, ref, PullPolicy(policy))
+	img, err := s.Cache.Pull(ctx, ref, PullPolicy(policy), s.Progress)
 	if err != nil {
 		return run.Image{}, err
 	}

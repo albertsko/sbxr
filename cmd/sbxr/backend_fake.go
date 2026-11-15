@@ -22,7 +22,7 @@ func backend() cli.Backend {
 		Images: func(cacheDir string) (image.Store, error) {
 			c, err := image.Open(cacheDir, image.OwnershipXattr)
 
-			return image.Store{Cache: c, Overlay: false}, err //nolint:wrapcheck // Open errors name the cache.
+			return image.Store{Cache: c, Overlay: false, Progress: nil}, err //nolint:wrapcheck // Open errors name the cache.
 		},
 		Isolate: nil,
 		VMEnv:   nil,

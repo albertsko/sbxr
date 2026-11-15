@@ -28,8 +28,8 @@ const lockPoll = 50 * time.Millisecond
 //   - locks/: one lock file per image reference, held while pulling it.
 //   - lock: held shared by each run and exclusive by Prune.
 type Cache struct {
-	dir      string
-	unpacker Unpacker
+	dir string
+	own Ownership
 }
 
 // DefaultDir returns the default cache directory, the user cache directory plus sbxr.
@@ -51,7 +51,7 @@ func Open(dir string, own Ownership) (*Cache, error) {
 		}
 	}
 
-	return &Cache{dir: dir, unpacker: Unpacker{Ownership: own}}, nil
+	return &Cache{dir: dir, own: own}, nil
 }
 
 // RunsDir returns the directory for per-run state.

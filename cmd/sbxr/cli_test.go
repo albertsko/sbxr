@@ -318,9 +318,23 @@ func TestWorkloadOutputReachesTerminalStdout(t *testing.T) {
 	t.Parallel()
 
 	// The CLI hides stdout from fang, so this also checks that run restores it.
-	out, code, _ := sbxrOnTerminal(t, env(t), "run", busybox, "echo", "hi")
+	out, code, _ := sbxrOnTerminal(t, env(t), "run", "-q", busybox, "echo", "hi")
 	if code != 0 || out != "hi\r\n" {
 		t.Errorf("sbxr run = %d, %q; want 0, %q", code, out, "hi\r\n")
+	}
+}
+
+func TestPullProgressOnlyOnTerminalWithoutQuiet(t *testing.T) {
+	t.Parallel()
+
+	out, code, _ := sbxrOnTerminal(t, env(t), "run", busybox, "true")
+	if code != 0 || !strings.Contains(out, "Pulling "+busybox+": layer ") {
+		t.Errorf("sbxr run on a terminal = %d, %q; want 0 and pull progress", code, out)
+	}
+
+	out, code, _ = sbxrOnTerminal(t, env(t), "run", "-q", busybox, "true")
+	if code != 0 || out != "" {
+		t.Errorf("sbxr run -q on a terminal = %d, %q; want 0 and no output", code, out)
 	}
 }
 
@@ -328,7 +342,7 @@ func TestTTYGetsTerminalSize(t *testing.T) {
 	t.Parallel()
 
 	// Both the guest terminal and the test terminal turn a newline into CR LF.
-	out, code, _ := sbxrOnTerminal(t, env(t), "run", "-t", busybox, "stty", "size")
+	out, code, _ := sbxrOnTerminal(t, env(t), "run", "-q", "-t", busybox, "stty", "size")
 	if code != 0 || out != "30 100\r\r\n" {
 		t.Errorf("sbxr run -t stty size = %d, %q; want 0, %q", code, out, "30 100\r\r\n")
 	}

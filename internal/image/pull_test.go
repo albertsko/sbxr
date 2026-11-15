@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +32,7 @@ func TestPullReturnsImageConfig(t *testing.T) {
 	ref := reg.push(t, "app", testImage(t, runtime.GOARCH, cfg, layer(t, file("srv/index", "ok"))))
 	c, _ := openCache(t)
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing)
+	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +47,43 @@ func TestPullReturnsImageConfig(t *testing.T) {
 	}
 }
 
+func TestPullReportsProgress(t *testing.T) {
+	t.Parallel()
+
+	reg := newRegistry(t)
+	ref := reg.push(t, "app", hostImage(t, layer(t, file("a", "aaaa")), layer(t, file("b", "bb"))))
+	c, _ := openCache(t)
+
+	var got []image.Progress
+
+	_, err := c.Pull(t.Context(), ref, image.PullMissing, func(p image.Progress) { got = append(got, p) })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(got) < 3 {
+		t.Fatalf("progress %+v, want updates for both layers and a final one", got)
+	}
+
+	for i := 1; i < len(got); i++ {
+		if got[i].Bytes < got[i-1].Bytes || got[i].Layer < got[i-1].Layer || got[i].Layers != 2 {
+			t.Errorf("progress %+v after %+v, want growing bytes and layers of 2", got[i], got[i-1])
+		}
+	}
+
+	if last := got[len(got)-1]; !last.Done || last.Layer != 2 || slices.ContainsFunc(got[:len(got)-1], func(p image.Progress) bool { return p.Done }) {
+		t.Errorf("progress %+v, want only the last update done at layer 2", got)
+	}
+
+	// A cached image needs no download, so it reports no progress.
+	got = nil
+
+	_, err = c.Pull(t.Context(), ref, image.PullMissing, func(p image.Progress) { got = append(got, p) })
+	if err != nil || len(got) != 0 {
+		t.Errorf("cached Pull = %v, progress %+v; want no error and no progress", err, got)
+	}
+}
+
 func TestPullMissingImage(t *testing.T) {
 	t.Parallel()
 
@@ -53,7 +91,7 @@ func TestPullMissingImage(t *testing.T) {
 	c, dir := openCache(t)
 	ref := reg.ref("missing:latest")
 
-	_, err := c.Pull(t.Context(), ref, image.PullMissing)
+	_, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
 	if !errors.Is(err, image.ErrNotFound) {
 		t.Fatalf("Pull error = %v, want ErrNotFound", err)
 	}
@@ -68,7 +106,7 @@ func TestPullFailedUnpackLeavesNoCacheEntry(t *testing.T) {
 	ref := reg.push(t, "bad", hostImage(t, layer(t, file("ok", "x"), file("../escaped", "x"))))
 	c, dir := openCache(t)
 
-	if _, err := c.Pull(t.Context(), ref, image.PullMissing); err == nil {
+	if _, err := c.Pull(t.Context(), ref, image.PullMissing, nil); err == nil {
 		t.Fatal("Pull succeeded, want an error")
 	}
 
@@ -87,7 +125,7 @@ func TestPullSelectsHostPlatform(t *testing.T) {
 	ref := reg.pushIndex(t, "multi", idx)
 	c, _ := openCache(t)
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing)
+	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +154,7 @@ func TestPullWithoutHostPlatform(t *testing.T) {
 
 			c, dir := openCache(t)
 
-			_, err := c.Pull(t.Context(), tt.ref, image.PullMissing)
+			_, err := c.Pull(t.Context(), tt.ref, image.PullMissing, nil)
 			if !errors.Is(err, image.ErrNoPlatform) {
 				t.Fatalf("Pull error = %v, want ErrNoPlatform", err)
 			}
@@ -137,21 +175,21 @@ func TestPullPolicy(t *testing.T) {
 	ref := reg.push(t, "app", hostImage(t, layer(t, file("v", "1"))))
 	c, _ := openCache(t)
 
-	if _, err := c.Pull(t.Context(), ref, image.PullNever); !errors.Is(err, image.ErrNotFound) {
+	if _, err := c.Pull(t.Context(), ref, image.PullNever, nil); !errors.Is(err, image.ErrNotFound) {
 		t.Fatalf("Pull never on an empty cache: error = %v, want ErrNotFound", err)
 	}
 
-	if _, err := c.Pull(t.Context(), ref, image.PullMissing); err != nil {
+	if _, err := c.Pull(t.Context(), ref, image.PullMissing, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	downloads := reg.blobGets()
 
-	if _, err := c.Pull(t.Context(), ref, image.PullMissing); err != nil {
+	if _, err := c.Pull(t.Context(), ref, image.PullMissing, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := c.Pull(t.Context(), ref, image.PullAlways); err != nil {
+	if _, err := c.Pull(t.Context(), ref, image.PullAlways, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -161,7 +199,7 @@ func TestPullPolicy(t *testing.T) {
 
 	reg.push(t, "app", hostImage(t, layer(t, file("v", "2"))))
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing)
+	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +208,7 @@ func TestPullPolicy(t *testing.T) {
 		t.Errorf("v after Pull missing = %q, want the cached 1", got)
 	}
 
-	img, err = c.Pull(t.Context(), ref, image.PullAlways)
+	img, err = c.Pull(t.Context(), ref, image.PullAlways, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +219,7 @@ func TestPullPolicy(t *testing.T) {
 
 	reg.srv.Close()
 
-	if _, err := c.Pull(t.Context(), ref, image.PullNever); err != nil {
+	if _, err := c.Pull(t.Context(), ref, image.PullNever, nil); err != nil {
 		t.Errorf("Pull never with the registry down: %v", err)
 	}
 }
@@ -206,7 +244,7 @@ func TestPullConcurrentDownloadsOnce(t *testing.T) {
 	errs := make(chan error, runs)
 	for range runs {
 		wg.Go(func() {
-			img, err := c.Pull(t.Context(), ref, image.PullMissing)
+			img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
 			if err != nil {
 				errs <- err
 
@@ -250,7 +288,7 @@ func TestPruneRefusesWhileHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing)
+	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +307,7 @@ func TestPruneRefusesWhileHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := c.Pull(t.Context(), ref, image.PullNever); !errors.Is(err, image.ErrNotFound) {
+	if _, err := c.Pull(t.Context(), ref, image.PullNever, nil); !errors.Is(err, image.ErrNotFound) {
 		t.Errorf("Pull never after Prune: error = %v, want ErrNotFound", err)
 	}
 }

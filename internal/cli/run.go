@@ -7,6 +7,7 @@ import (
 
 	charmlog "charm.land/log/v2"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/albertsko/sbxr/internal/run"
 	"github.com/albertsko/sbxr/internal/spec"
@@ -17,6 +18,7 @@ func (a *app) runCommand() *cobra.Command {
 		in         spec.Input
 		envFiles   []string
 		entrypoint string
+		quiet      bool
 	)
 
 	cmd := &cobra.Command{
@@ -35,7 +37,7 @@ func (a *app) runCommand() *cobra.Command {
 			in.Entrypoint = &entrypoint
 		}
 
-		code, err := a.run(cmd, in, envFiles)
+		code, err := a.run(cmd, in, envFiles, quiet)
 		if err != nil {
 			return failure(cmd, err)
 		}
@@ -64,7 +66,7 @@ func (a *app) runCommand() *cobra.Command {
 	flags.BoolVarP(&in.Interactive, "interactive", "i", false, "Keep stdin open")
 	flags.BoolVarP(&in.TTY, "tty", "t", false, "Allocate a terminal")
 	// Progress output comes with image pull in S4. The flag exists now, so that scripts can pass it.
-	flags.BoolVarP(new(bool), "quiet", "q", false, "Hide progress output")
+	flags.BoolVarP(&quiet, "quiet", "q", false, "Hide progress output")
 
 	return cmd
 }
@@ -83,7 +85,7 @@ func splitArgs(args []string) (string, []string) {
 	return image, rest
 }
 
-func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string) (int, error) {
+func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string, quiet bool) (int, error) {
 	for _, path := range envFiles {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -131,10 +133,17 @@ func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string) (int, er
 			return a.backend.Isolate(a.args, stdin, stdout, stderr)
 		}
 	} else {
-		r.Images, err = a.backend.Images(dir)
+		store, err := a.backend.Images(dir)
 		if err != nil {
 			return 0, err
 		}
+
+		// Progress shows only on a terminal, so that logs stay readable.
+		if !quiet && term.IsTerminal(int(os.Stderr.Fd())) {
+			store.Progress = pullProgress(os.Stderr, s.Image)
+		}
+
+		r.Images = store
 	}
 
 	return r.Run(cmd.Context(), s) //nolint:wrapcheck // Runner errors are complete user messages.

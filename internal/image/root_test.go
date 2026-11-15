@@ -23,7 +23,7 @@ func TestCloneRootIsolatesRuns(t *testing.T) {
 	)))
 	c, _ := openCache(t)
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing)
+	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func userImage(t *testing.T, l v1.Layer) *image.Image {
 	ref := reg.push(t, "users", hostImage(t, l))
 	c, _ := openCache(t)
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing)
+	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

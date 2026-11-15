@@ -22,7 +22,7 @@ func isolated(b cli.Backend) cli.Backend {
 	b.Images = func(cacheDir string) (image.Store, error) {
 		c, err := image.Open(cacheDir, image.OwnershipChown)
 
-		return image.Store{Cache: c, Overlay: true}, err //nolint:wrapcheck // Open errors name the cache.
+		return image.Store{Cache: c, Overlay: true, Progress: nil}, err //nolint:wrapcheck // Open errors name the cache.
 	}
 
 	return b
