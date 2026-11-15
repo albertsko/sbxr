@@ -125,15 +125,11 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 		return ExitSetup, err
 	}
 
-	err = os.MkdirAll(r.RunsDir, 0o700)
+	dir, unlock, err := newRunDir(r.RunsDir, r.Log)
 	if err != nil {
-		return ExitSetup, fmt.Errorf("create runs directory: %w", err)
+		return ExitSetup, err
 	}
-
-	dir, err := os.MkdirTemp(r.RunsDir, "")
-	if err != nil {
-		return ExitSetup, fmt.Errorf("create run directory: %w", err)
-	}
+	defer unlock()
 
 	release := func() error { return nil }
 	defer func() { r.cleanup(dir, release) }()

@@ -722,6 +722,55 @@ func TestCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 	}
 }
 
+func TestNextRunRemovesStaleRunState(t *testing.T) {
+	t.Parallel()
+
+	environ := env(t)
+	cacheDir := cacheDirOf(environ)
+
+	cmd := exec.CommandContext(t.Context(), bin, "run", busybox, "sh", "-c", "echo ready; sleep 30")
+	cmd.Env = environ
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = cmd.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = io.ReadFull(stdout, make([]byte, len("ready\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Killing the runner and the VM process at once leaves no process that could clean up.
+	err = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = cmd.Wait() // The process was killed.
+
+	waitForNoProcess(t, cacheDir)
+
+	if scenario.CheckClean(cacheDir) == nil {
+		t.Fatal("no run state remains after SIGKILL, so the test checks nothing")
+	}
+
+	if res := sbxr(t, environ, "run", busybox, "true"); res.code != 0 {
+		t.Fatalf("next run = %d, stderr %q", res.code, res.stderr)
+	}
+
+	err = scenario.CheckClean(cacheDir)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestKilledVMProcessIsAnSbxrError(t *testing.T) {
 	t.Parallel()
 

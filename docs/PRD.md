@@ -393,6 +393,7 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 - Concurrent runs share the image cache read-only. Writes to the cache (pull, unpack, prune) are locked. Each run has its own root and state.
 - Each run holds a shared lock on the cache from before the pull until its root is removed. `sbxr prune` takes the lock exclusively without waiting, so it fails with a message while any run is active.
 - When the parent dies without cleanup (for example by SIGKILL), the VM process sees its lifeline pipe close, unmounts the run root, removes the run directory, and exits.
+- Each run holds an exclusive lock on a lock file next to its run directory from before the directory exists. When the parent and the VM process both die, `sbxr run` and `sbxr prune` remove the run directories whose lock is free.
 
 ### Kubernetes contract, both phases
 
