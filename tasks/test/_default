@@ -5,7 +5,16 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
 if [[ -n "${CI:-}" ]]; then
-	exec go test -race -shuffle=on ./... "$@"
+	# Diagnostics for a macOS CI flake that kills this task with SIGHUP: show which processes share its group.
+	trap 'echo "test task: SIGHUP" >&2; ps -axo pid,ppid,pgid,sess,tt,stat,etime,command >&2' HUP
+	go test -race -shuffle=on ./... "$@" &
+	pid=$!
+	# wait returns early when the trap runs, so wait again while go test still runs.
+	while true; do
+		wait "$pid" && exit 0
+		status=$?
+		kill -0 "$pid" 2>/dev/null || exit "$status"
+	done
 fi
 
 exec go test -race ./... "$@"

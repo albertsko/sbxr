@@ -670,7 +670,15 @@ func TestClosedTerminalStopsTheRun(t *testing.T) {
 
 	// A closed terminal sends SIGHUP to its foreground process group, which holds the runner and the VM process.
 	// The test sends it directly, because the output reader of the test keeps the terminal from hanging up.
-	err := syscall.Kill(-tm.cmd.Process.Pid, syscall.SIGHUP)
+	// Diagnostics for a macOS CI flake that kills the test task with SIGHUP: the signal must reach only the run's group.
+	pid := tm.cmd.Process.Pid
+
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil || pgid != pid || pgid == syscall.Getpgrp() {
+		t.Fatalf("run pid %d has process group %d (%v), the test has %d; want its own group", pid, pgid, err, syscall.Getpgrp())
+	}
+
+	err = syscall.Kill(-pid, syscall.SIGHUP)
 	if err != nil {
 		t.Fatal(err)
 	}
