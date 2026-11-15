@@ -213,6 +213,8 @@ Delivery has two phases:
 - On Linux, `sbxr run` and `sbxr prune` run the preflight checks, then run the same command again inside a new user namespace and mount namespace with the user's subordinate id range mapped. The process inside executes itself once more after the maps are written, because only that execve grants it full capabilities in the namespace. It is the parent described above: it pulls and unpacks images, mounts the run root, and starts the VM process, which inherits the namespaces. The process outside forwards SIGINT, SIGTERM, and SIGHUP and returns the exit code. When it dies, the process inside gets SIGTERM and cleans up.
 - The child's stdin is the user's terminal only with `-i`. Otherwise it is empty.
 - A signal to the parent stops the VM at once (no graceful guest shutdown in the CLI). The parent then exits 130 or 143, or 129 after SIGHUP (closed terminal).
+- The VM process ignores SIGINT, SIGQUIT, and SIGHUP, so terminal signals end a run only through the parent, which removes the run state. A VM process that a signal ends anyway is an `sbxr` failure: exit 125 and `sbxr: vm: the VM process was killed by signal N; run again with --debug and report a bug`.
+- With `-i -t`, the parent restores the user's terminal mode as soon as the VM process exits, so that Ctrl-C can end a drain of terminal output that a slow reader holds back.
 - The VM process gets SIGWINCH from the parent after each terminal resize, because its pseudo-terminal is not its controlling terminal. `libkrun` 1.19.8 applies later resizes only on Linux. On macOS the guest keeps the size from the start.
 - `libkrun` aborts the process on some invalid inputs instead of returning an error. `sbxr` validates every value before it calls `libkrun`, so an abort is always an `sbxr` bug.
 - In Kubernetes phase 2, the containerd shim process is the VM process.
@@ -232,7 +234,8 @@ Delivery has two phases:
 ### Workload config
 
 - The workload command, env, working directory, uid, and gid reach the guest through a config file, `/.krun_config.json`, that `sbxr` writes into the per-run root. The kernel command line is not used, because it breaks on quotes and non-ASCII text and lets values override the file.
-- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device (with `--net`), disable the implicit vsock device, start. `sbxr` never calls the functions that set the exec command, working directory, resource limits, or port map, and never passes a NULL env list.
+- `libkrun` call sequence: create the context, set CPUs and memory, set the root, set an empty env list, add the network device (with `--net`), disable the implicit vsock device, add a serial console and make it the kernel console (only when no stdio stream is a terminal), start.
+- The serial kernel console works around a `libkrun` 1.19.8 race. The default console `hvc0` appears only after a virtio handshake with the VM process. Under host load, the guest kernel starts the init before `hvc0` exists, the init starts with closed stdio, and its redirect to the `krun-stdout` port then leaves the workload without stdout (EBADF, about 1 in 4 runs with 16 parallel VMs on an M4 Pro Mac). A serial port registers at boot, so the init always has stdio. A rarer second race remains: when the guest init looks for the named ports before the handshake names them, the workload writes to the console, and its output is lost (about 1 in 80 runs at that load, none in 200 runs with 8 parallel VMs). With `-t`, the console is the workload's terminal, so it stays `hvc0` and only the first race applies. `libkrun` main fixed the closed-stdio case in its new init (upstream issue 749). `sbxr` never calls the functions that set the exec command, working directory, resource limits, or port map, and never passes a NULL env list.
 - The guest init parser treats any string as a possible key and takes the first match. The writer therefore follows this contract:
   - Keys appear once each, in this order: `uid`, `gid`, `WorkingDir`, `Env`, `Entrypoint` (always empty), `args`.
   - `uid` and `gid` are non-empty decimal strings. An empty uid would run the workload as root.
@@ -319,7 +322,7 @@ Output streams:
 
 - stdout carries only workload output (`run`) or the command result (`doctor --json`, `doctor apparmor-profile`).
 - stderr carries logs, progress, warnings, and errors.
-- Progress shows only when stderr is a terminal. `run` prints nothing of its own on success unless `--debug` is set. With `--debug`, each published port is logged, for example `published 127.0.0.1:8080 -> 80/tcp`.
+- Progress shows only when stderr is a terminal and `-q` is not set: one line, `Pulling IMAGE: layer N/M, X MB`, redrawn in place and cleared when the pull ends. It uses no escape codes. `run` prints nothing of its own on success unless `--debug` is set. With `--debug`, each published port is logged, for example `published 127.0.0.1:8080 -> 80/tcp`.
 - Errors are one line: `sbxr: <source> <quoted value>: <problem>; <fix>`, colored only on a terminal. Values are quoted so that control characters are visible. Examples:
 
   ```text
@@ -460,7 +463,7 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
 - Scenarios assert on behavior: stdout (or combined output), exit code, and a target-neutral error class. Error classes: `ok`, `invalid-spec`, `image`, `preflight`, `not-found`, `not-executable`, `interrupted`. Each target maps its own signals to these classes. Scenarios never assert the order across stdout and stderr.
 - After each scenario, the target verifies that no VM process, network listener, pod, or run state remains.
 - The fake target runs the real userspace network stack against a small simulated guest network, so port publishing, egress blocking, and cleanup are tested without a hypervisor.
-- The config file writer is tested with property and fuzz tests against a copy of the guest init parser. The hypervisor job also runs the fuzz seed corpus through the real guest init.
+- The config file writer is tested with property and fuzz tests against a copy of the guest init parser. The seed corpus lives in `internal/krunconfig/testdata/fuzz/FuzzMarshal`. The hypervisor job also boots every seed that the writer accepts through the real guest init and compares the arguments, env, uid, gid, and working directory that the workload sees.
 - Hypervisor detection uses the same rules as the `hypervisor` doctor check.
 - `SBXR_REQUIRE_HV=1` turns hypervisor skips into failures. CI sets it on hypervisor jobs.
 - The `fake` and `cli` targets pull the scenario images from a registry inside the test process on `127.0.0.1`, so both exercise pull, cache, and run root. The `fake` target builds them on a fake busybox image. The `cli` target builds them on `mirror.gcr.io/library/busybox`, which serves Docker Hub library images without its rate limit, and is the only external network use of the tests.

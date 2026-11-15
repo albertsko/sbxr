@@ -30,7 +30,7 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - Images come from registries through `internal/image`: pull policy, a cache with a shared run lock, `User` name lookup, and a run root per run (APFS clone on macOS, overlay in the user namespace on Linux).
 - On Linux, `sbxr run` and `sbxr prune` run again inside a user namespace (`internal/userns`) after the checks. See PRD "Process model".
 - The fake build (`-tags sbxrfake`) replaces only the hypervisor and the doctor checks. It pulls images like the release build and keeps ownership in xattrs on every platform, so it needs no user namespace.
-- Not built yet: `--net`, `-p`, and `-v` (S5), progress output for pulls.
+- Not built yet: `--net`, `-p`, and `-v` (S5).
 - Packages:
   - `internal/spec`: run input validation, no I/O.
   - `internal/krunconfig`: the config writer.
@@ -317,7 +317,8 @@ A step or pull request is done when:
 - **The race detector needs cgo.** The release binary builds with cgo off. Build the binary that the `cli` target tests with `CGO_ENABLED=0`, the same as the release.
 - **The `-t` terminal is not the VM process's controlling terminal.** When a controlling process exits, the kernel hangs the terminal up, and macOS then drops unread output. Without `-i`, the VM process's stdin is empty, and `libkrun` still sets up its console from stdout (checked with real VMs). Resizes do not signal the VM process by themselves, so the parent sends it SIGWINCH.
 - **`libkrun` 1.19.8 forwards terminal resizes only on Linux.** On macOS the guest keeps the size from the start.
-- **The guest init prints "Couldn't bind timesync socket" with `-t` on macOS,** because the VM has no vsock device. Without `-t` the line stays in an unflushed buffer and never appears.
+- **The guest init prints "Couldn't bind timesync socket" with `-t` on macOS,** because the VM has no vsock device. Without `-t` the line goes to the serial console, which drops it, so stdout holds only workload output (the `echo` scenario checks the exact stdout on real VMs).
+- **Guest output can get lost under heavy host load.** See the console race in PRD "Workload config". Real-VM tests run with `-parallel 4` to stay far below that load.
 - **`newgidmap` maps only the user's primary group.** Under `sg kvm` the process gid differs and the `userns` check fails. Log in again after `usermod -aG kvm` (or use `sudo -iu "$USER"`) instead.
 - **On Linux, image cache files belong to subordinate ids.** Remove a cache directory with `sbxr prune --force` (with `SBXR_CACHE_DIR` set), not `rm -rf`. Tests may leave such directories in the temporary directory.
 - **CI shuffles and parallelizes tests.** Publish tests must bind port 0. Cleanup checks must look only at the test's own run directory and processes, not at every process on the host.
