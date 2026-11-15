@@ -134,7 +134,8 @@ chown -R $BASE:$BASE $S/c1
 umount $C/merged
 mkdir -p $W/ctr-id
 mount --bind -o "X-mount.idmap=b:0:$BASE:65536" $C $W/ctr-id
-mount -t overlay overlay -o lowerdir=$W/ctr-id/lower,upperdir=$W/ctr-id/upper,workdir=$W/ctr-id/work $S/c1/rootfs
+chown $BASE:$BASE $C/upper
+mount -t overlay overlay -o lowerdir=$W/ctr-id/lower,upperdir=$C/upper,workdir=$C/work $S/c1/rootfs
 ls -ln $S/c1/rootfs/data || result "U4 idmapped bind of container overlay FAIL"
 findmnt -o TARGET,FSTYPE,OPTIONS $S/c1/rootfs; dmesg | tail -5
 touch $S/c1/rootfs/data/hostnew && ls -ln $S/c1/rootfs/data/hostnew $C/upper/data/hostnew
