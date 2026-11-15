@@ -930,6 +930,124 @@ func TestGoneStdoutReaderStopsTheRun(t *testing.T) {
 	}
 }
 
+// TestGoneReaderOfDebugOutputStopsTheRun closes a pipe that carries both stdout and the debug logs on stderr.
+// A later log write must not kill the runner before it cleans up.
+func TestGoneReaderOfDebugOutputStopsTheRun(t *testing.T) {
+	t.Parallel()
+
+	environ := env(t)
+	cacheDir := cacheDirOf(environ)
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(t.Context(), bin, "--debug", "run", busybox, "yes")
+	cmd.Env = environ
+	cmd.Stdout, cmd.Stderr = pw, pw
+
+	err = cmd.Start()
+	_ = pw.Close()
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lines := bufio.NewReader(pr)
+
+	for range 5 {
+		_, err = lines.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_ = pr.Close()
+
+	if code := waitExit(t, cmd); code != 141 {
+		t.Errorf("exit code = %d, want 141", code)
+	}
+
+	waitForNoProcess(t, cacheDir)
+
+	err = scenario.CheckClean(cacheDir)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+// TestReaderGoneAfterCtrlCWithStalledOutput closes a stalled stdout reader after Ctrl-C, while an output copy still blocks.
+func TestReaderGoneAfterCtrlCWithStalledOutput(t *testing.T) {
+	t.Parallel()
+
+	environ := env(t)
+	cacheDir := cacheDirOf(environ)
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.CommandContext(t.Context(), bin, "run", busybox, "yes")
+	cmd.Env = environ
+	cmd.Stdout = pw
+
+	err = cmd.Start()
+	_ = pw.Close()
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Nobody reads the pipe, so the copy of the output blocks once the pipe buffer is full.
+	time.Sleep(500 * time.Millisecond)
+
+	err = cmd.Process.Signal(syscall.SIGINT)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	_ = pr.Close()
+
+	if code := waitExit(t, cmd); code != 130 {
+		t.Errorf("exit code = %d, want 130", code)
+	}
+
+	waitForNoProcess(t, cacheDir)
+
+	err = scenario.CheckClean(cacheDir)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+// waitExit waits at most 10 seconds for cmd and returns its exit code.
+func waitExit(t *testing.T, cmd *exec.Cmd) int {
+	t.Helper()
+
+	done := make(chan struct{})
+
+	go func() {
+		_ = cmd.Wait() // The exit code shows the outcome.
+
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return cmd.ProcessState.ExitCode()
+	case <-time.After(10 * time.Second):
+		_ = cmd.Process.Kill()
+
+		t.Fatal("sbxr did not exit")
+
+		return 0
+	}
+}
+
 func TestKilledVMProcessIsAnSbxrError(t *testing.T) {
 	t.Parallel()
 

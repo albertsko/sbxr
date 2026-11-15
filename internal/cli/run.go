@@ -3,7 +3,9 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	charmlog "charm.land/log/v2"
 	"github.com/spf13/cobra"
@@ -85,6 +87,11 @@ func splitArgs(args []string) (string, []string) {
 }
 
 func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string, quiet bool) (int, error) {
+	// A write to a closed stdout or stderr pipe would end the process with SIGPIPE, before the run cleans up.
+	// With the signal delivered to a channel, the write fails with EPIPE instead. Notify, unlike Ignore, is not inherited
+	// by the VM process. It stays in place until the process exits, because output copies can outlive the run.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
+
 	for _, path := range envFiles {
 		data, err := os.ReadFile(path)
 		if err != nil {

@@ -99,12 +99,6 @@ func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, hold, lock 
 // which mixes the streams and loses stderr when only stdout is redirected.
 // The relay drains the output after the VM exits, and the context ends a drain that a slow reader holds back.
 func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) error {
-	// A closed stdout or stderr reader would end the runner with SIGPIPE before cleanup, so the relay gets EPIPE instead.
-	sigpipe := make(chan os.Signal, 1)
-	signal.Notify(sigpipe, syscall.SIGPIPE)
-
-	defer signal.Stop(sigpipe)
-
 	stdout := &guardedWriter{w: r.Stdout, closed: atomic.Bool{}}
 	stderr := &guardedWriter{w: r.Stderr, closed: atomic.Bool{}}
 
@@ -211,8 +205,10 @@ func relay(w io.Writer, onError func(error)) (*os.File, <-chan struct{}, error) 
 
 		for {
 			n, err := pr.Read(buf)
-			if _, werr := w.Write(buf[:n]); werr != nil {
-				onError(werr)
+			if n > 0 {
+				if _, werr := w.Write(buf[:n]); werr != nil {
+					onError(werr)
+				}
 			}
 
 			if err != nil {
