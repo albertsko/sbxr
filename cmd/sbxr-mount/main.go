@@ -89,9 +89,13 @@ func mount(m guestmount.Mount) error {
 }
 
 // execvp runs argv like glibc execvp: through PATH for a bare name, a file in an unknown format through /bin/sh,
-// and EACCES only when no directory had the file.
+// and EACCES only when no directory had the file. An empty name is ENOENT, like in glibc.
 func execvp(argv []string) error {
 	name := argv[0]
+	if name == "" {
+		return unix.ENOENT
+	}
+
 	if strings.Contains(name, "/") {
 		return execFile(name, argv)
 	}
