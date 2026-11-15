@@ -8,11 +8,13 @@ import (
 	"math"
 	"net/netip"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
 
+	"github.com/albertsko/sbxr/internal/guestmount"
 	"github.com/albertsko/sbxr/internal/krunconfig"
 )
 
@@ -37,11 +39,13 @@ type Input struct {
 	Image string
 	Args  []string
 
-	CPUs       string // Empty means the default.
-	Memory     string // Empty means the default.
-	Env        []string
-	EnvFiles   []EnvFile
-	Volumes    []string
+	CPUs     string // Empty means the default.
+	Memory   string // Empty means the default.
+	Env      []string
+	EnvFiles []EnvFile
+	Volumes  []string
+	// Dir is the absolute directory that relative -v host paths start from, usually the working directory.
+	Dir        string
 	Publish    []string
 	Net        bool
 	AllowLAN   bool
@@ -134,7 +138,7 @@ func Parse(in Input, hostCPUs int) (Spec, error) {
 		return Spec{}, err
 	}
 
-	volumes, err := parseVolumes(in.Volumes)
+	volumes, err := parseVolumes(in.Volumes, in.Dir)
 	if err != nil {
 		return Spec{}, err
 	}
@@ -293,8 +297,12 @@ func checkEnv(source, kv string) error {
 	return nil
 }
 
-func parseVolumes(raw []string) ([]Volume, error) {
+// reservedGuestPaths are guest paths that the guest init, the kernel, or sbxr own. A volume cannot be at or under them.
+var reservedGuestPaths = []string{"/dev", "/proc", "/sys", guestmount.Path, "/" + krunconfig.FileName, "/init.krun"}
+
+func parseVolumes(raw []string, dir string) ([]Volume, error) {
 	volumes := make([]Volume, 0, len(raw))
+	seen := map[string]bool{}
 
 	for _, v := range raw {
 		bad := &Error{Source: "-v", Value: v, Problem: "must be HOST:GUEST or HOST:GUEST:ro", Fix: "for example -v ./src:/src:ro"}
@@ -309,11 +317,6 @@ func parseVolumes(raw []string) ([]Volume, error) {
 			return nil, bad
 		}
 
-		guest := parts[1]
-		if !path.IsAbs(guest) || path.Clean(guest) == "/" {
-			return nil, &Error{Source: "-v", Value: v, Problem: "the guest path must be absolute and not /", Fix: "for example /work"}
-		}
-
 		for _, p := range parts[:2] {
 			err := checkValue("-v", p)
 			if err != nil {
@@ -321,7 +324,29 @@ func parseVolumes(raw []string) ([]Volume, error) {
 			}
 		}
 
-		volumes = append(volumes, Volume{Host: parts[0], Guest: path.Clean(guest), ReadOnly: readOnly})
+		guest := path.Clean(parts[1])
+		if !path.IsAbs(parts[1]) || guest == "/" {
+			return nil, &Error{Source: "-v", Value: v, Problem: "the guest path must be absolute and not /", Fix: "for example /work"}
+		}
+
+		for _, r := range reservedGuestPaths {
+			if guest == r || strings.HasPrefix(guest, r+"/") {
+				return nil, &Error{Source: "-v", Value: v, Problem: "the guest path " + r + " is reserved", Fix: "choose another guest path"}
+			}
+		}
+
+		if seen[guest] {
+			return nil, &Error{Source: "-v", Value: v, Problem: "the guest path is used twice"}
+		}
+
+		seen[guest] = true
+
+		host := parts[0]
+		if !filepath.IsAbs(host) {
+			host = filepath.Join(dir, host)
+		}
+
+		volumes = append(volumes, Volume{Host: filepath.Clean(host), Guest: guest, ReadOnly: readOnly})
 	}
 
 	return volumes, nil

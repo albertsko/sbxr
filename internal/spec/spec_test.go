@@ -21,6 +21,7 @@ func TestParseAcceptsValidInput(t *testing.T) {
 		Env:         []string{"A=1", "EMPTY="},
 		EnvFiles:    []spec.EnvFile{{Path: "app.env", Data: []byte("# comment\n\nB=2\n")}},
 		Volumes:     []string{"./src:/src/:ro", "/data:/data"},
+		Dir:         "/home/u",
 		Publish:     []string{"8080:80", "0.0.0.0:0:443"},
 		Net:         true,
 		AllowLAN:    true,
@@ -44,7 +45,7 @@ func TestParseAcceptsValidInput(t *testing.T) {
 		MemoryMiB: 512,
 		Env:       []string{"B=2", "A=1", "EMPTY="},
 		Volumes: []spec.Volume{
-			{Host: "./src", Guest: "/src", ReadOnly: true},
+			{Host: "/home/u/src", Guest: "/src", ReadOnly: true},
 			{Host: "/data", Guest: "/data", ReadOnly: false},
 		},
 		Publish: []spec.Port{
@@ -120,6 +121,10 @@ func TestParseRejectsInvalidInput(t *testing.T) {
 		{name: "volume with bad mode", in: spec.Input{Image: "alpine", Volumes: []string{"./src:/src:rw"}}, want: `-v "./src:/src:rw": must be HOST:GUEST or HOST:GUEST:ro; for example -v ./src:/src:ro`},
 		{name: "volume on guest root", in: spec.Input{Image: "alpine", Volumes: []string{"./src:/"}}, want: `-v "./src:/": the guest path must be absolute and not /; for example /work`},
 		{name: "relative volume guest", in: spec.Input{Image: "alpine", Volumes: []string{"./src:src"}}, want: `-v "./src:src": the guest path must be absolute and not /; for example /work`},
+		{name: "volume on /proc", in: spec.Input{Image: "alpine", Volumes: []string{"/x:/proc/x"}}, want: `-v "/x:/proc/x": the guest path /proc is reserved; choose another guest path`},
+		{name: "volume on the helper directory", in: spec.Input{Image: "alpine", Volumes: []string{"/x:/.sbxr-mount"}}, want: `-v "/x:/.sbxr-mount": the guest path /.sbxr-mount is reserved; choose another guest path`},
+		{name: "volume on the guest config", in: spec.Input{Image: "alpine", Volumes: []string{"/x:/.krun_config.json"}}, want: `-v "/x:/.krun_config.json": the guest path /.krun_config.json is reserved; choose another guest path`},
+		{name: "volume guest path twice", in: spec.Input{Image: "alpine", Volumes: []string{"/x:/w", "/y:/w/"}}, want: `-v "/y:/w/": the guest path is used twice`},
 		{name: "publish without guest", in: spec.Input{Image: "alpine", Net: true, Publish: []string{"8080"}}, want: `-p "8080": must be [IP:]HOST:GUEST; for example -p 8080:80`},
 		{name: "publish guest port 0", in: spec.Input{Image: "alpine", Net: true, Publish: []string{"8080:0"}}, want: `-p "8080:0": must be [IP:]HOST:GUEST; for example -p 8080:80`},
 		{name: "publish port too large", in: spec.Input{Image: "alpine", Net: true, Publish: []string{"70000:80"}}, want: `-p "70000:80": must be [IP:]HOST:GUEST; for example -p 8080:80`},
