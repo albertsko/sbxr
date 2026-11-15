@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/albertsko/sbxr/internal/krunconfig"
+	"github.com/albertsko/sbxr/internal/netstack/guestsim"
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
@@ -42,7 +43,12 @@ func (Hypervisor) Start(m vm.Machine) error {
 		stdio.In = console(os.Stdin, stdio.Out)
 	}
 
-	os.Exit(Boot(root, stdio))
+	network, err := attachNetwork(m.Net)
+	if err != nil {
+		return err
+	}
+
+	os.Exit(boot(root, stdio, network))
 
 	return nil
 }
@@ -64,7 +70,10 @@ type config struct {
 
 // Boot behaves like the libkrun guest init: it reads the config, changes to the working directory,
 // and runs the command through the image PATH. It returns the exit code.
-func Boot(root *os.Root, stdio Stdio) int {
+func Boot(root *os.Root, stdio Stdio) int { return boot(root, stdio, nil) }
+
+// boot runs the guest init with network, the guest network of a machine with a network device, or nil.
+func boot(root *os.Root, stdio Stdio, network *guestsim.Guest) int {
 	data, err := root.ReadFile(krunconfig.FileName)
 	if err != nil {
 		sayf(stdio.Out, "fake init: read config: %v\n", err)
@@ -81,7 +90,7 @@ func Boot(root *os.Root, stdio Stdio) int {
 		return vm.ExitSetup
 	}
 
-	g := &guest{root: root, cfg: cfg, cwd: "/", status: 0}
+	g := &guest{root: root, cfg: cfg, cwd: "/", status: 0, net: network}
 
 	// Like the real init, a failed chdir keeps / as the working directory.
 	if info, err := root.Stat(rel(cfg.WorkingDir)); err == nil && info.IsDir() {
@@ -105,6 +114,8 @@ type guest struct {
 	cfg    config
 	cwd    string
 	status int
+	// net is the guest network, or nil without a network device.
+	net *guestsim.Guest
 }
 
 // Errors from command resolution, with libc strerror text.

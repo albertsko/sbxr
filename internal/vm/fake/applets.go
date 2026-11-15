@@ -16,7 +16,9 @@ import (
 )
 
 // Applets lists the commands of the fake busybox.
-var Applets = []string{"cat", "echo", "env", "false", "id", "pwd", "rm", "sh", "sleep", "stat", "stty", "true", "yes"}
+var Applets = []string{
+	"cat", "echo", "env", "false", "id", "nc", "nslookup", "pwd", "rm", "sh", "sleep", "stat", "stty", "true", "wget", "yes",
+}
 
 // run runs one applet and returns its exit code.
 func (g *guest) run(applet string, args []string, stdio Stdio) int {
@@ -35,6 +37,10 @@ func (g *guest) run(applet string, args []string, stdio Stdio) int {
 		return 1
 	case "id":
 		return g.id(args, stdio)
+	case "nc":
+		return g.nc(args, stdio)
+	case "nslookup":
+		return g.nslookup(args, stdio)
 	case "pwd":
 		return lines(stdio, g.cwd)
 	case "rm":
@@ -49,6 +55,8 @@ func (g *guest) run(applet string, args []string, stdio Stdio) int {
 		return stty(args, stdio)
 	case "true":
 		return 0
+	case "wget":
+		return g.wget(args, stdio)
 	case "yes":
 		return yes(stdio)
 	default:

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
+	"github.com/miekg/dns"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -35,16 +36,16 @@ const (
 	queueLen     = 256
 	maxFrameSize = 65535
 	dhcpTimeout  = 5 * time.Second
+	dnsTimeout   = 5 * time.Second
 )
 
 // Guest is a simulated guest network stack.
 type Guest struct {
-	stack    *stack.Stack
-	link     *channel.Endpoint
-	conn     net.Conn
-	addr     netip.Addr
-	gateway  netip.Addr
-	resolver *net.Resolver
+	stack   *stack.Stack
+	link    *channel.Endpoint
+	conn    net.Conn
+	addr    netip.Addr
+	gateway netip.Addr
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -80,8 +81,6 @@ func Start(ctx context.Context, f *os.File, mac net.HardwareAddr) (*Guest, error
 		_ = g.Close()
 		return nil, err
 	}
-
-	g.resolver = &net.Resolver{PreferGo: true, StrictErrors: false, Dial: g.dialDNS}
 
 	return g, nil
 }
@@ -129,11 +128,47 @@ func (g *Guest) ListenTCP(port uint16) (net.Listener, error) {
 	return ln, nil
 }
 
-// LookupHost resolves name to IPv4 addresses through the gateway DNS.
+// LookupHost resolves name to IPv4 addresses with one A query to the gateway DNS.
+// Unlike the Go resolver, it never reads the host's /etc/hosts.
 func (g *Guest) LookupHost(ctx context.Context, name string) ([]netip.Addr, error) {
-	addrs, err := g.resolver.LookupNetIP(ctx, "ip4", name)
+	c, err := g.DialUDP(ctx, net.JoinHostPort(g.gateway.String(), "53"))
 	if err != nil {
-		return nil, fmt.Errorf("guest lookup: %w", err)
+		return nil, err
+	}
+	defer c.Close() //nolint:errcheck // The query is done.
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(dnsTimeout)
+	}
+
+	_ = c.SetDeadline(deadline)
+
+	q := new(dns.Msg)
+	q.SetQuestion(dns.Fqdn(name), dns.TypeA)
+
+	conn := &dns.Conn{Conn: c}
+	if err := conn.WriteMsg(q); err != nil {
+		return nil, fmt.Errorf("guest lookup %s: %w", name, err)
+	}
+
+	r, err := conn.ReadMsg()
+	if err != nil {
+		return nil, fmt.Errorf("guest lookup %s: %w", name, err)
+	}
+
+	var addrs []netip.Addr
+
+	for _, rr := range r.Answer {
+		if a, ok := rr.(*dns.A); ok {
+			if addr, ok := netip.AddrFromSlice(a.A.To4()); ok {
+				addrs = append(addrs, addr)
+			}
+		}
+	}
+
+	if r.Rcode != dns.RcodeSuccess || len(addrs) == 0 {
+		return nil, fmt.Errorf("guest lookup %s: %s, %d addresses", name, dns.RcodeToString[r.Rcode], len(addrs))
 	}
 
 	return addrs, nil
@@ -351,14 +386,4 @@ func (g *Guest) resolve(ctx context.Context, address string) (tcpip.FullAddress,
 
 func (*Guest) fullAddr(a netip.Addr, port uint16) tcpip.FullAddress {
 	return tcpip.FullAddress{NIC: nicID, Addr: tcpip.AddrFromSlice(a.AsSlice()), Port: port}
-}
-
-// dialDNS sends the queries of the Go resolver to the gateway DNS, whatever server the host configuration names.
-func (g *Guest) dialDNS(ctx context.Context, network, _ string) (net.Conn, error) {
-	server := net.JoinHostPort(g.gateway.String(), "53")
-	if network == "tcp" || network == "tcp4" {
-		return g.DialTCP(ctx, server)
-	}
-
-	return g.DialUDP(ctx, server)
 }
