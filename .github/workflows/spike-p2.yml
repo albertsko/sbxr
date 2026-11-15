@@ -1,0 +1,53 @@
+name: spike-p2
+on:
+  push:
+    branches: [spike/k8s-p2]
+permissions:
+  contents: read
+jobs:
+  a7:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: false
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          uname -a; mount --version
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: krun
+        with:
+          path: ~/krun
+          key: p2-krun-1.19.8-5.6.4
+      - name: Build libkrun
+        if: steps.krun.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+          git clone -q --depth 1 -b v1.19.8 https://github.com/libkrun/libkrun /tmp/libkrun
+          make -C /tmp/libkrun NET=1 -j"$(nproc)"
+          make -C /tmp/libkrun NET=1 install PREFIX="$HOME/krun" LIBDIR_Linux=lib
+          mkdir /tmp/fw && curl -fsSL https://github.com/libkrun/libkrunfw/releases/download/v5.6.4/libkrunfw-x86_64.tgz | tar xz -C /tmp/fw
+          cp -a /tmp/fw/lib/*/libkrunfw.so* "$HOME/krun/lib/"
+      - name: Build spike binaries
+        run: |
+          mkdir -p /tmp/p2
+          sudo cp -a "$HOME"/krun/lib/* /usr/local/lib/ && sudo ldconfig
+          gcc -O2 -Wall -o /tmp/p2/launcher spike/p2/launcher.c -I"$HOME/krun/include" -L/usr/local/lib -lkrun
+          CGO_ENABLED=0 go build -o /tmp/p2/agent ./spike/p2/agent
+          CGO_ENABLED=0 go build -o /tmp/p2/usernsexec ./spike/p2/usernsexec
+          curl -fsSL -o /tmp/p2/crun https://github.com/containers/crun/releases/download/1.31/crun-1.31-linux-amd64-disable-systemd
+          chmod +x /tmp/p2/crun
+          docker create --name bb busybox:1.37-musl >/dev/null && docker cp bb:/bin/busybox /tmp/p2/busybox && file /tmp/p2/busybox
+      - name: Spike
+        run: sudo bash spike/p2/run.sh 2>&1 | tee /tmp/p2.log
+      - name: Summary
+        if: always()
+        run: grep RESULT /tmp/p2.log || true
