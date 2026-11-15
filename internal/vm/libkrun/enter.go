@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+	"golang.org/x/term"
 )
 
 // Values from libkrun 1.19.8 include/libkrun.h.
@@ -60,6 +62,8 @@ type api struct {
 	setEnv               func(ctx uint32, envp unsafe.Pointer) int32
 	addNetUnixgram       func(ctx uint32, path unsafe.Pointer, fd int32, mac *byte, features, flags uint32) int32
 	disableImplicitVsock func(ctx uint32) int32
+	addSerialConsole     func(ctx uint32, inFD, outFD int32) int32
+	setKernelConsole     func(ctx uint32, id string) int32
 	startEnter           func(ctx uint32) int32
 }
 
@@ -85,6 +89,8 @@ func load(dir string) (*api, error) {
 		{"krun_set_env", &a.setEnv},
 		{"krun_add_net_unixgram", &a.addNetUnixgram},
 		{"krun_disable_implicit_vsock", &a.disableImplicitVsock},
+		{"krun_add_serial_console_default", &a.addSerialConsole},
+		{"krun_set_kernel_console", &a.setKernelConsole},
 		{"krun_start_enter", &a.startEnter},
 	}
 
@@ -155,6 +161,12 @@ func Enter(dir string, cfg Config) error {
 		return err
 	}
 
+	if !anyTerminal() {
+		if err := useSerialConsole(krun, ctx); err != nil {
+			return err
+		}
+	}
+
 	return check("krun_start_enter", krun.startEnter(ctx))
 }
 
@@ -181,4 +193,22 @@ func check(name string, rc int32) error {
 	}
 
 	return fmt.Errorf("%s: %w", name, syscall.Errno(-rc))
+}
+
+// useSerialConsole makes a serial port the kernel console, which the guest kernel registers at boot.
+//
+// The default console hvc0 appears only after a virtio handshake with this process. Under host load,
+// the kernel starts the guest init before hvc0 exists, and the libkrun 1.19.8 init then loses its stdout (EBADF).
+// The init still redirects stdout and stderr to the krun-stdout and krun-stderr ports, which exist only when no stdio fd is a terminal.
+// Output to the serial port is dropped.
+func useSerialConsole(krun *api, ctx uint32) error {
+	if err := check("krun_add_serial_console_default", krun.addSerialConsole(ctx, -1, -1)); err != nil {
+		return err
+	}
+
+	return check("krun_set_kernel_console", krun.setKernelConsole(ctx, serialConsole()))
+}
+
+func anyTerminal() bool {
+	return slices.ContainsFunc([]int{0, 1, 2}, term.IsTerminal)
 }

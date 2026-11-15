@@ -20,3 +20,12 @@ func defaultLibDirs() []string {
 
 	return append(dirs, "/usr/lib64", "/usr/lib")
 }
+
+// serialConsole returns the guest name of the first serial port.
+func serialConsole() string {
+	if runtime.GOARCH == "arm64" {
+		return "ttyAMA0"
+	}
+
+	return "ttyS0"
+}
