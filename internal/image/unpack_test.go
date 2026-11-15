@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 
 	"github.com/albertsko/sbxr/internal/image"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 func TestUnpackAppliesLayers(t *testing.T) {
@@ -95,10 +97,8 @@ func TestUnpackRejectsEscapingPaths(t *testing.T) {
 	t.Parallel()
 
 	tests := map[string][]entry{
-		"dot-dot":          {file("../escaped", "x")},
-		"absolute symlink": {{name: "abs", typ: tar.TypeSymlink, link: "/"}, file("abs/escaped", "x")},
-		"relative symlink": {{name: "rel", typ: tar.TypeSymlink, link: "../.."}, file("rel/escaped", "x")},
-		"hardlink":         {{name: "hard", typ: tar.TypeLink, link: "../../escaped"}},
+		"dot-dot":  {file("../escaped", "x")},
+		"hardlink": {{name: "hard", typ: tar.TypeLink, link: "../../escaped"}},
 	}
 
 	for name, entries := range tests {
@@ -110,34 +110,141 @@ func TestUnpackRejectsEscapingPaths(t *testing.T) {
 				t.Fatal("Unpack succeeded, want an error")
 			}
 
-			parent := filepath.Dir(root)
-			if exists(filepath.Join(parent, "escaped")) || exists(filepath.Join(filepath.Dir(parent), "escaped")) {
-				t.Error("a file was written outside the root")
-			}
+			assertNotOutside(t, root)
 		})
+	}
+}
+
+func TestUnpackResolvesSymlinksInRoot(t *testing.T) {
+	t.Parallel()
+
+	varRun := symlink("var/run", "/run")
+
+	tests := map[string]struct {
+		layers [][]entry
+		want   []string
+		gone   []string
+	}{
+		"later layer through absolute symlink": {
+			layers: [][]entry{{dir("run"), varRun}, {file("var/run/app.pid", "1")}},
+			want:   []string{"run/app.pid", varRun.name},
+		},
+		"whiteout through symlinked parent": {
+			layers: [][]entry{{file("run/old", "x"), varRun}, {file("var/run/.wh.old", "")}},
+			want:   []string{"run", varRun.name},
+			gone:   []string{"run/old"},
+		},
+		"whiteout removes the symlink itself": {
+			layers: [][]entry{{file("run/keep", "x"), varRun}, {file("var/.wh.run", "")}},
+			want:   []string{"run/keep"},
+			gone:   []string{varRun.name},
+		},
+		"opaque whiteout through symlinked directory": {
+			layers: [][]entry{{file("data/old", "x"), symlink("link", "/data")}, {file("link/.wh..wh..opq", ""), file("data/new", "y")}},
+			want:   []string{"data/new", "link"},
+			gone:   []string{"data/old"},
+		},
+		"absolute symlink to root": {
+			layers: [][]entry{{symlink("abs", "/"), file("abs/escaped", "x")}},
+			want:   []string{"escaped"},
+		},
+		"relative symlink above root": {
+			layers: [][]entry{{symlink("rel", "../.."), file("rel/escaped", "x")}},
+			want:   []string{"escaped"},
+		},
+		"dot-dot above root in absolute symlink": {
+			layers: [][]entry{{symlink("cfg", "/../../etc"), file("cfg/x", "x")}},
+			want:   []string{"etc/x"},
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			layers := make([]v1.Layer, 0, len(tt.layers))
+			for _, entries := range tt.layers {
+				layers = append(layers, layer(t, entries...))
+			}
+
+			root, err := unpack(t, hostImage(t, layers...))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, name := range tt.want {
+				if !exists(at(root, name)) {
+					t.Errorf("%s is missing", name)
+				}
+			}
+
+			for _, name := range tt.gone {
+				if exists(at(root, name)) {
+					t.Errorf("%s exists, want it removed", name)
+				}
+			}
+
+			assertNotOutside(t, root)
+		})
+	}
+
+	t.Run("entry replaces a symlink without writing its target", func(t *testing.T) {
+		t.Parallel()
+
+		root, err := unpack(t, hostImage(t,
+			layer(t, file("etc/real", "old"), symlink("etc/conf", "/etc/real")),
+			layer(t, file("etc/conf", "new")),
+		))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got := readFile(t, at(root, "etc/real")); got != "old" {
+			t.Errorf("etc/real = %q, want old", got)
+		}
+	})
+}
+
+func TestUnpackSymlinkLoop(t *testing.T) {
+	t.Parallel()
+
+	_, err := unpack(t, hostImage(t, layer(t, symlink("a", "b"), symlink("b", "/a"), file("a/x", "x"))))
+	if err == nil || !strings.Contains(err.Error(), "too many levels of symbolic links") {
+		t.Fatalf("Unpack error = %v, want a symlink loop error", err)
 	}
 }
 
 func TestUnpackCaseConflict(t *testing.T) {
 	t.Parallel()
 
-	tests := map[string][]entry{
-		"files":       {file("etc/Hosts", "a"), file("etc/hosts", "b")},
-		"directories": {file("usr/Lib/a", "a"), file("usr/lib/b", "b")},
+	tests := map[string]struct {
+		layers   [][]entry
+		conflict bool
+	}{
+		"files":                {layers: [][]entry{{file("etc/Hosts", "a"), file("etc/hosts", "b")}}, conflict: true},
+		"directories":          {layers: [][]entry{{file("usr/Lib/a", "a"), file("usr/lib/b", "b")}}, conflict: true},
+		"across layers":        {layers: [][]entry{{file("etc/hosts", "a")}, {file("etc/Hosts", "b")}}, conflict: true},
+		"after whiteout":       {layers: [][]entry{{file("etc/hosts", "a")}, {file("etc/.wh.hosts", ""), file("etc/Hosts", "b")}}},
+		"same name overridden": {layers: [][]entry{{file("etc/hosts", "a")}, {file("etc/hosts", "b")}}},
 	}
 
-	for name, entries := range tests {
+	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
+			layers := make([]v1.Layer, 0, len(tt.layers))
+			for _, entries := range tt.layers {
+				layers = append(layers, layer(t, entries...))
+			}
+
 			insensitive := caseInsensitive(t, t.TempDir())
-			_, err := unpack(t, hostImage(t, layer(t, entries...)))
+			_, err := unpack(t, hostImage(t, layers...))
 
 			switch {
-			case insensitive && !errors.Is(err, image.ErrCaseConflict):
+			case insensitive && tt.conflict && !errors.Is(err, image.ErrCaseConflict):
 				t.Fatalf("Unpack error = %v, want ErrCaseConflict", err)
-			case !insensitive && err != nil:
-				t.Fatalf("Unpack on a case-sensitive file system: %v", err)
+			case (!insensitive || !tt.conflict) && err != nil:
+				t.Fatalf("Unpack: %v", err)
 			}
 		})
 	}
@@ -189,4 +296,14 @@ func caseInsensitive(t *testing.T, dir string) bool {
 	}
 
 	return exists(filepath.Join(dir, "CASE-TEST"))
+}
+
+// assertNotOutside fails when an unpack wrote a file named escaped next to the root or one level above it.
+func assertNotOutside(t *testing.T, root string) {
+	t.Helper()
+
+	parent := filepath.Dir(root)
+	if exists(filepath.Join(parent, "escaped")) || exists(filepath.Join(filepath.Dir(parent), "escaped")) {
+		t.Error("a file was written outside the root")
+	}
 }

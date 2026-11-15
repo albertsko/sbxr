@@ -16,8 +16,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ErrCaseConflict means that a layer has paths that differ only by letter case on a case-insensitive file system.
-var ErrCaseConflict = errors.New("layer has paths that differ only by letter case, which this case-insensitive file system cannot hold")
+// ErrCaseConflict means that an image has paths that differ only by letter case on a case-insensitive file system.
+var ErrCaseConflict = errors.New("image has paths that differ only by letter case, which this case-insensitive file system cannot hold")
 
 // OverrideStatXattr is the extended attribute that the libkrun virtio-fs passthrough reads for guest ownership and mode.
 const OverrideStatXattr = "user.containers.override_stat"
@@ -70,7 +70,7 @@ func (u Unpacker) Unpack(img v1.Image, dst string) error {
 	}
 	defer func() { _ = root.Close() }()
 
-	l := layerApplier{u: u, root: root, dir: dst, insensitive: insensitive}
+	l := layerApplier{u: u, root: root, dir: dst, insensitive: insensitive, cases: map[string]string{}}
 
 	err = l.setMeta(".", rootMeta)
 	if err != nil {
@@ -93,6 +93,8 @@ type layerApplier struct {
 	root        *os.Root
 	dir         string
 	insensitive bool
+	// cases maps each lowercased path that the image wrote to its spelling, across all layers.
+	cases map[string]string
 }
 
 func (l layerApplier) apply(layer v1.Layer) error {
@@ -104,7 +106,6 @@ func (l layerApplier) apply(layer v1.Layer) error {
 
 	tr := tar.NewReader(rc)
 	written := map[string]bool{}
-	cases := map[string]string{}
 
 	for {
 		hdr, err := tr.Next()
@@ -121,20 +122,36 @@ func (l layerApplier) apply(layer v1.Layer) error {
 			return err
 		}
 
+		// A whiteout names the entry it removes, and an opaque whiteout names its directory.
+		dir, base := path.Split(name)
+		opaque := base == opaqueWhiteout
+		whiteout := !opaque && strings.HasPrefix(base, whiteoutPrefix)
+
+		switch {
+		case opaque:
+			name = path.Clean(dir)
+		case whiteout:
+			name = path.Join(dir, strings.TrimPrefix(base, whiteoutPrefix))
+		}
+
+		// The last component is not followed: an entry replaces a symlink, and a whiteout removes the symlink itself.
+		name, err = resolveInRoot(l.root, name, opaque)
+		if err != nil {
+			return fmt.Errorf("unpack %q: %w", hdr.Name, err)
+		}
+
 		if l.insensitive {
-			err = checkCase(cases, name)
+			err = l.checkCase(name)
 			if err != nil {
 				return err
 			}
 		}
 
-		dir, base := path.Split(name)
-
 		switch {
-		case base == opaqueWhiteout:
-			err = l.clearLower(path.Clean(dir), written)
-		case strings.HasPrefix(base, whiteoutPrefix):
-			err = l.root.RemoveAll(path.Join(dir, strings.TrimPrefix(base, whiteoutPrefix)))
+		case opaque:
+			err = l.clearLower(name, written)
+		case whiteout:
+			err = l.root.RemoveAll(name)
 		default:
 			written[name] = true
 			err = l.entry(name, hdr, tr)
@@ -176,6 +193,11 @@ func (l layerApplier) entry(name string, hdr *tar.Header, r io.Reader) error {
 		return l.setMeta(name, metaOf(hdr, unix.S_IFLNK))
 	case tar.TypeLink:
 		target, err := cleanName(hdr.Linkname)
+		if err != nil {
+			return err
+		}
+
+		target, err = resolveInRoot(l.root, target, false)
 		if err != nil {
 			return err
 		}
@@ -381,21 +403,25 @@ func cleanName(name string) (string, error) {
 	return clean, nil
 }
 
-// checkCase records name and its parents and fails when one differs from an earlier path only by letter case.
-func checkCase(cases map[string]string, name string) error {
+// checkCase records name and its parents and fails when one differs only by letter case from an existing path of the image.
+func (l layerApplier) checkCase(name string) error {
 	for p := name; p != "."; p = path.Dir(p) {
 		key := strings.ToLower(p)
 
-		prev, ok := cases[key]
-		if ok && prev != p {
-			return fmt.Errorf("%w: %q and %q", ErrCaseConflict, prev, p)
-		}
-
-		if ok {
+		prev, ok := l.cases[key]
+		if ok && prev == p {
 			return nil
 		}
 
-		cases[key] = p
+		// A removed path frees its name for another spelling.
+		if ok {
+			_, err := l.root.Lstat(prev)
+			if err == nil {
+				return fmt.Errorf("%w: %q and %q", ErrCaseConflict, prev, p)
+			}
+		}
+
+		l.cases[key] = p
 	}
 
 	return nil

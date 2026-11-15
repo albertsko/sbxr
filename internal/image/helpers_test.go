@@ -51,6 +51,10 @@ func dir(name string) entry {
 	return entry{name: name, typ: tar.TypeDir, mode: 0o755}
 }
 
+func symlink(name, target string) entry {
+	return entry{name: name, typ: tar.TypeSymlink, link: target, mode: 0o777}
+}
+
 func layer(t *testing.T, entries ...entry) v1.Layer {
 	t.Helper()
 

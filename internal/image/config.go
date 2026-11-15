@@ -119,9 +119,14 @@ func parseID(s string) (uint32, error) {
 	return uint32(id), nil
 }
 
-// readDB reads a colon-separated database such as /etc/passwd through root, so symlinks cannot leave the image.
+// readDB reads a colon-separated database such as /etc/passwd and resolves symlinks inside the image root.
 func readDB(root *os.Root, name string) ([][]string, error) {
-	data, err := root.ReadFile(name)
+	resolved, err := resolveInRoot(root, name, true)
+	if err != nil {
+		return nil, fmt.Errorf("read image /%s: %w", name, err)
+	}
+
+	data, err := root.ReadFile(resolved)
 	if err != nil {
 		return nil, fmt.Errorf("read image /%s: %w", name, err)
 	}

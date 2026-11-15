@@ -124,22 +124,33 @@ func TestResolveUser(t *testing.T) {
 	}
 }
 
-func TestResolveUserStaysInRoot(t *testing.T) {
+func TestResolveUserFollowsSymlinksInRoot(t *testing.T) {
 	t.Parallel()
 
-	tests := map[string]string{
-		"absolute": "/etc/passwd",
-		"relative": "../../../../../../../../etc/passwd",
+	passwd := file("usr/share/passwd", "alice:x:1000:1000::/:/bin/sh\n")
+	tests := map[string]struct {
+		entries []entry
+		ok      bool
+	}{
+		"absolute":            {entries: []entry{passwd, symlink("etc/passwd", "/usr/share/passwd")}, ok: true},
+		"relative above root": {entries: []entry{passwd, symlink("etc/passwd", "../../../../../usr/share/passwd")}, ok: true},
+		"symlinked parent":    {entries: []entry{passwd, symlink("etc", "/usr/share")}, ok: true},
+		"host path":           {entries: []entry{symlink("etc/passwd", "/etc/master.passwd")}},
+		"loop":                {entries: []entry{symlink("etc/passwd", "/etc/loop"), symlink("etc/loop", "/etc/passwd")}},
 	}
 
-	for name, target := range tests {
+	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			img := userImage(t, layer(t, entry{name: "etc/passwd", typ: tar.TypeSymlink, link: target}))
+			img := userImage(t, layer(t, tt.entries...))
+			uid, _, err := img.ResolveUser("alice")
 
-			if _, _, err := img.ResolveUser("root"); err == nil {
-				t.Error("ResolveUser read /etc/passwd outside the image root")
+			switch {
+			case tt.ok && (err != nil || uid != 1000):
+				t.Errorf("ResolveUser(alice) = %d, %v, want 1000", uid, err)
+			case !tt.ok && err == nil:
+				t.Error("ResolveUser(alice) succeeded, want an error")
 			}
 		})
 	}
