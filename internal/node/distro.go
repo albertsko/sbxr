@@ -93,23 +93,24 @@ var (
 	minKernel = version{5, 19}
 )
 
-// podIDs returns the host id range for phase 2 pod VMs, and whether /etc/subuid and /etc/subgid still need it.
+// podIDs returns the kubelet's id range, and checks that a range for phase 2 pod VMs fits next to it.
 //
 // Without a kubelet entry, the kubelet gives pods with user namespaces (hostUsers: false) random ids from almost the
 // whole id space, so any range could overlap them. With one, it uses only that entry, and the sbxr range stays apart.
-func podIDs(f facts) (subid.Range, bool, error) {
+func podIDs(f facts) (subid.Range, error) {
 	kubelet, err := kubeletRange(f)
 	if err != nil {
-		return subid.Range{}, false, fmt.Errorf("kubelet id range: %w; the kubelet may give pods with user namespaces "+
+		return subid.Range{}, fmt.Errorf("kubelet id range: %w; the kubelet may give pods with user namespaces "+
 			"any host id, which can overlap sbxr pod VMs (see the requirements in docs/kubernetes.md)", err)
 	}
 
-	r, isNew, err := subid.Choose(f.subuid, f.subgid, kubelet)
+	// The installer chooses again under shadow's locks. This only rejects a node early.
+	_, _, err = subid.Choose(f.subuid, f.subgid, kubelet)
 	if err != nil {
-		return r, false, fmt.Errorf("pod VM ids: %w", err)
+		return subid.Range{}, fmt.Errorf("pod VM ids: %w", err)
 	}
 
-	return r, isNew, nil
+	return kubelet, nil
 }
 
 // kubeletRange returns the range that the kubelet uses, and checks it against the kubelet's own rules for the default

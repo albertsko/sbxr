@@ -23,6 +23,9 @@ const dropInPath = "/etc/containerd/conf.d/sbxr.toml"
 
 // fakeNode is the API server and the host of one node.
 type fakeNode struct {
+	// onKrun runs when the installer checks the installed bundle, after preflight.
+	onKrun func()
+
 	root string
 
 	mu          sync.Mutex
@@ -118,6 +121,10 @@ func (f *fakeNode) host(_ context.Context, args ...string) (string, error) {
 			}
 		}
 	case "/opt/sbxr/bin/krun --version":
+		if f.onKrun != nil {
+			f.onKrun()
+		}
+
 		if !f.krunFails {
 			return "crun version 1.31\n+SYSTEMD +SELINUX +LIBKRUN\n", nil
 		}
@@ -976,5 +983,66 @@ func TestInstallWaitsForTheRuntimeVersion(t *testing.T) {
 	err := in.Install(t.Context())
 	if err != nil || f.labels[ReadyLabel] != "true" {
 		t.Errorf("error %v, labels %v, annotations %v; want the node ready", err, f.labels, f.annotations)
+	}
+}
+
+// TestReserveIDsChoosesUnderTheLock simulates useradd, which takes shadow's lock, around the installer's id reservation.
+// An entry added after preflight still counts, and a useradd during the reservation waits for it and sees the sbxr range.
+func TestReserveIDsChoosesUnderTheLock(t *testing.T) {
+	t.Parallel()
+
+	f, in := newFakeNode(t)
+	in.Phase = 2
+
+	write(t, f.root+"/etc/subuid", "kubelet:65536:7208960\n")
+	write(t, f.root+"/etc/subgid", "kubelet:65536:7208960\n")
+
+	// After preflight chose 7274496, a user takes the ids right there.
+	f.onKrun = func() {
+		data := read(t, f.root+"/etc/subuid")
+		write(t, f.root+"/etc/subuid", data+"alice:7274496:65536\n")
+	}
+
+	// During the reservation, another useradd waits for the lock and then reads the file.
+	seen := make(chan string, 1)
+	locked := make(chan struct{})
+
+	in.afterSubidRead = func() {
+		go func() {
+			close(locked)
+
+			unlock, err := lockShadow(f.root + "/etc/subuid")
+			if err != nil {
+				seen <- err.Error()
+
+				return
+			}
+			defer unlock()
+
+			data, _ := os.ReadFile(f.root + "/etc/subuid")
+			seen <- string(data)
+		}()
+
+		<-locked
+		time.Sleep(50 * time.Millisecond)
+
+		select {
+		case got := <-seen:
+			t.Errorf("useradd got the lock during the reservation and read %q", got)
+		default:
+		}
+	}
+
+	err := in.Install(t.Context())
+	if err != nil || f.labels[ReadyLabel] != "true" {
+		t.Fatalf("install: %v, labels %v, annotations %v", err, f.labels, f.annotations)
+	}
+
+	if got := read(t, f.root+"/etc/subuid"); got != "kubelet:65536:7208960\nalice:7274496:65536\nsbxr:7340032:33554432\n" {
+		t.Errorf("subuid = %q, want the sbxr range after alice's", got)
+	}
+
+	if got := <-seen; !strings.Contains(got, "sbxr:7340032:33554432") {
+		t.Errorf("the waiting useradd read %q, want the sbxr range", got)
 	}
 }

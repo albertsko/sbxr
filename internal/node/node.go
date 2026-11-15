@@ -64,6 +64,9 @@ type Installer struct {
 	Poll    time.Duration
 	Timeout time.Duration
 	Log     *slog.Logger
+
+	// afterSubidRead runs while the installer holds shadow's locks, between reading and writing the id files. Tests only.
+	afterSubidRead func()
 }
 
 // rejection is a reason why this node cannot run sbxr.
@@ -88,7 +91,7 @@ func (in *Installer) Install(ctx context.Context) error {
 		return errors.Join(err, in.reject(ctx, "pending restart: "+err.Error()))
 	}
 
-	d, unit, dropIn, ids, err := in.preflight(ctx)
+	d, unit, dropIn, kubelet, err := in.preflight(ctx)
 	if reject, ok := errors.AsType[rejection](err); ok {
 		return in.reject(ctx, "preflight: "+reject.Error())
 	}
@@ -109,8 +112,12 @@ func (in *Installer) Install(ctx context.Context) error {
 		return in.reject(ctx, fmt.Sprintf("bundle: krun --version on the host: %v: %s", err, out))
 	}
 
-	if ids != nil {
-		err = in.reserveIDs(*ids)
+	if kubelet != nil {
+		err = in.reserveIDs(*kubelet)
+		if reject, ok := errors.AsType[rejection](err); ok {
+			return in.reject(ctx, "preflight: "+reject.Error())
+		}
+
 		if err != nil {
 			return err
 		}
@@ -126,68 +133,96 @@ func (in *Installer) Install(ctx context.Context) error {
 	return in.configure(ctx, in.HostRoot+d.dropInFile(), unit, dropIn, pending)
 }
 
-// reserveIDs adds r to /etc/subuid and /etc/subgid, so no other user and no kubelet pod gets these ids.
-func (in *Installer) reserveIDs(r subid.Range) error {
-	for _, name := range []string{"/etc/subuid", "/etc/subgid"} {
-		err := in.editSubids(name, func(data []byte) []byte {
-			if len(data) > 0 && !bytes.HasSuffix(data, []byte("\n")) {
-				data = append(data, '\n')
+// subidFiles are the subordinate id files, in the order in which shadow's tools lock them.
+var subidFiles = []string{"/etc/subuid", "/etc/subgid"}
+
+// reserveIDs adds the sbxr range to /etc/subuid and /etc/subgid, so no other user and no kubelet pod gets these ids.
+// It holds shadow's locks from reading the files to writing them, so a concurrent useradd cannot take the same ids.
+func (in *Installer) reserveIDs(kubelet subid.Range) error {
+	return in.withSubids(func(data [][]byte) ([][]byte, error) {
+		r, isNew, err := subid.Choose(string(data[0]), string(data[1]), kubelet)
+		if err != nil {
+			return nil, rejection{fmt.Errorf("pod VM ids: %w", err)}
+		}
+
+		if !isNew {
+			return data, nil
+		}
+
+		out := make([][]byte, len(data))
+
+		for i, d := range data {
+			if len(d) > 0 && !bytes.HasSuffix(d, []byte("\n")) {
+				d = append(d, '\n')
 			}
 
-			return append(data, r.String()+"\n"...)
-		})
-		if err != nil {
-			return fmt.Errorf("reserve ids: %w", err)
+			out[i] = append(d, r.String()+"\n"...)
 		}
-	}
 
-	in.Log.Info("reserved ids for pod VMs", "range", r.String())
+		in.Log.Info("reserving ids for pod VMs", "range", r.String())
 
-	return nil
-}
-
-// editSubids rewrites the subordinate id file name with edit, under shadow's lock. A missing file counts as empty.
-func (in *Installer) editSubids(name string, edit func([]byte) []byte) error {
-	path := in.HostRoot + name
-
-	unlock, err := lockShadow(path)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-
-	data, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("read %s: %w", name, err)
-	}
-
-	if out := edit(data); !bytes.Equal(out, data) {
-		return writeFile(path, out)
-	}
-
-	return nil
+		return out, nil
+	})
 }
 
 // releaseIDs removes the sbxr entries from /etc/subuid and /etc/subgid.
 func (in *Installer) releaseIDs() error {
-	for _, name := range []string{"/etc/subuid", "/etc/subgid"} {
-		if _, err := os.Stat(in.HostRoot + name); errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
+	return in.withSubids(func(data [][]byte) ([][]byte, error) {
+		out := make([][]byte, len(data))
 
-		err := in.editSubids(name, func(data []byte) []byte {
-			var kept []byte
-
-			for line := range strings.Lines(string(data)) {
+		for i, d := range data {
+			for line := range strings.Lines(string(d)) {
 				if !strings.HasPrefix(line, subid.Name+":") {
-					kept = append(kept, line...)
+					out[i] = append(out[i], line...)
 				}
 			}
+		}
 
-			return kept
-		})
+		return out, nil
+	})
+}
+
+// withSubids reads both subordinate id files under shadow's locks, and writes the files that edit changes before it
+// releases the locks. A missing file counts as empty.
+func (in *Installer) withSubids(edit func(data [][]byte) ([][]byte, error)) error {
+	data := make([][]byte, len(subidFiles))
+	unlocks := make([]func(), 0, len(subidFiles))
+
+	// Release in reverse order, after the writes.
+	defer func() {
+		for _, unlock := range slices.Backward(unlocks) {
+			unlock()
+		}
+	}()
+
+	for i, name := range subidFiles {
+		unlock, err := lockShadow(in.HostRoot + name)
 		if err != nil {
-			return fmt.Errorf("release ids: %w", err)
+			return err
+		}
+
+		unlocks = append(unlocks, unlock)
+
+		data[i], err = os.ReadFile(in.HostRoot + name)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("read %s: %w", name, err)
+		}
+	}
+
+	if in.afterSubidRead != nil {
+		in.afterSubidRead()
+	}
+
+	out, err := edit(data)
+	if err != nil {
+		return err
+	}
+
+	for i, name := range subidFiles {
+		if !bytes.Equal(out[i], data[i]) {
+			if err := writeFile(in.HostRoot+name, out[i]); err != nil {
+				return fmt.Errorf("write %s: %w", name, err)
+			}
 		}
 	}
 
@@ -443,16 +478,12 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *su
 		return d, unit, dropIn, nil, nil
 	}
 
-	r, isNew, err := podIDs(f)
+	kubelet, err := podIDs(f)
 	if err != nil {
 		return distro{}, "", nil, nil, rejection{err}
 	}
 
-	if !isNew {
-		return d, unit, dropIn, nil, nil
-	}
-
-	return d, unit, dropIn, &r, nil
+	return d, unit, dropIn, &kubelet, nil
 }
 
 // hostOutput runs a host command and returns its output, or nothing when it fails.
