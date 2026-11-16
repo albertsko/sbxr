@@ -6,30 +6,10 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
 if [[ -n "${CI:-}" ]]; then
 	# Diagnostics for a macOS CI flake that kills this task with SIGHUP: show which processes share its group.
-	# go test runs in the background, so that the trap runs at once. It stays in this process group, as before.
-	interrupted=0
-	trap 'interrupted=1; echo "test task: SIGHUP" >&2; ps -axo pid,ppid,pgid,sess,tt,stat,etime,command >&2' HUP
-	# Bash starts background commands with SIGINT and SIGQUIT ignored, and bash 3.2 cannot undo that with trap,
-	# so perl restores the defaults before it runs go test. The task forwards SIGINT and SIGTERM.
-	perl -e '$SIG{INT} = $SIG{QUIT} = "DEFAULT"; exec @ARGV or die "exec $ARGV[0]: $!\n"' go test -race -shuffle=on ./... "$@" &
-	pid=$!
-	trap 'interrupted=1; kill -INT "$pid" 2>/dev/null || true' INT
-	trap 'interrupted=1; kill -TERM "$pid" 2>/dev/null || true' TERM
-	# A trap makes wait return early. Wait again: bash keeps the status of a child that exited meanwhile for the next
-	# wait, and a wait that had already collected the status before the trap ran leaves 127 to the next one.
-	last=
-	while true; do
-		interrupted=0
-		status=0
-		wait "$pid" || status=$?
-		if [[ $status == 127 && -n $last ]]; then
-			exit "$last"
-		fi
-		if ((interrupted == 0)); then
-			exit "$status"
-		fi
-		last=$status
-	done
+	# go test runs in the foreground without exec, so the trap stays, and set -e keeps its status.
+	trap 'echo "test task: SIGHUP" >&2; ps -axo pid,ppid,pgid,sess,tt,stat,etime,command >&2' HUP
+	go test -race -shuffle=on ./... "$@"
+	exit 0
 fi
 
 exec go test -race ./... "$@"
