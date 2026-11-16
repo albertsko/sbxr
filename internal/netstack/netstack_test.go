@@ -360,7 +360,8 @@ func TestEgressPolicy(t *testing.T) {
 
 				c, err := dialTCP(t, g, dst.String(), 5*time.Second)
 				if err == nil {
-					err = roundTrip(c, "tcp", time.Second)
+					// Blocked connections fail at the dial, so only allowed ones wait here; one second is too short under -race.
+					err = roundTrip(c, "tcp", 5*time.Second)
 				}
 
 				if got := err == nil; got != want {
