@@ -161,7 +161,7 @@ Delivery has two phases:
 
 ### Kubernetes, phase 2
 
-- All phase 1 criteria still pass after the node upgrade, with unchanged pod specs.
+- The phase 1 criteria that still apply pass after the node upgrade, with unchanged pod specs. Phase 2 drops the admission warning for exec probes and long grace periods, and runs one VM per pod instead of a normal pause container and one VM per container.
 - A pod with two containers runs one VM. The containers reach each other on `localhost`.
 - The pod IP is the guest's IP. TCP, UDP, and ICMP to the pod IP work, and busybox DNS works.
 - `kubectl exec` runs a command in a container. Exec probes work.
@@ -493,7 +493,7 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
   - `shareProcessNamespace` is ignored. Each container has its own PID namespace.
   - No `kubectl attach`.
   - In-place pod resize is accepted, but the pod VM keeps its vCPUs and memory: the shim answers `UpdateSandbox` with Unimplemented, which containerd tolerates.
-  - Moving from phase 1 needs one manual step: delete the two phase 1 policies, because `kubectl apply` does not remove objects.
+  - Moving from phase 1 needs manual steps: a `kubelet` id range on every node, recreating running `sbxr` pods, and deleting the two phase 1 policies, because `kubectl apply` does not remove objects.
 
 ### Test contract
 
@@ -596,7 +596,7 @@ Status is `verified` (with the evidence in the row), `open` (with a confidence),
 | A5  | Homebrew 6 tap trust adds at most one documented step to the macOS install. Verified: `brew install albertsko/tap/sbxr` needs no extra step on Homebrew 7.0.13                                                                                                                                                                                                                             | verified                                       |
 | A6  | Overlay edge cases not yet tested (hardlinks across copy-up, renaming lower directories) work over virtio-fs                                                                                                                                                                                                                                                                               | open, 75%                                      |
 | A7  | The phase 2 guest agent design (containerd task API over vsock, `crun` in the guest) works with `libkrun` 1.x and its own kernel boot. Verified with `libkrun` 1.19.8 and `crun` 1.31 in kind; overlayfs needs idmapped lower layers instead of an idmapped overlay                                                                                                                        | verified                                       |
-| A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available on every Kubernetes version the installer supports. Kubernetes serves it by default only from 1.36                                                                                                                                                                                                               | failed: the installer requires Kubernetes 1.36 |
+| A8  | MutatingAdmissionPolicy at `admissionregistration.k8s.io/v1` is available before Kubernetes 1.36, so the installer can support older versions. Kubernetes serves it by default only from 1.36                                                                                                                                                                                              | failed: the installer requires Kubernetes 1.36 |
 | A9  | The fang terminal color query problem (fang issue 104) gets fixed upstream, so the CLI's workaround can be removed                                                                                                                                                                                                                                                                         | open, 50%                                      |
 | A10 | The macOS process that could not exit after holding 2000 guest connections in testing does not recur under the per-run connection caps. Verified on an M4 Pro Mac with `libkrun` 1.19.8 (see HANDOFF "Evidence"): the parent exited within 0.1 s in every run at the caps (1024 TCP, 256 UDP), above them, and with 2000 TCP connections. `TestCloseAtCaps` checks the network stack in CI | verified                                       |
 
