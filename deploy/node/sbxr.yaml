@@ -83,8 +83,9 @@ spec:
       priorityClassName: system-node-critical
       tolerations:
         - operator: Exists
-      # Longer than the worst case of one install: the 1 minute verification plus two containerd restarts.
-      terminationGracePeriodSeconds: 240
+      # Longer than the worst case of one install: up to 5 minutes for the node to report its runtime in preflight,
+      # up to 5 minutes for containerd to serve sbxr, and two containerd restarts with systemd's default 90 s timeout.
+      terminationGracePeriodSeconds: 900
       containers:
         - name: sbxr-node
           image: "@IMAGE@"

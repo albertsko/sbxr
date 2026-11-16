@@ -257,7 +257,8 @@ func (in *Installer) withSubids(edit func(data [][]byte) ([][]byte, error)) erro
 }
 
 // configure publishes the drop-in, restarts the unit when needed, verifies the handler, and labels the node.
-// Any failure after publishing, except an unanswered API server during verification, restores the previous drop-in (or removes it), restarts again, and rejects the node.
+// Any failure after publishing restores the previous drop-in (or removes it), restarts again, and rejects the node.
+// The exception is a failed final label patch, an apiError: containerd serves sbxr then, so the drop-in stays and the pod retries.
 func (in *Installer) configure(ctx context.Context, path, unit, socket string, dropIn []byte) error {
 	previous, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {

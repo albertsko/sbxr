@@ -41,8 +41,9 @@ func Main(ctx context.Context, args []string, log *slog.Logger) int {
 		Phase:    phase,
 		CRI:      criHandlers,
 		Poll:     2 * time.Second,
-		// containerd serves the CRI within seconds of a restart.
-		Timeout:        time.Minute,
+		// A healthy containerd serves the CRI within seconds of a restart. Units that do not report readiness to
+		// systemd, such as k0s and k3s-agent, are "active" before containerd starts, so the wait covers the startup.
+		Timeout:        5 * time.Minute,
 		Log:            log,
 		Proc:           "/proc",
 		afterSubidRead: nil,
