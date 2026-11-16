@@ -1,6 +1,6 @@
 # sbxr: Product Requirements
 
-Status: living document. Steps S1 to S8 of the build plan in HANDOFF.md implement it, released as v0.1.0. Last update: 2026-11-16.
+Status: living document. Steps S1 to S8 of the build plan in HANDOFF.md implement it. v0.1.0 is released. Last update: 2026-11-16.
 
 ## Problem Statement
 
