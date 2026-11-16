@@ -53,7 +53,7 @@ kubectl get node NODE -o jsonpath='{.metadata.annotations.sbxr\.dev/preflight}'
 
 To retry after you fix a node, run `kubectl -n sbxr-system rollout restart ds/sbxr-node`.
 
-An install takes seconds per node, an upgrade too: the installer asks containerd itself, so it does not wait for the kubelet to post a node status. It gives the restarted containerd up to 1 minute to serve the handler. An unchanged bundle and drop-in cause no copy and no restart.
+An install takes seconds per node, an upgrade too: the installer asks containerd itself, so it does not wait for the kubelet to post a node status. It gives the restarted containerd up to 5 minutes to serve the handler, which only matters when containerd starts slowly or fails. An unchanged bundle and drop-in cause no copy and no restart.
 
 ## Use
 
