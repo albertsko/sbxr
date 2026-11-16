@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   pull_request:
   push:
-    branches: [main, fix/node-verify-cri]
+    branches: [main]
 permissions:
   contents: read
 concurrency:
