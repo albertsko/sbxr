@@ -39,9 +39,11 @@ func Main(ctx context.Context, args []string, log *slog.Logger) int {
 		HostRoot: "/host",
 		Bundle:   "/bundle",
 		Phase:    phase,
+		CRI:      criHandlers,
 		Poll:     2 * time.Second,
-		// With node leases, the kubelet posts an unchanged node status only every 5 minutes.
-		Timeout:        6 * time.Minute,
+		// A healthy containerd serves the CRI within seconds of a restart. Units that do not report readiness to
+		// systemd, such as k0s and k3s-agent, are "active" before containerd starts, so the wait covers the startup.
+		Timeout:        5 * time.Minute,
 		Log:            log,
 		Proc:           "/proc",
 		afterSubidRead: nil,

@@ -316,6 +316,7 @@ A step or pull request is done when:
 
 ## Gotchas
 
+- **The node status is a poor signal for "containerd serves the handler".** With node leases, the kubelet posts an unchanged node status only every `nodeStatusReportFrequency` (5 minutes by default) plus a random delay of up to half of it, and it may post handlers from its cache. The installer asks containerd through the CRI `Status` call instead.
 - **`libkrun` takes over its process.** `krun_start_enter` exits the process with the workload's exit code. Start each VM in its own VM process.
 - **Library loading on macOS.** `libkrun` loads `libkrunfw` by bare name. Start the VM process with `DYLD_FALLBACK_LIBRARY_PATH` set to the library directory. Setting it inside a running process is too late. macOS also removes `DYLD_*` variables when a protected binary such as `/usr/bin/env` or `/usr/bin/time` starts the program.
 - **Never pass `NULL`** to `krun_set_env`, which copies the host environment and can panic on a large one, or to `krun_set_port_map`, which crashes.

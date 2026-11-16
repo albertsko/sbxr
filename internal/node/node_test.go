@@ -42,8 +42,10 @@ type fakeNode struct {
 	failRestarts int
 	// inactive makes the unit inactive after the next restart.
 	inactive bool
-	// stale makes the kubelet post no node status after a restart.
-	stale bool
+	// criDown makes the CRI unreachable.
+	criDown bool
+	// criSockets records the sockets that the installer asked.
+	criSockets []string
 	// nodeReads counts node reads. With failReadsAfter > 0, later reads fail, and with -1, every read fails.
 	nodeReads, failReadsAfter int
 	// failReady makes the patch that labels the node ready fail.
@@ -61,12 +63,21 @@ func (f *fakeNode) Node(context.Context) (Node, error) {
 		return Node{}, errors.New("connection refused")
 	}
 
-	heartbeat := time.Now().Add(time.Minute)
-	if f.stale {
-		heartbeat = time.Unix(1, 0)
+	return Node{RuntimeVersion: "containerd://2.3.4", MaxPods: 110}, nil
+}
+
+// cri answers the CRI status call with the handlers of the running containerd.
+func (f *fakeNode) cri(_ context.Context, socket string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.criSockets = append(f.criSockets, socket)
+
+	if f.criDown {
+		return nil, errors.New("CRI unreachable")
 	}
 
-	return Node{RuntimeVersion: "containerd://2.3.4", RuntimeHandlers: slices.Clone(f.handlers), Heartbeat: heartbeat, MaxPods: 110}, nil
+	return slices.Clone(f.handlers), nil
 }
 
 func (f *fakeNode) Patch(_ context.Context, labels, annotations map[string]*string) error {
@@ -182,6 +193,7 @@ func newFakeNode(t *testing.T) (*fakeNode, *Installer) {
 	return f, &Installer{
 		API:      f,
 		Host:     f.host,
+		CRI:      f.cri,
 		HostRoot: f.root,
 		Bundle:   newBundle(t, "crun"),
 		Phase:    1,
@@ -313,12 +325,9 @@ func TestInstallRollsBack(t *testing.T) {
 	}{
 		{"restart fails", "", func(f *fakeNode) { f.failRestarts = 1 }, "verify: restart containerd.service"},
 		{"unit inactive", "", func(f *fakeNode) { f.inactive = true }, "verify: containerd.service is not active after the restart"},
-		{"handler missing", "", func(f *fakeNode) { f.serveSbxr = false }, "verify: after 50ms: node does not report runtime handler sbxr"},
-		{"upgrade without fresh status", "# older sbxr drop-in\n", func(f *fakeNode) {
-			f.handlers = []string{"runc", "sbxr"}
-			f.stale = true
-		}, "verify: after 50ms: no node status after"},
-		{"upgrade loses handler", "# older sbxr drop-in\n", func(f *fakeNode) { f.serveSbxr = false }, "verify: after 50ms: node does not report"},
+		{"handler missing", "", func(f *fakeNode) { f.serveSbxr = false }, "verify: after 50ms: containerd does not serve runtime handler sbxr"},
+		{"CRI unreachable", "# older sbxr drop-in\n", func(f *fakeNode) { f.criDown = true }, "verify: after 50ms: CRI unreachable"},
+		{"upgrade loses handler", "# older sbxr drop-in\n", func(f *fakeNode) { f.serveSbxr = false }, "verify: after 50ms: containerd does not serve"},
 	}
 
 	for _, tt := range tests {
@@ -348,22 +357,6 @@ func TestInstallRollsBack(t *testing.T) {
 	}
 }
 
-func TestInstallKeepsDropInWhenAPIFailsDuringVerification(t *testing.T) {
-	t.Parallel()
-
-	f, in := newFakeNode(t)
-	f.failReadsAfter = 1 // Preflight.
-
-	err := in.Install(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "connection refused") {
-		t.Fatalf("error %v, want the API error", err)
-	}
-
-	if !exists(f.root+dropInPath) || f.restarts != 1 || f.labels[ReadyLabel] == "true" {
-		t.Errorf("drop-in exists %t, restarts %d, labels %v; want the drop-in, 1 restart, no label", exists(f.root+dropInPath), f.restarts, f.labels)
-	}
-}
-
 func TestInstallKeepsDropInWhenFinalPatchFails(t *testing.T) {
 	t.Parallel()
 
@@ -382,86 +375,14 @@ func TestInstallKeepsDropInWhenFinalPatchFails(t *testing.T) {
 	f.failReady = false
 
 	err = in.Install(t.Context())
-	if err != nil || f.restarts != 1 || f.labels[ReadyLabel] != "true" || exists(f.root+verifyAfter) {
+	if err != nil || f.restarts != 1 || f.labels[ReadyLabel] != "true" {
 		t.Errorf("retry: error %v, restarts %d, labels %v; want ready without a restart", err, f.restarts, f.labels)
 	}
 }
 
-// TestInstallNeedsStatusAfterRestart checks that a node status from before the last restart never makes the node ready.
-func TestInstallNeedsStatusAfterRestart(t *testing.T) {
-	t.Parallel()
-
-	t.Run("first install", func(t *testing.T) {
-		t.Parallel()
-
-		f, in := newFakeNode(t)
-		f.stale = true
-
-		err := in.Install(t.Context())
-		if err != nil || f.labels[ReadyLabel] == "true" || !strings.Contains(f.annotations[PreflightAnnotation], "no node status after") {
-			t.Errorf("error %v, labels %v, annotations %v; want a rejection", err, f.labels, f.annotations)
-		}
-	})
-
-	t.Run("retry after an API failure", func(t *testing.T) {
-		t.Parallel()
-
-		f, in := newFakeNode(t)
-
-		err := in.Install(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// An upgrade restarts containerd, then the API server fails during the wait.
-		write(t, f.root+dropInPath, "# older sbxr drop-in\n")
-		f.failReadsAfter = f.nodeReads + 1
-
-		err = in.Install(t.Context())
-		if err == nil || !strings.Contains(err.Error(), "connection refused") {
-			t.Fatalf("error %v, want the API error", err)
-		}
-
-		// The retry sees only statuses from before the restart.
-		f.failReadsAfter = 0
-		f.stale = true
-
-		err = in.Install(t.Context())
-		if err != nil || f.labels[ReadyLabel] == "true" || !strings.Contains(f.annotations[PreflightAnnotation], "no node status after") {
-			t.Errorf("error %v, labels %v, annotations %v; want a rejection", err, f.labels, f.annotations)
-		}
-	})
-}
-
-// laggingAPI reports the node status that the kubelet built from its runtime cache from before the restart, with a new heartbeat.
-type laggingAPI struct {
-	*fakeNode
-}
-
-func (a laggingAPI) Node(ctx context.Context) (Node, error) {
-	n, err := a.fakeNode.Node(ctx)
-	n.RuntimeHandlers = []string{"runc", "sbxr"}
-	n.Heartbeat = time.Now()
-
-	return n, err
-}
-
-func TestInstallIgnoresCachedHandlerAfterRestart(t *testing.T) {
-	t.Parallel()
-
-	f, in := newFakeNode(t)
-	write(t, f.root+dropInPath, "# older sbxr drop-in\n")
-	f.serveSbxr = false
-	in.API = laggingAPI{f}
-
-	err := in.Install(t.Context())
-	if err != nil || f.labels[ReadyLabel] == "true" || !strings.Contains(f.annotations[PreflightAnnotation], "no node status after") {
-		t.Errorf("error %v, labels %v, annotations %v; want a rejection", err, f.labels, f.annotations)
-	}
-}
-
-// TestInstallGuardsAgainstCachedHandler pins each guard against a node status that still lists the handler of an earlier drop-in.
-func TestInstallGuardsAgainstCachedHandler(t *testing.T) {
+// TestInstallAsksContainerd pins that only the restarted containerd decides. A kubelet that still lists the handler
+// of an earlier drop-in in the node status, from its cache, cannot make the node ready.
+func TestInstallAsksContainerd(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -470,25 +391,24 @@ func TestInstallGuardsAgainstCachedHandler(t *testing.T) {
 		restarts int
 	}{
 		{
-			// removeDropIns writes an empty unit when it cannot detect one. Guard: a pending restart is no first load.
+			name: "upgrade",
+			setup: func(t *testing.T, f *fakeNode, _ *Installer) {
+				t.Helper()
+				write(t, f.root+dropInPath, "# older sbxr drop-in\n")
+				f.handlers = []string{"runc", "sbxr"} // The containerd before the restart served it.
+			},
+			restarts: 2, // The new drop-in and the rollback.
+		},
+		{
+			// removeDropIns writes an empty unit when it cannot detect one.
 			name: "pending restart without unit",
 			setup: func(t *testing.T, f *fakeNode, _ *Installer) {
 				t.Helper()
 				write(t, f.root+restartPending, "\n")
 			},
-			restarts: 2, // The new drop-in and the rollback.
-		},
-		{
-			// Guard: a first load never moves a persisted cutoff earlier.
-			name: "cutoff in the future",
-			setup: func(t *testing.T, f *fakeNode, _ *Installer) {
-				t.Helper()
-				write(t, f.root+verifyAfter, time.Now().Add(time.Hour).Format(time.RFC3339Nano)+"\n")
-			},
 			restarts: 2,
 		},
 		{
-			// Guard: uninstall keeps the cutoff of its restart.
 			name: "reinstall after uninstall",
 			setup: func(t *testing.T, _ *fakeNode, in *Installer) {
 				t.Helper()
@@ -509,15 +429,35 @@ func TestInstallGuardsAgainstCachedHandler(t *testing.T) {
 			f, in := newFakeNode(t)
 			tt.setup(t, f, in)
 			f.serveSbxr = false
-			in.API = laggingAPI{f}
 
 			err := in.Install(t.Context())
 			if err != nil || f.restarts != tt.restarts || f.labels[ReadyLabel] == "true" ||
-				!strings.Contains(f.annotations[PreflightAnnotation], "no node status after") {
+				!strings.Contains(f.annotations[PreflightAnnotation], "containerd does not serve runtime handler sbxr") {
 				t.Errorf("error %v, restarts %d, labels %v, annotations %v; want %d restarts and a rejection",
 					err, f.restarts, f.labels, f.annotations, tt.restarts)
 			}
 		})
+	}
+}
+
+// TestInstallVerifiesInSeconds checks that the installer asks the distribution's containerd socket, and that a
+// verification cutoff of an older installer neither delays the install nor stays.
+func TestInstallVerifiesInSeconds(t *testing.T) {
+	t.Parallel()
+
+	f, in := newFakeNode(t)
+	in.Timeout = time.Hour
+	write(t, f.root+legacyVerifyAfter, time.Now().Add(time.Hour).Format(time.RFC3339Nano)+"\n")
+
+	start := time.Now()
+
+	err := in.Install(t.Context())
+	if err != nil || f.labels[ReadyLabel] != "true" || time.Since(start) > 10*time.Second {
+		t.Fatalf("install: %v after %s, labels %v", err, time.Since(start), f.labels)
+	}
+
+	if exists(f.root+legacyVerifyAfter) || !slices.Contains(f.criSockets, f.root+"/run/containerd/containerd.sock") {
+		t.Errorf("verify-after left %v, CRI sockets %v", exists(f.root+legacyVerifyAfter), f.criSockets)
 	}
 }
 
@@ -670,6 +610,7 @@ func TestUninstall(t *testing.T) {
 	// A drop-in of another distribution goes too.
 	write(t, f.root+"/etc/k0s/containerd.d/sbxr.toml", "stale")
 	write(t, f.root+RuntimeRoot+"/k8s.io/.keep", "")
+	write(t, f.root+legacyVerifyAfter, "2026-11-15T00:00:00Z\n") // From an older installer.
 
 	err = in.Uninstall(t.Context())
 	if err != nil {
@@ -680,14 +621,10 @@ func TestUninstall(t *testing.T) {
 		t.Errorf("labels %v, annotations %v, restarts %d", f.labels, f.annotations, f.restarts)
 	}
 
-	for _, p := range []string{dropInPath, "/etc/k0s/containerd.d/sbxr.toml", Prefix, restartPending, "/run/sbxr"} {
+	for _, p := range []string{dropInPath, "/etc/k0s/containerd.d/sbxr.toml", Prefix, restartPending, legacyVerifyAfter, "/run/sbxr"} {
 		if exists(f.root + p) {
 			t.Errorf("%s remains", p)
 		}
-	}
-
-	if !exists(f.root + verifyAfter) {
-		t.Error("the verification cutoff is gone, so a reinstall could trust the removed handler")
 	}
 
 	if !exists(f.root + lockFile) {

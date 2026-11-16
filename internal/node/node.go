@@ -50,9 +50,8 @@ const (
 	stateDir = "/var/lib/sbxr"
 	// restartPending exists from a drop-in change until containerd restarts successfully. It holds the unit to restart.
 	restartPending = stateDir + "/restart-pending"
-	// verifyAfter holds the time after which a node status can show the restarted containerd.
-	// It survives retries and goes only after the node is labeled ready.
-	verifyAfter = stateDir + "/verify-after"
+	// legacyVerifyAfter is a verification cutoff of older installers, which waited for a fresh node status.
+	legacyVerifyAfter = stateDir + "/verify-after"
 )
 
 // Installer holds what Install and Uninstall need.
@@ -66,7 +65,9 @@ type Installer struct {
 	Bundle string
 	// Phase selects the runtime: 1 runs crun with libkrun per container, 2 runs the sbxr shim with one VM per pod.
 	Phase int
-	// Poll and Timeout bound the wait for the node to report handler sbxr.
+	// CRI returns the runtime handlers that the CRI at a socket serves.
+	CRI func(ctx context.Context, socket string) ([]string, error)
+	// Poll and Timeout bound the wait for containerd to serve handler sbxr, and for the node to report its runtime.
 	Poll    time.Duration
 	Timeout time.Duration
 	Log     *slog.Logger
@@ -89,9 +90,6 @@ func (in *Installer) Install(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-
-	// A pending restart means that an earlier run changed containerd's config, so this is no first load.
-	_, pending := in.pendingRestart()
 
 	// A failed rollback can leave containerd stopped, so preflight would find no active unit.
 	err = in.finishPendingRestart(ctx)
@@ -139,8 +137,9 @@ func (in *Installer) Install(ctx context.Context) error {
 	}
 
 	in.removeRetired()
+	_ = os.Remove(in.HostRoot + legacyVerifyAfter)
 
-	return in.configure(ctx, in.HostRoot+d.dropInFile(), unit, dropIn, pending)
+	return in.configure(ctx, in.HostRoot+d.dropInFile(), unit, in.HostRoot+d.socket, dropIn)
 }
 
 // removeRetired deletes the retired bundles that no process uses any more, and the staging directory of older
@@ -258,9 +257,9 @@ func (in *Installer) withSubids(edit func(data [][]byte) ([][]byte, error)) erro
 }
 
 // configure publishes the drop-in, restarts the unit when needed, verifies the handler, and labels the node.
-// Any failure after publishing, except an unanswered API server during verification, restores the previous drop-in (or removes it), restarts again, and rejects the node.
-// wasPending says whether a restart was pending when this run started.
-func (in *Installer) configure(ctx context.Context, path, unit string, dropIn []byte, wasPending bool) error {
+// Any failure after publishing restores the previous drop-in (or removes it), restarts again, and rejects the node.
+// The exception is a failed final label patch, an apiError: containerd serves sbxr then, so the drop-in stays and the pod retries.
+func (in *Installer) configure(ctx context.Context, path, unit, socket string, dropIn []byte) error {
 	previous, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read drop-in: %w", err)
@@ -272,7 +271,7 @@ func (in *Installer) configure(ctx context.Context, path, unit string, dropIn []
 		previous = nil
 	}
 
-	err = in.apply(ctx, path, unit, dropIn, changed, wasPending)
+	err = in.apply(ctx, path, unit, socket, dropIn, changed)
 	if err == nil {
 		in.Log.Info("node ready")
 
@@ -292,7 +291,7 @@ func (in *Installer) configure(ctx context.Context, path, unit string, dropIn []
 	}
 
 	if rollback == nil {
-		rollback = in.restart(ctx, unit, false)
+		rollback = in.restart(ctx, unit)
 	}
 
 	if rollback != nil {
@@ -311,18 +310,13 @@ func (in *Installer) configure(ctx context.Context, path, unit string, dropIn []
 // apiError is an API server failure. It says nothing about the node.
 type apiError struct{ error }
 
-// unverified means that containerd did not restart or the node does not serve the handler.
+// unverified means that containerd did not restart or does not serve the handler.
 type unverified struct{ error }
 
 // apply publishes the drop-in when it changed, restarts the unit when a restart is pending, verifies, and labels the node.
-func (in *Installer) apply(ctx context.Context, path, unit string, dropIn []byte, changed, wasPending bool) error {
-	// This is a first load only when no sbxr drop-in is on disk and no earlier run left a restart pending.
-	// Otherwise a containerd from before this restart may have served the handler, and the kubelet may still post it.
-	_, err := os.Stat(path)
-	firstLoad := errors.Is(err, fs.ErrNotExist) && !wasPending
-
+func (in *Installer) apply(ctx context.Context, path, unit, socket string, dropIn []byte, changed bool) error {
 	if changed {
-		err = in.markRestart(unit)
+		err := in.markRestart(unit)
 		if err == nil {
 			err = writeFile(path, dropIn)
 		}
@@ -336,18 +330,13 @@ func (in *Installer) apply(ctx context.Context, path, unit string, dropIn []byte
 	if _, pending := in.pendingRestart(); pending {
 		in.Log.Info("restarting", "unit", unit)
 
-		err = in.restart(ctx, unit, firstLoad)
+		err := in.restart(ctx, unit)
 		if err != nil {
 			return err
 		}
 	}
 
-	cutoff, err := in.verifyCutoff()
-	if err != nil {
-		return err
-	}
-
-	err = in.waitHandler(ctx, cutoff)
+	err := in.waitHandler(ctx, socket)
 	if err != nil {
 		return err
 	}
@@ -357,9 +346,6 @@ func (in *Installer) apply(ctx context.Context, path, unit string, dropIn []byte
 		// The node serves sbxr, so a retry only needs to label it.
 		return apiError{err}
 	}
-
-	// A leftover cutoff only asks the next run for a status newer than this restart, which every status is.
-	_ = os.Remove(in.HostRoot + verifyAfter)
 
 	return nil
 }
@@ -385,26 +371,7 @@ func (in *Installer) finishPendingRestart(ctx context.Context) error {
 
 	in.Log.Info("finishing a pending restart", "unit", unit)
 
-	return in.restart(ctx, unit, false)
-}
-
-// verifyCutoff returns the persisted verification cutoff, or the zero time when no restart awaits verification.
-func (in *Installer) verifyCutoff() (time.Time, error) {
-	data, err := os.ReadFile(in.HostRoot + verifyAfter)
-	if errors.Is(err, fs.ErrNotExist) {
-		return time.Time{}, nil
-	}
-
-	if err != nil {
-		return time.Time{}, fmt.Errorf("read verification cutoff: %w", err)
-	}
-
-	cutoff, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
-	if err != nil {
-		return time.Time{}, fmt.Errorf("read verification cutoff: %w", err)
-	}
-
-	return cutoff, nil
+	return in.restart(ctx, unit)
 }
 
 // reject records reason on the node and leaves it unlabeled.
@@ -568,12 +535,8 @@ func (in *Installer) imported(config string, d distro) []string {
 	return files
 }
 
-// restart restarts unit and checks that it is active. Then it records the verification cutoff and clears the pending restart.
-// A node status counts only when the kubelet posted it after the cutoff.
-// With firstLoad, no sbxr drop-in existed before the restart, so only the restarted containerd can list the handler and the cutoff is the restart.
-// Otherwise the kubelet may still post a cached handler from before the restart, so the cutoff is runtimeRefresh later.
-// The cutoff never moves earlier and survives uninstall, so a reinstall right after an uninstall still waits for the barrier.
-func (in *Installer) restart(ctx context.Context, unit string, firstLoad bool) error {
+// restart restarts unit, checks that it is active, and clears the pending restart.
+func (in *Installer) restart(ctx context.Context, unit string) error {
 	out, err := in.Host(ctx, "systemctl", "restart", unit)
 	if err != nil {
 		return unverified{fmt.Errorf("restart %s: %w: %s", unit, err, out)}
@@ -584,26 +547,6 @@ func (in *Installer) restart(ctx context.Context, unit string, firstLoad bool) e
 		return unverified{fmt.Errorf("%s is not active after the restart: %w: %s", unit, err, strings.TrimSpace(out))}
 	}
 
-	cutoff := time.Now()
-	if !firstLoad {
-		cutoff = cutoff.Add(runtimeRefresh)
-	}
-
-	// A later restart never moves a persisted cutoff earlier.
-	persisted, err := in.verifyCutoff()
-	if err != nil {
-		return err
-	}
-
-	if persisted.After(cutoff) {
-		cutoff = persisted
-	}
-
-	err = writeFile(in.HostRoot+verifyAfter, []byte(cutoff.Format(time.RFC3339Nano)+"\n"))
-	if err != nil {
-		return err
-	}
-
 	err = os.Remove(in.HostRoot + restartPending)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("clear pending restart: %w", err)
@@ -612,27 +555,30 @@ func (in *Installer) restart(ctx context.Context, unit string, firstLoad bool) e
 	return nil
 }
 
-// runtimeRefresh bounds how old the kubelet's cached runtime state can be when it posts a node status.
-const runtimeRefresh = 10 * time.Second
+// criCall bounds one CRI call, so that a containerd that hangs does not block the wait.
+const criCall = 5 * time.Second
 
-// waitHandler waits until the node reports handler sbxr in a status posted after fresh.
-// It returns an apiError when the last poll failed, and an unverified error when the last poll showed no fresh handler.
-func (in *Installer) waitHandler(ctx context.Context, fresh time.Time) error {
+// waitHandler waits until containerd, asked through the CRI on socket, serves handler sbxr.
+// It asks containerd itself rather than the node status: the kubelet posts an unchanged node status only every
+// nodeStatusReportFrequency plus a random delay (2.5 to 7.5 minutes by default), and it may still post a handler
+// that it cached from the containerd before the restart.
+func (in *Installer) waitHandler(ctx context.Context, socket string) error {
 	ctx, cancel := context.WithTimeout(ctx, in.Timeout)
 	defer cancel()
 
 	var last error
 
 	for {
-		n, err := in.API.Node(ctx)
+		callCtx, callCancel := context.WithTimeout(ctx, criCall)
+		handlers, err := in.CRI(callCtx, socket)
+
+		callCancel()
 
 		switch {
 		case err != nil:
-			last = apiError{fmt.Errorf("read node: %w", err)}
-		case !n.Heartbeat.After(fresh):
-			last = unverified{fmt.Errorf("no node status after %s", fresh.Format(time.RFC3339))}
-		case !slices.Contains(n.RuntimeHandlers, Handler):
-			last = unverified{fmt.Errorf("node does not report runtime handler %s", Handler)}
+			last = unverified{err}
+		case !slices.Contains(handlers, Handler):
+			last = unverified{fmt.Errorf("containerd does not serve runtime handler %s (it serves %s)", Handler, strings.Join(handlers, ", "))}
 		default:
 			return nil
 		}

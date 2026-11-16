@@ -19,6 +19,7 @@ type distro struct {
 	units  []string // Any active unit selects the distribution. Restarting it restarts containerd.
 	config string   // Main containerd config, written by the distribution. The installer never edits it.
 	dropIn string   // Directory that the main config imports.
+	socket string   // containerd's gRPC socket, which serves the CRI.
 }
 
 // distros lists the supported distributions. containerd comes last, because k3s or RKE2 nodes may also have its unit.
@@ -28,24 +29,28 @@ var distros = []distro{
 		units:  []string{"k3s.service", "k3s-agent.service"},
 		config: "/var/lib/rancher/k3s/agent/etc/containerd/config.toml",
 		dropIn: "/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d",
+		socket: "/run/k3s/containerd/containerd.sock",
 	},
 	{
 		name:   "rke2",
 		units:  []string{"rke2-server.service", "rke2-agent.service"},
 		config: "/var/lib/rancher/rke2/agent/etc/containerd/config.toml",
 		dropIn: "/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d",
+		socket: "/run/k3s/containerd/containerd.sock",
 	},
 	{
 		name:   "k0s",
 		units:  []string{"k0sworker.service", "k0scontroller.service"},
 		config: "/etc/k0s/containerd.toml",
 		dropIn: "/etc/k0s/containerd.d",
+		socket: "/run/k0s/containerd.sock",
 	},
 	{
 		name:   "containerd",
 		units:  []string{"containerd.service"},
 		config: "/etc/containerd/config.toml",
 		dropIn: "/etc/containerd/conf.d",
+		socket: "/run/containerd/containerd.sock",
 	},
 }
 
