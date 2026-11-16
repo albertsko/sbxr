@@ -83,9 +83,9 @@ spec:
       priorityClassName: system-node-critical
       tolerations:
         - operator: Exists
-      # Longer than the worst case of one install: up to 5 minutes for the node to report its runtime in preflight,
-      # up to 5 minutes for containerd to serve sbxr, and two containerd restarts with systemd's default 90 s timeout.
-      terminationGracePeriodSeconds: 900
+      # SIGTERM cancels the install at once: running waits and systemctl calls stop, and a later pod finishes
+      # a restart that was left pending. The period only covers that shutdown.
+      terminationGracePeriodSeconds: 60
       containers:
         - name: sbxr-node
           image: "@IMAGE@"
