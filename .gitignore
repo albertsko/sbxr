@@ -19,3 +19,6 @@ hk.local.pkl
 
 # The mount helper that go generate builds.
 internal/guestmount/helper/*/sbxr-mount
+
+# Release manifests that the release workflow downloads before goreleaser runs.
+/node-manifests/
