@@ -83,9 +83,11 @@ spec:
       priorityClassName: system-node-critical
       tolerations:
         - operator: Exists
-      # SIGTERM cancels the install at once: running waits and systemctl calls stop, and a later pod finishes
-      # a restart that was left pending. The period only covers that shutdown.
-      terminationGracePeriodSeconds: 60
+      # The installer finishes its host changes after SIGTERM, so this covers the worst case of one install:
+      # 5 minutes for the node runtime version, 5 minutes for containerd to serve sbxr, and three containerd restarts
+      # (pending, new drop-in, rollback) of up to 180 s each with systemd's default timeouts. If the kubelet kills
+      # the installer anyway, the next pod finishes the restart that was left pending.
+      terminationGracePeriodSeconds: 1200
       containers:
         - name: sbxr-node
           image: "@IMAGE@"
