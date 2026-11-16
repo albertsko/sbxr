@@ -4,7 +4,20 @@
 
 ## Status
 
-Early development. `sbxr run`, `sbxr doctor`, and `sbxr prune` work with real VMs on macOS arm64 and on Linux with KVM, without root, and with images pulled from registries. The Kubernetes RuntimeClass works in phase 1 ([docs/kubernetes.md](docs/kubernetes.md)). `--net`, `--allow-lan`, and `-p` give the VM a guarded userspace network, and `-v` shares host directories. See [docs/PRD.md](docs/PRD.md) for the requirements and [docs/HANDOFF.md](docs/HANDOFF.md) for the build plan.
+Feature-complete for the first release, which is pending, so the install commands below work only after it. `sbxr run`, `sbxr doctor`, and `sbxr prune` work with real VMs on macOS arm64 and on Linux with KVM, without root, and with images pulled from registries. `--net`, `--allow-lan`, and `-p` give the VM a guarded userspace network, and `-v` shares host directories. On Kubernetes, the RuntimeClass `sbxr` runs one VM per pod (phase 2, the default install) or one VM per container (phase 1). See [docs/kubernetes.md](docs/kubernetes.md) for the cluster install, [docs/PRD.md](docs/PRD.md) for the requirements, and [docs/HANDOFF.md](docs/HANDOFF.md) for the current state and open work.
+
+## Usage
+
+```sh
+sbxr run alpine echo hi                                     # no network
+sbxr run -it alpine sh                                      # interactive shell
+sbxr run --net alpine wget -qO- https://example.com         # outbound IPv4 to public addresses
+sbxr run --net -p 8080:80 busybox httpd -f -p 80            # guest port 80 on 127.0.0.1:8080
+sbxr run -v "$PWD:/work" -w /work alpine ls                 # share the current directory
+sbxr run -it -v "$PWD:/work:ro" --net --allow-lan alpine sh # read-only share, LAN access too
+```
+
+The workload has no network without `--net`. Even with `--net`, it cannot reach host-local services, and `--allow-lan` opens only the LAN. Run `sbxr run --help` for every flag.
 
 ## Install
 
@@ -45,6 +58,6 @@ mise run deps        # vendor Go modules
 mise run build       # bin/sbxr
 mise run test        # unit tests and fake VM scenarios, no hypervisor needed
 mise run test:hv     # scenarios against a real VM, skipped without a hypervisor
-mise run test:kind   # Kubernetes phase 1 in kind (Linux with KVM and Docker)
+mise run test:kind   # Kubernetes in kind, phase 2 by default, SBXR_PHASE=1 for phase 1 (Linux with KVM and Docker)
 mise run ci          # everything CI runs
 ```

@@ -4,7 +4,7 @@
 
 ## Requirements
 
-- Kubernetes 1.36 or later. The DNS policy uses `MutatingAdmissionPolicy` at `admissionregistration.k8s.io/v1`, which older versions do not serve by default.
+- Kubernetes 1.36 or later, the supported minimum for both phases. Phase 1's DNS policy uses `MutatingAdmissionPolicy` at `admissionregistration.k8s.io/v1`, which older versions do not serve by default. CI tests Kubernetes 1.37 in kind.
 - Nodes with containerd 2.2 or later, glibc 2.35 or later, Linux 5.19 or later, `/dev/kvm`, and `/dev/net/tun`.
 - `iptables` and `nsenter` on the node for `kubectl port-forward`.
 - A `kubelet` id range, so that pods with user namespaces (`hostUsers: false`) and `sbxr` pod VMs never share host ids. Without it, the kubelet may give such pods any host id. The kubelet reads the range with `getsubids kubelet` and `getsubids -g kubelet` at start, and so does preflight. The range must follow the kubelet's own rules for the default 65536 ids per pod:
@@ -87,6 +87,7 @@ spec:
 - No per-container metrics. `kubectl top` shows the pod's cgroup, which holds the VM.
 - `shareProcessNamespace` is ignored.
 - No `kubectl attach`.
+- In-place pod resize is accepted, but the pod VM keeps its vCPUs and memory.
 
 ## Upgrade
 
@@ -94,7 +95,7 @@ Apply the `sbxr-install.yaml` of the new release and wait for the rollout as in 
 
 The installer keeps the previous bundle in `/opt/sbxr.old` instead of removing it. A running phase 2 VM keeps its guest root and its agent's `crun` there, and older shims and phase 1 VMs keep their binaries and libraries. Each install, and uninstall, removes the retired bundles that no process uses any more, so a retired bundle goes at the first install after the kubelet removed the sandboxes of its last pods, which it does about a minute after their deletion. New pods use the new bundle.
 
-## Upgrade from phase 1
+### From phase 1
 
 1. Configure the `kubelet` id range on every node and restart the kubelet, as in "Requirements". A node without a valid range fails phase 2 preflight: the installer writes the reason to `sbxr.dev/preflight` and removes `sbxr.dev/ready`, so no new `sbxr` pod is scheduled there. Its phase 1 drop-in and bundle stay, so `sbxr` pods that already run there keep running.
 2. Apply the new `sbxr-install.yaml` and wait for the rollout as in "Install". Each node switches when its containerd restarts.

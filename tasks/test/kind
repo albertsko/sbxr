@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Run the scenarios and phase 1 criteria against a kind cluster. Skips without a hypervisor unless SBXR_REQUIRE_HV=1"
+#MISE description="Run the scenarios and Kubernetes criteria against a kind cluster, phase 2 unless SBXR_PHASE=1. Skips without a hypervisor unless SBXR_REQUIRE_HV=1"
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."

@@ -20,7 +20,7 @@ scripts/node-manifests.sh sbxr-node out [1|2]                                   
 
 ## Release
 
-- The release workflow builds the image once per architecture from the tagged commit, pushes each by digest, and joins them in one index tagged with the release version. The `kind` job tests an image built from the same Dockerfile and pins, not the published bytes.
+- The release workflow builds the image once per architecture from the tagged commit, pushes each by digest, and joins them in one index tagged with the release version. The `kind` and `kind-p2` jobs test an image built from the same Dockerfile and pins, not the published bytes.
 - The index tag is pushed before goreleaser creates the GitHub release. If a later job fails, the tag exists without a release. Rerun the workflow; it pushes the index again and renders the manifests for its new digest.
 - The uninstall guard scans `/run/sbxr/pods` (phase 2) and `/run/sbxr/runc`, the phase 1 runtime root that every released drop-in sets, so no `sbxr` container has state under containerd's default runc root.
 - `SHA256SUMS` in the bundle protects the copy to the node, not the supply chain: it ships in the same image. The pins above protect the inputs.

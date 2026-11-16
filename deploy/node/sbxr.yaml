@@ -125,7 +125,7 @@ metadata:
   annotations:
     sbxr.dev/phase: "@PHASE@"
     sbxr.dev/limits: "no kubectl exec or exec probes, no SIGTERM to the workload, stdout and stderr merged in logs, DNS over TCP only, start errors reported as exit codes 126 and 127, workload is not PID 1, one VM per container" # phase 1
-    sbxr.dev/limits: "container metrics only for the whole pod, shareProcessNamespace is ignored, no kubectl attach, one VM per pod" # phase 2
+    sbxr.dev/limits: "container metrics only for the whole pod, shareProcessNamespace is ignored, no kubectl attach, in-place resize does not resize the VM, one VM per pod" # phase 2
     sbxr.dev/docs: https://github.com/albertsko/sbxr/blob/main/docs/kubernetes.md
 handler: sbxr
 overhead:
