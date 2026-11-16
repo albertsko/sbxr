@@ -7,9 +7,11 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 if [[ -n "${CI:-}" ]]; then
 	# Diagnostics for a macOS CI flake that kills this task with SIGHUP: show which processes share its group.
 	# go test runs in the foreground without exec, so the trap stays, and set -e keeps its status.
-	trap 'echo "test task: SIGHUP" >&2; ps -axo pid,ppid,pgid,sess,tt,stat,etime,command >&2' HUP
+	# A SIGHUP that reaches only this task still fails it after go test ends.
+	hup=0
+	trap 'hup=1; echo "test task: SIGHUP" >&2; ps -axo pid,ppid,pgid,sess,tt,stat,etime,command >&2' HUP
 	go test -race -shuffle=on ./... "$@"
-	exit 0
+	exit $((hup ? 129 : 0))
 fi
 
 exec go test -race ./... "$@"
