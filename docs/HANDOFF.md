@@ -61,7 +61,7 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - **Node distributions.** The installer runs in CI only on kind. k3s, RKE2, k0s, and kubeadm-style nodes are untested end to end. Assumption A4 covers only their drop-in imports.
 - **arm64 hosts.** No CI runner for arm64 has KVM. `test:hv` passes in a local Ubuntu 24.04 arm64 VM with nested KVM, but no job runs it. Phase 1 and phase 2 have not run on an arm64 node, and only the release workflow builds the arm64 node image.
 - **PRD assumptions A1, A6, and A9** are still open, and open question Q1 (upstream `libkrun` bug reports) waits for the project owner. See PRD "Assumptions and Open Questions".
-- **Known limits that stay:** the rare `hvc0` console race can still lose guest output under heavy host load (PRD "Workload config"), terminal resizes reach the guest only on Linux (`libkrun` 1.19.8), a bundle upgrade breaks exec, probes, and graceful stop in running phase 2 pods until they are recreated (the old guest root is not kept), and the phase 1 and phase 2 limits in [kubernetes.md](kubernetes.md).
+- **Known limits that stay:** the rare `hvc0` console race can still lose guest output under heavy host load (PRD "Workload config"), terminal resizes reach the guest only on Linux (`libkrun` 1.19.8), and the phase 1 and phase 2 limits in [kubernetes.md](kubernetes.md).
 
 ## Development environment
 

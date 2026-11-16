@@ -431,7 +431,7 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
   3. If preflight fails, change nothing, leave the node unlabeled, and write the reason to the node annotation `sbxr.dev/preflight`. The installer never edits a main containerd config or template.
   4. Install binaries and libraries under one directory, then write the `sbxr` drop-in file atomically under a host lock, and restart the containerd unit only when the content changed.
   5. Verify that the unit is active and that the restarted containerd serves handler `sbxr`, through the CRI `RuntimeService/Status` call on the distribution's containerd socket (`runtime_handlers`, which containerd fills from its loaded config). The installer encodes the call by hand and does not use the node status: the kubelet posts an unchanged node status only every `nodeStatusReportFrequency` plus a random delay (2.5 to 7.5 minutes by default), and it may still list a handler that it cached from the containerd before the restart. Then set the ready label. If the restart or verification fails, restore the previous drop-in (or remove it) and restart again. If that rollback fails, the installer exits with an error and retries.
-- Uninstall, release asset `sbxr-uninstall.yaml`: `kubectl apply` replaces the installer DaemonSet with one that removes the label and annotation, removes the drop-in of every supported distribution, restarts containerd, and removes the binaries. It keeps the binaries while containerd has not restarted or `sbxr` containers still have state under the phase 1 runtime root (`/run/sbxr/runc`) or the phase 2 pod directory (`/run/sbxr/pods`), and reports why in the annotation. `kubectl delete -f` of the same file then removes the RuntimeClass, the policies, and the namespace.
+- Uninstall, release asset `sbxr-uninstall.yaml`: `kubectl apply` replaces the installer DaemonSet with one that removes the label and annotation, removes the drop-in of every supported distribution, restarts containerd, and removes the binaries. It keeps the binaries while containerd has not restarted, `sbxr` containers still have state under the phase 1 runtime root (`/run/sbxr/runc`) or the phase 2 pod directory (`/run/sbxr/pods`), or a process still uses a retired bundle, and reports why in the annotation. `kubectl delete -f` of the same file then removes the RuntimeClass, the policies, and the namespace.
 - containerd pulls the container image, not `sbxr`.
 - Admission policies shipped with the installer, for pods with `runtimeClassName: sbxr`:
   - Validating, deny: privileged containers, host network, host PID, host IPC, added capabilities.
@@ -492,6 +492,7 @@ States for one run: `validating` -> `pulling` -> `preparing` -> `running` -> `ex
   - No per-container metrics (`kubectl top` shows the pod's cgroup).
   - `shareProcessNamespace` is ignored. Each container has its own PID namespace.
   - No `kubectl attach`.
+  - In-place pod resize is accepted, but the pod VM keeps its vCPUs and memory: the shim answers `UpdateSandbox` with Unimplemented, which containerd tolerates.
   - Moving from phase 1 needs one manual step: delete the two phase 1 policies, because `kubectl apply` does not remove objects.
 
 ### Test contract

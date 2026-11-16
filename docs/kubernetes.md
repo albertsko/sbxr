@@ -87,6 +87,7 @@ spec:
 - No per-container metrics. `kubectl top` shows the pod's cgroup, which holds the VM.
 - `shareProcessNamespace` is ignored.
 - No `kubectl attach`.
+- In-place pod resize is accepted, but the pod VM keeps its vCPUs and memory.
 
 ## Upgrade
 
