@@ -83,11 +83,12 @@ spec:
       priorityClassName: system-node-critical
       tolerations:
         - operator: Exists
-      # The installer finishes its host changes after SIGTERM, so this covers the worst case of one install:
-      # 5 minutes for the node runtime version, 5 minutes for containerd to serve sbxr, and three containerd restarts
-      # (pending, new drop-in, rollback) of up to 180 s each with systemd's default timeouts. If the kubelet kills
-      # the installer anyway, the next pod finishes the restart that was left pending.
-      terminationGracePeriodSeconds: 1200
+      # The installer finishes its host changes after SIGTERM. This period covers a slow install: two 5-minute waits
+      # (node runtime version, containerd serving sbxr), three containerd restarts (pending, new drop-in, rollback)
+      # of up to 180 s each with systemd's default timeouts, plus API calls and lock waits. It is not a strict bound:
+      # some units disable the start timeout and host commands have none. If the kubelet kills the installer anyway,
+      # the next pod finishes the restart that was left pending.
+      terminationGracePeriodSeconds: 1500
       containers:
         - name: sbxr-node
           image: "@IMAGE@"
