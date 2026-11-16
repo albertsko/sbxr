@@ -1,6 +1,6 @@
 # sbxr: Handoff
 
-Status: steps S1 to S8 are done. The PRD stays a living document. Last update: 2026-11-15.
+Status: steps S1 to S8 are done, and [v0.1.0](https://github.com/albertsko/sbxr/releases/tag/v0.1.0) is released. The PRD stays a living document. Last update: 2026-11-16.
 
 **Next: no build step is open.** See "Open work" for what remains.
 
@@ -34,7 +34,7 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 - The fake VM runs `internal/netstack/guestsim`, a small gvisor guest stack with DHCP, so the network scenarios run without a hypervisor. Its busybox has `wget`, `nc`, and `nslookup`.
 - The connection caps have no scenario, because the fake busybox has no loops or background jobs. The netstack tests cover them: `TestTCPCap`, `TestUDPCap`, and `TestCloseAtCaps` (guest connections past the cap fail, and the stack keeps working and closes at once).
 - `-v` shares host directories as virtio-fs devices. A small static helper (`cmd/sbxr-mount`, embedded through `internal/guestmount` by `go generate`) mounts them in the guest before the workload, because the `libkrun` init cannot. See PRD "Workload config". Build with `mise run build`, or run `go generate ./internal/guestmount` first, because a bare `go build` embeds whatever helper is on disk.
-- Distribution (S6): goreleaser builds the release archives on `v*` tags. The formula `albertsko/homebrew-tap/Formula/sbxr.rb` installs `sbxr_darwin_arm64` and signs it, and has a placeholder version (`v0.0.0`) until the first release. The Linux setup block lives in `internal/preflight/setup.go` and the README, and a test keeps them equal. The `install` workflow installs a goreleaser snapshot on fresh `ubuntu-latest` and `macos-15` runners (PRD "CI contract").
+- Distribution (S6): goreleaser builds the release archives on `v*` tags. The formula `albertsko/homebrew-tap/Formula/sbxr.rb` installs `sbxr_darwin_arm64` and signs it, and points at the latest release. After each release, update its version and checksum by hand (tap README). The Linux setup block lives in `internal/preflight/setup.go` and the README, and a test keeps them equal. The `install` workflow installs a goreleaser snapshot on fresh `ubuntu-latest` and `macos-15` runners (PRD "CI contract").
 - Packages:
   - `internal/spec`: run input validation, no I/O.
   - `internal/krunconfig`: the config writer.
@@ -57,7 +57,6 @@ This handoff uses these terms. The PRD uses the same ones, except "egress guard"
 
 ## Open work
 
-- **First release.** The release workflow jobs `node-image`, `node-manifests`, and `release` run only on a `v*` tag and have never run. The first tag tests them. After it, update the tap formula version and checksum by hand (PRD "Distribution"), and check that the README install commands and the `releases/latest/download/` manifest URLs work.
 - **Node distributions.** The installer runs in CI only on kind. k3s, RKE2, k0s, and kubeadm-style nodes are untested end to end. Assumption A4 covers only their drop-in imports.
 - **arm64 hosts.** No CI runner for arm64 has KVM. `test:hv` passes in a local Ubuntu 24.04 arm64 VM with nested KVM, but no job runs it. Phase 1 and phase 2 have not run on an arm64 node, and only the release workflow builds the arm64 node image.
 - **PRD assumptions A1, A6, and A9** are still open, and open question Q1 (upstream `libkrun` bug reports) waits for the project owner. See PRD "Assumptions and Open Questions".
@@ -265,6 +264,8 @@ Exit criteria:
 - On a fresh `macos-15` runner, `sbxr doctor` fails only the `hypervisor` check, because hosted macOS runners have no hypervisor.
 - The two fresh-install criteria under PRD "Install and preflight" pass.
 - These runs also settle assumption A5 (Homebrew tap trust).
+
+Done. Evidence: release run [43830749255](https://github.com/albertsko/sbxr/actions/runs/43830749255) for v0.1.0. On an Apple silicon Mac, `brew install albertsko/tap/sbxr` installed 0.1.0, `sbxr doctor` exited 0, and `run`, `-v`, and `--net` worked.
 
 ### S7: Kubernetes phase 1
 
