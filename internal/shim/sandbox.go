@@ -616,6 +616,11 @@ func (s *service) Platform(context.Context, *sandboxAPI.PlatformRequest) (*sandb
 	return &sandboxAPI.PlatformResponse{Platform: &types.Platform{OS: "linux", Architecture: runtime.GOARCH}}, nil
 }
 
+// UpdateSandbox reports Unimplemented, the answer the sandbox API defines for a shim without in-place updates.
+func (s *service) UpdateSandbox(context.Context, *sandboxAPI.UpdateSandboxRequest) (*sandboxAPI.UpdateSandboxResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "sandbox updates are not supported") //nolint:wrapcheck // ttrpc status.
+}
+
 func (s *service) SandboxMetrics(context.Context, *sandboxAPI.SandboxMetricsRequest) (*sandboxAPI.SandboxMetricsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "sandbox metrics are not supported") //nolint:wrapcheck // ttrpc status.
 }
