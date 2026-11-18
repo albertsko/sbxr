@@ -32,7 +32,7 @@ func Entitlement(context.Context) Result {
 	err = hv.CheckEntitlement(exe)
 	if err != nil {
 		return Failed(id, err.Error(), fmt.Sprintf(
-			"codesign --force --sign - --entitlements entitlements.plist %q (entitlements.plist is in the sbxr repository)", exe))
+			"codesign --force --sign - --entitlements entitlements.plist %q (entitlements.plist is in the release archive and at cmd/sbxr/entitlements.plist in the sbxr repository)", exe))
 	}
 
 	return Passed(id, exe+" has the "+hv.Entitlement+" entitlement")

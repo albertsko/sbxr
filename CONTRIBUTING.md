@@ -14,10 +14,10 @@ mise run ci
 
 ### Signing
 
-Every binary that starts a VM, including test binaries, must be signed ad hoc with the hypervisor entitlement in [entitlements.plist](entitlements.plist). `mise run build` signs `bin/sbxr`. To sign another binary:
+Every binary that starts a VM, including test binaries, must be signed ad hoc with the hypervisor entitlement in [cmd/sbxr/entitlements.plist](cmd/sbxr/entitlements.plist). `mise run build` signs `bin/sbxr`. To sign another binary:
 
 ```sh
-codesign --entitlements entitlements.plist --force -s - ./bin/sbxr
+codesign --entitlements cmd/sbxr/entitlements.plist --force -s - ./bin/sbxr
 ```
 
 Do not add `--options runtime`. Hardened runtime removes the `DYLD_*` variables at launch, and then `libkrun` cannot find `libkrunfw`. For the same reason, do not start `sbxr` through a protected system binary such as `/usr/bin/env` or `/usr/bin/time`.
@@ -74,8 +74,8 @@ A test runs against one target: `fake` (no hypervisor), `vm` (a real libkrun VM)
 
 - `test:vm` and `test:kube` skip with exit 0 when their environment is missing: no hypervisor, or for `test:kube` no Linux. With `SBXR_TEST_REQUIRE=1`, they fail instead. CI sets this variable.
 - `test:vm` and `test:kube` run with `-count=1`, because Go's test cache does not notice changes to the built binary or to `libkrun`.
-- `test:kube` creates the kind cluster `sbxr` from [kind.yaml](kind.yaml), or reuses the cluster named by `SBXR_KIND_CLUSTER`. It builds the installer image unless `SBXR_NODE_IMAGE` names one. The first image build compiles `libkrun` and takes several minutes.
+- `test:kube` runs [scripts/kind/up.sh](scripts/kind/up.sh), which creates the kind cluster `sbxr` from [scripts/kind/cluster.yaml](scripts/kind/cluster.yaml), or reuses the cluster named by `SBXR_KIND_CLUSTER`. It builds the installer image unless `SBXR_NODE_IMAGE` names one. The first image build compiles `libkrun` and takes several minutes.
 - kind resets the `/dev/kvm` permissions when it creates a cluster. Run `sudo chmod 666 /dev/kvm` after `kind create cluster`.
 - `mise run build` runs `go generate ./internal/guestmount`, which builds the guest mount helper that `-v` needs. A bare `go build` embeds whatever helper is on disk, and without one `-v` fails with exit code 125.
-- CI shuffles and parallelizes tests. Publish tests must bind port 0, and cleanup checks must look only at the test's own run directory and processes.
+- Tests run in parallel, and the nightly workflow also shuffles them. Publish tests must bind port 0, and cleanup checks must look only at the test's own run directory and processes.
 - Hosted macOS and Linux arm64 runners have no usable hypervisor, so real-VM tests on those platforms run only on a local machine or a self-hosted runner.

@@ -1,0 +1,58 @@
+name: Nightly
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+# The checks that are too slow or too random for every pull request: shuffled tests without the test cache, and a long fuzz run.
+jobs:
+  shuffle:
+    name: Shuffled tests (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux x64
+            runner: ubuntu-latest
+          - platform: Linux arm64
+            runner: ubuntu-24.04-arm
+          - platform: macOS
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up
+        uses: ./.github/actions/setup
+      - name: Vendor the Go modules
+        run: mise run deps
+      - name: Run the tests in random order
+        run: mise run test:shuffle
+
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up
+        uses: ./.github/actions/setup
+      - name: Fuzz for 15 minutes
+        run: mise run fuzz 15m
+      - name: Upload the failing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failures
+          path: internal/krunconfig/testdata/fuzz
+          if-no-files-found: ignore

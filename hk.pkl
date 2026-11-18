@@ -22,7 +22,7 @@ hooks {
     steps {
       ["go-project"] {
         glob = List("**/*.go", "go.mod", "go.sum", ".golangci.yml")
-        check = "golangci-lint config verify && golangci-lint run && go mod tidy -diff && go fix -diff ./..."
+        check = "golangci-lint config verify && GOOS=linux golangci-lint run && GOOS=darwin golangci-lint run && go mod tidy -diff && go fix -diff ./..."
         exclusive = true
       }
       ["shellcheck"] = Builtins.shellcheck
