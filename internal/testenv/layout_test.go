@@ -23,6 +23,12 @@ var targets = map[string]struct{ tag, prefix string }{
 // oldTags are build tags that no file may use anymore.
 var oldTags = []string{"hv", "kind", "sbxrfake"}
 
+// skipDirs are directories without source files of the module.
+var skipDirs = []string{"testdata", "vendor", "bin", "dist"}
+
+// hosts are the GOOS values that the tests run on.
+var hosts = []string{"darwin", "linux"}
+
 // TestTargetFiles fails for target test files that a target task would silently not run.
 func TestTargetFiles(t *testing.T) {
 	t.Parallel()
@@ -35,7 +41,7 @@ func TestTargetFiles(t *testing.T) {
 		}
 
 		if d.IsDir() {
-			if path != root && (strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata") {
+			if path != root && (strings.HasPrefix(d.Name(), ".") || slices.Contains(skipDirs, d.Name())) {
 				return filepath.SkipDir
 			}
 
@@ -77,6 +83,11 @@ func TestCheckFile(t *testing.T) {
 		{name: "vm file without constraint", file: "a_vm_test.go", src: "package a\n\nfunc TestVMBoot(t *testing.T) {}\n", want: 1},
 		{name: "vm file with kube tag", file: "a_vm_test.go", src: "//go:build kube\n\npackage a\n", want: 1},
 		{name: "vm file built without vm", file: "a_vm_test.go", src: "//go:build vm || linux\n\npackage a\n", want: 1},
+		{name: "vm file built without vm on linux only", file: "a_vm_test.go", src: "//go:build vm || (linux && !darwin)\n\npackage a\n", want: 1},
+		{name: "vm file built without vm on darwin only", file: "a_vm_test.go", src: "//go:build vm || (darwin && !linux)\n\npackage a\n", want: 1},
+		{name: "vm file built without vm on unix", file: "a_vm_test.go", src: "//go:build vm || unix\n\npackage a\n", want: 1},
+		{name: "kube file built without kube with another tag", file: "a_kube_test.go", src: "//go:build kube || vm\n\npackage a\n", want: 1},
+		{name: "kube file on linux only", file: "a_kube_test.go", src: "//go:build kube && linux\n\npackage a\n", want: 0},
 		{name: "vm file with an unselected test", file: "a_vm_test.go", src: "//go:build vm\n\npackage a\n\nfunc TestBoot(t *testing.T) {}\nfunc FuzzBoot(f *testing.F) {}\n", want: 2},
 		{name: "kube file with a vm test", file: "a_kube_test.go", src: "//go:build kube\n\npackage a\n\nfunc TestVMBoot(t *testing.T) {}\n", want: 2},
 		{name: "old tag", file: "a_test.go", src: "//go:build hv\n\npackage a\n", want: 1},
@@ -159,19 +170,35 @@ func buildConstraint(f *ast.File) constraint.Expr {
 	return nil
 }
 
-// requires reports whether expr excludes the file when tag is unset, whatever the other tags are.
+// requires reports whether expr excludes the file when tag is unset, on every host and whatever the other tags are.
 func requires(expr constraint.Expr, tag string) bool {
 	if expr == nil {
 		return false
 	}
 
-	for _, others := range []bool{false, true} {
-		if expr.Eval(func(t string) bool { return t != tag && others }) {
-			return false
+	for _, goos := range hosts {
+		for _, others := range []bool{false, true} {
+			if expr.Eval(func(t string) bool { return hostTag(t, tag, goos, others) }) {
+				return false
+			}
 		}
 	}
 
 	return true
+}
+
+// hostTag reports whether t is set when the target tag is off and the file builds for goos.
+func hostTag(t, tag, goos string, others bool) bool {
+	switch {
+	case t == tag:
+		return false
+	case t == goos || t == "unix":
+		return true
+	case slices.Contains(hosts, t):
+		return false
+	default:
+		return others
+	}
 }
 
 func tags(expr constraint.Expr) []string {
