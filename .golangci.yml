@@ -83,6 +83,7 @@ linters:
   settings:
     depguard:
       rules:
+        # core, kube-containerd, and kube-netlink share the core denies, so add a new core deny to each of the three.
         core:
           files:
             - "**/internal/**"
