@@ -39,11 +39,18 @@ kubectl get nodes -L sbxr.dev/ready
 
 The DaemonSet runs on every node. On each node, it:
 
-1. Detects the distribution from its active systemd units.
-2. Runs preflight: `/dev/kvm`, glibc, containerd version, main config version, an `imports` entry that covers the drop-in directory, the Linux version, `/dev/net/tun`, and the `kubelet` id range. It reserves the `sbxr` id range in `/etc/subuid` and `/etc/subgid`.
-3. On failure, changes nothing and writes the reason to the node annotation `sbxr.dev/preflight`. It never edits a main containerd config.
-4. Copies the bundle to a new directory below `/opt/sbxr.old`, checks every file against its SHA-256, and swaps it with `/opt/sbxr`, so the previous bundle stays in `/opt/sbxr.old` (see "Upgrade"). It runs `/opt/sbxr/bin/containerd-shim-sbxr-v1 check` on the host, which loads `libkrun` and `libkrunfw` from the bundle, and writes the reason to `sbxr.dev/preflight` when that fails. It links the shim to `/usr/local/bin/containerd-shim-sbxr-v1`, because containerd finds a sandboxer shim only by its name. Then it writes the drop-in `sbxr.toml` atomically, under a host lock, and restarts the containerd unit only when the drop-in changed.
-5. Waits until the unit is active and the restarted containerd serves runtime handler `sbxr`, which it asks through the CRI `Status` call on the containerd socket. Then it sets the label `sbxr.dev/ready=true`. If the restart or this check fails, it restores the previous drop-in (or removes it) and restarts containerd again.
+1. Takes the host lock `/run/sbxr.lock` and finishes a containerd restart that an earlier run left pending.
+2. Detects the distribution from its active systemd units and runs preflight: `/dev/kvm`, glibc, containerd version, main config version, an `imports` entry that covers the drop-in directory, the Linux version, `/dev/net/tun`, and the `kubelet` id range. A failed preflight changes nothing on the host.
+3. Copies the bundle to a new directory below `/opt/sbxr.old`, checks every file against its SHA-256, and swaps it with `/opt/sbxr`, so the previous bundle stays in `/opt/sbxr.old` (see "Upgrade"). It runs `/opt/sbxr/bin/containerd-shim-sbxr-v1 check` on the host, which loads `libkrun` and `libkrunfw` from the bundle.
+4. Reserves the `sbxr` id range in `/etc/subuid` and `/etc/subgid`. It links the shim to `/usr/local/bin/containerd-shim-sbxr-v1`, because containerd finds a sandboxer shim only by its name. Then it writes the drop-in `sbxr.toml` atomically and restarts the containerd unit only when the drop-in changed. It never edits a main containerd config.
+5. Waits until the unit is active and the restarted containerd serves runtime handler `sbxr`, which it asks through the CRI `Status` call on the containerd socket. Then it sets the label `sbxr.dev/ready=true` and the annotation `sbxr.dev/preflight: ok`. If the restart or this check fails, it restores the previous drop-in (or removes it) and restarts containerd again.
+
+A run that does not finish ends in one of two ways:
+
+- Node rejection: preflight, the shim check, the id range, or the verification in step 5 fails. The installer removes the label `sbxr.dev/ready` and writes the reason to the node annotation `sbxr.dev/preflight`. A rejection after step 2 keeps the new bundle in `/opt/sbxr`.
+- Installer error: for example the bundle copy, a host file, or the API server fails. The installer exits with an error and leaves the label and the annotation as they are, so they can still show an earlier run. Kubernetes restarts the container, which retries. The pod log shows the error.
+
+A failed containerd restart, or a failed rollback, does both: it records the reason and exits with an error.
 
 Read the result of a node:
 
@@ -88,6 +95,7 @@ spec:
 - `shareProcessNamespace` is ignored.
 - No `kubectl attach`.
 - In-place pod resize is accepted, but the pod VM keeps its vCPUs and memory.
+- One VM per pod: the containers of a pod share its VM and guest kernel.
 
 ## Upgrade
 
@@ -134,8 +142,8 @@ Tools, policies, and pod specs can depend on these names and values.
   - `overhead.podFixed.memory`: `64Mi`, for the guest kernel and the VMM.
   - Annotation `sbxr.dev/limits`: a comma-separated list of the limits in "Limits".
   - Annotation `sbxr.dev/docs`: the URL of this guide.
-- Node label `sbxr.dev/ready=true`: the node passed preflight, and its containerd serves handler `sbxr`. The installer removes the label when a node fails.
-- Node annotation `sbxr.dev/preflight`: `ok` after a successful install, otherwise the reason why the node is not ready or why uninstall waits.
+- Node label `sbxr.dev/ready=true`: the node passed preflight, and its containerd serves handler `sbxr`. The installer removes the label when it rejects the node. An installer error leaves the label as it is until a retry succeeds or rejects the node.
+- Node annotation `sbxr.dev/preflight`: `ok` after a successful install, the reason after a rejection, or the reason why uninstall waits. An installer error does not update it, so check the installer pod log too.
 
 ### Admission policies
 

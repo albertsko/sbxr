@@ -24,7 +24,7 @@ Global flags: `--debug` (debug logs on stderr) and `--no-color`.
 | Flag                            | Default                       | Meaning                                                                                                   |
 | ------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `--cpus N`                      | 2, at most the host CPU count | vCPUs, from 1 to the host CPU count                                                                       |
-| `--memory SIZE`                 | `1G`                          | Guest RAM in whole MiB, with an optional `K`, `M`, or `G` suffix, for example `512M` or `2G`              |
+| `--memory SIZE`                 | `1G`                          | Guest RAM, at least 1 MiB and a whole number of MiB. A bare number is bytes, so use `512M` or `2G`        |
 | `-e, --env KEY=VALUE`           | none                          | Set an env var. Repeatable                                                                                |
 | `--env-file PATH`               | none                          | Read `KEY=VALUE` lines from a file. Empty lines and lines that start with `#` are skipped. Repeatable     |
 | `-v, --volume HOST:GUEST[:ro]`  | none                          | Share a host directory at an absolute guest path. `:ro` makes it read-only. Repeatable                    |
@@ -99,7 +99,7 @@ The other commands exit 0 on success, 1 on failure, and 2 on a usage error. `sbx
 
 - stdout carries only workload output (`run`) or the command result (`doctor`, `doctor --json`, `doctor apparmor-profile`).
 - stderr carries logs, progress, warnings, and errors.
-- `run` prints nothing of its own on success unless `--debug` is set. With `--debug`, each published port is logged, for example `published 127.0.0.1:8080 -> 80/tcp`.
+- On success, `run` prints only the pull progress (see below) and warnings, such as `dropped image env "KEY=VALUE": REASON` for an image env entry that it cannot pass to the guest. With `--debug`, each published port is logged too, for example `published 127.0.0.1:8080 -> 80/tcp`.
 - Progress shows only when stderr is a terminal and `-q` is not set: one line, `Pulling IMAGE: layer N/M, X MB`, redrawn in place and cleared when the pull ends.
 - Output has no ANSI escape codes when stdout is not a terminal, when `NO_COLOR` is set and not empty, or with `--no-color`.
 - Help and errors never wait for the terminal to answer color queries.
