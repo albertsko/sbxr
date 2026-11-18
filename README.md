@@ -57,8 +57,8 @@ mise trust && mise install
 mise run deps        # vendor Go modules
 mise run build       # bin/sbxr
 mise run test        # unit tests and fake VM scenarios, no hypervisor needed
-mise run test:hv     # scenarios against a real VM, skipped without a hypervisor
-mise run test:kind   # Kubernetes in kind (Linux with KVM and Docker)
+mise run test:vm     # scenarios against a real VM, skipped without a hypervisor
+mise run test:kube   # Kubernetes in kind (Linux with KVM and Docker)
 mise run ci          # everything CI runs
 ```
 

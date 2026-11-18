@@ -20,7 +20,9 @@
 - `cmd/` has one directory per binary. `cmd/sbxr/entitlements.plist` holds the macOS hypervisor entitlement, and the release archive carries it at its root.
 - `internal/` holds all Go packages.
 - `internal/kube/` holds all Kubernetes code: `installer`, `shim`, `agent`, `podnet`, `podvm`, and `subid`. Nothing outside `internal/kube/` may import it.
-- `internal/testbin/` holds test-only binaries, such as the fake CLI. Tests build them themselves.
+- `internal/sbxrmain/` holds the startup that `cmd/sbxr` and the fake CLI share.
+- `internal/testbin/` holds test-only binaries, such as the fake CLI `internal/testbin/sbxr-fake`. Tests build them themselves.
+- `internal/testenv/` holds the test helper `SkipOrFailf` and the layout test that checks the target file names, build tags, and test names.
 - Tests run against three targets: `fake` (no build tag, `mise run test`), `vm` (build tag `vm`, `mise run test:vm`, test names start with `TestVM`), and `kube` (build tag `kube`, `mise run test:kube`, test names start with `TestKube`).
 - The hosts are `darwin` and `linux`. Lint covers both GOOS values.
 - `SBXR_TEST_REQUIRE=1` makes a `vm` or `kube` test fail instead of skip when its environment is missing. CI sets it.

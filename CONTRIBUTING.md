@@ -1,6 +1,6 @@
 # Contributing
 
-[AGENTS.md](AGENTS.md) has the repository rules for tasks, commits, and releases. Run `mise run ci` before you consider a change complete.
+[AGENTS.md](AGENTS.md) has the repository rules for tasks, commits, and releases, and the project layout. Run `mise run ci` before you consider a change complete.
 
 ## Setup on macOS
 
