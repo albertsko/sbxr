@@ -32,7 +32,7 @@ import (
 
 var (
 	bin string
-	// releaseBin is the build without the sbxrfake tag.
+	// releaseBin is the release build of cmd/sbxr, and bin is the fake build.
 	releaseBin string
 	// busybox is the reference of the scenario busybox image in a registry in this process.
 	busybox string
@@ -53,7 +53,7 @@ func buildAndRun(m *testing.M) int {
 
 	bin = filepath.Join(dir, "sbxr")
 
-	err = scenario.Build(context.Background(), bin, "sbxrfake")
+	err = scenario.Build(context.Background(), bin, scenario.FakePkg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 
@@ -62,7 +62,7 @@ func buildAndRun(m *testing.M) int {
 
 	releaseBin = filepath.Join(dir, "sbxr-release")
 
-	err = scenario.Build(context.Background(), releaseBin)
+	err = scenario.Build(context.Background(), releaseBin, scenario.ReleasePkg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 

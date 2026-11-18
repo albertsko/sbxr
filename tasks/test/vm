@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Run the vm target tests against a real libkrun VM. Skips without a hypervisor unless SBXR_TEST_REQUIRE=1"
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
+
+# The libkrun tests boot their own guest. The scenario tests run the sbxr binary, SBXR_BIN when set.
+exec go test -tags vm -count=1 -timeout 10m -parallel 4 -exec "$PWD/scripts/gotest-exec.sh" \
+	-run '^TestVM' ./internal/scenario ./internal/vm/libkrun "$@"

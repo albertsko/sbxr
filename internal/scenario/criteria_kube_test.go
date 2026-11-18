@@ -1,4 +1,4 @@
-//go:build kind
+//go:build kube
 
 package scenario_test
 
@@ -27,6 +27,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
 	"github.com/albertsko/sbxr/internal/scenario"
+	"github.com/albertsko/sbxr/internal/testenv"
 )
 
 // agent-sandbox release manifest and its SHA-256.
@@ -35,13 +36,13 @@ const (
 	agentSandboxSHA256 = "4c54dc1284e9d34e9a00b88de2cb0f098f2dbce4ade814616fd49d44cfd5d1c2"
 )
 
-// TestKind runs the scenarios for the k8s target capabilities and the Kubernetes criteria in a kind cluster.
+// TestKubeCriteria runs the scenarios for the kube target capabilities and the Kubernetes criteria in a kind cluster.
 // scripts/kind-up.sh creates or reuses the cluster and installs sbxr. The last subtests uninstall it.
-func TestKind(t *testing.T) {
+func TestKubeCriteria(t *testing.T) {
 	t.Parallel()
 
 	if runtime.GOOS != "linux" {
-		t.Skip("kind with KVM needs Linux")
+		testenv.SkipOrFailf(t, "kind with KVM needs Linux")
 	}
 
 	scenario.RequireHypervisor(t)
@@ -60,7 +61,7 @@ func TestKind(t *testing.T) {
 	}
 
 	images := kindImages(t, cluster)
-	k := &kind{t: t, K8s: &scenario.K8s{Context: "kind-" + cluster, Node: cluster + "-control-plane", Namespace: "sbxr-test", Images: images}}
+	k := &kind{t: t, Kube: &scenario.Kube{Context: "kind-" + cluster, Node: cluster + "-control-plane", Namespace: "sbxr-test", Images: images}}
 	k.image = k.run("", "-n", "sbxr-system", "get", "ds", "sbxr-node", "-o", "jsonpath={.spec.template.spec.containers[0].image}")
 
 	tests := map[string]func(*testing.T, *kind){
@@ -81,7 +82,7 @@ func TestKind(t *testing.T) {
 			t.Parallel()
 
 			scenario.RunAll(t, func(*testing.T) scenario.Target {
-				return &scenario.K8s{Context: k.Context, Node: k.Node, Namespace: k.Namespace, Images: images}
+				return &scenario.Kube{Context: k.Context, Node: k.Node, Namespace: k.Namespace, Images: images}
 			})
 		})
 
@@ -102,7 +103,7 @@ func TestKind(t *testing.T) {
 
 // kind wraps the target with test helpers that fail t.
 type kind struct {
-	*scenario.K8s
+	*scenario.Kube
 
 	t     *testing.T
 	image string // The installer image.
@@ -111,7 +112,7 @@ type kind struct {
 func (k *kind) with(t *testing.T) *kind {
 	t.Helper()
 
-	return &kind{K8s: k.K8s, t: t, image: k.image}
+	return &kind{Kube: k.Kube, t: t, image: k.image}
 }
 
 // run runs kubectl and returns its trimmed output.

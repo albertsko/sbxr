@@ -118,7 +118,7 @@ kind create cluster --config kind.yaml
 sudo chmod 666 /dev/kvm
 ```
 
-`mise run test:kind` creates the cluster, builds the installer image, and runs the tests.
+`mise run test:kube` creates the cluster, builds the installer image, and runs the tests.
 
 ## Contract
 

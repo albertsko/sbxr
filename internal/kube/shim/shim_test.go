@@ -230,9 +230,9 @@ func TestOpenBundle(t *testing.T) {
 	}
 }
 
-// TestVMCommandRunsThePinnedBinary replaces the bundle between pinning and exec, as an upgrade can.
+// TestPodVMCommandRunsThePinnedBinary replaces the bundle between pinning and exec, as an upgrade can.
 // The VM process still runs the binary of the pinned bundle.
-func TestVMCommandRunsThePinnedBinary(t *testing.T) {
+func TestPodVMCommandRunsThePinnedBinary(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()

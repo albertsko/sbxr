@@ -1,14 +1,13 @@
 package scenario
 
 import (
-	"os"
 	"testing"
 
 	"github.com/albertsko/sbxr/internal/preflight"
+	"github.com/albertsko/sbxr/internal/testenv"
 )
 
-// RequireHypervisor skips t when the `hypervisor` doctor check fails.
-// With SBXR_REQUIRE_HV=1, it fails t instead, so that CI never skips VM tests silently.
+// RequireHypervisor skips t when the `hypervisor` doctor check fails, or fails t when SBXR_TEST_REQUIRE=1.
 func RequireHypervisor(t *testing.T) {
 	t.Helper()
 
@@ -17,9 +16,5 @@ func RequireHypervisor(t *testing.T) {
 		return
 	}
 
-	if os.Getenv("SBXR_REQUIRE_HV") == "1" {
-		t.Fatalf("no hypervisor, and SBXR_REQUIRE_HV=1 requires one: %s", res.Detail)
-	}
-
-	t.Skipf("no hypervisor: %s", res.Detail)
+	testenv.SkipOrFailf(t, "no hypervisor: %s", res.Detail)
 }

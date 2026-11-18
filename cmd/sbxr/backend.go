@@ -1,5 +1,3 @@
-//go:build !sbxrfake
-
 package main
 
 import (

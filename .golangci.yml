@@ -4,7 +4,7 @@
 version: "2"
 
 run:
-  build-tags: [hv, kind]
+  build-tags: [vm, kube]
 
 issues:
   max-issues-per-linter: 0
@@ -116,6 +116,21 @@ linters:
           deny:
             - pkg: github.com/albertsko/sbxr/internal/kube
               desc: only cmd and internal/kube may import the Kubernetes code
+        product:
+          files:
+            - "**/cmd/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/albertsko/sbxr/internal/vm/fake
+              desc: shipped binaries do not contain the fake hypervisor, see internal/testbin/sbxr-fake
+            - pkg: github.com/albertsko/sbxr/internal/netstack/guestsim
+              desc: shipped binaries do not contain the simulated guest network
+            - pkg: github.com/albertsko/sbxr/internal/scenario
+              desc: shipped binaries do not contain test targets
+            - pkg: github.com/albertsko/sbxr/internal/testbin
+              desc: shipped binaries do not import test-only binaries
+            - pkg: github.com/albertsko/sbxr/internal/testenv
+              desc: shipped binaries do not contain test helpers
 
     dupl:
       threshold: 200

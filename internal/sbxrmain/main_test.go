@@ -1,4 +1,4 @@
-package main
+package sbxrmain
 
 import (
 	"runtime/debug"

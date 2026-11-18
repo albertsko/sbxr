@@ -22,10 +22,10 @@ codesign --entitlements entitlements.plist --force -s - ./bin/sbxr
 
 Do not add `--options runtime`. Hardened runtime removes the `DYLD_*` variables at launch, and then `libkrun` cannot find `libkrunfw`. For the same reason, do not start `sbxr` through a protected system binary such as `/usr/bin/env` or `/usr/bin/time`.
 
-`scripts/gotest-exec.sh` signs a test binary and then runs it. `mise run test:hv` uses it. Pass it as an absolute path, because `go test` runs the `-exec` program from the package directory:
+`scripts/gotest-exec.sh` signs a test binary and then runs it. `mise run test:vm` uses it. Pass it as an absolute path, because `go test` runs the `-exec` program from the package directory:
 
 ```sh
-go test -tags hv -exec "$PWD/scripts/gotest-exec.sh" -count=1 ./internal/vm/libkrun/...
+go test -tags vm -exec "$PWD/scripts/gotest-exec.sh" -count=1 -run '^TestVM' ./internal/vm/libkrun/...
 ```
 
 ## Setup on Linux
@@ -34,7 +34,7 @@ x86_64 or arm64 with KVM:
 
 - Add your user to the `kvm` group, then log in again. `newgidmap` maps only the primary group from `/etc/passwd`, so `sg kvm` or `newgrp` makes the `userns` check fail.
 - Install `uidmap`, and check that your user has a range in `/etc/subuid` and `/etc/subgid`.
-- On Ubuntu 23.10 and later, install the binary as `/usr/local/bin/sbxr` and the AppArmor profile (see `sbxr doctor`). Then run the real VM tests against that binary: `SBXR_BIN=/usr/local/bin/sbxr mise run test:hv`.
+- On Ubuntu 23.10 and later, install the binary as `/usr/local/bin/sbxr` and the AppArmor profile (see `sbxr doctor`). Then run the real VM tests against that binary: `SBXR_BIN=/usr/local/bin/sbxr mise run test:vm`.
 - In a Linux VM that shares the checkout with a Mac (for example Lima), do not run `mise run build`, because it overwrites the Mac's `bin/sbxr`. Build to a private path instead: `CGO_ENABLED=0 go build -o /tmp/sbxr ./cmd/sbxr && sudo install -m 755 /tmp/sbxr /usr/local/bin/sbxr`.
 - Install `libkrun` and `libkrunfw` with Homebrew on Linux, or build `libkrun` from source with network support and use the `libkrunfw` release tarball:
 
@@ -53,18 +53,28 @@ x86_64 or arm64 with KVM:
 
   `sbxr` searches `/usr/local/lib` by default. Set `SBXR_LIB_DIR` only when both libraries are in another directory.
 
+## Targets and hosts
+
+A test runs against one target: `fake` (no hypervisor), `vm` (a real libkrun VM), or `kube` (Kubernetes in a kind cluster). The host is `darwin` or `linux`.
+
+1. Put host-specific code in `_darwin.go` or `_linux.go` files, or behind a `GOOS` build constraint. Do not invent build tags for hosts.
+2. Write a `fake` test as a plain `_test.go` file without a build tag. `mise run test` runs it everywhere.
+3. Put a `vm` test in `<topic>_vm_test.go` with `//go:build vm`, and name it `TestVM...`. `mise run test:vm` runs only `^TestVM`.
+4. Put a `kube` test in `<topic>_kube_test.go` with `//go:build kube`, and name it `TestKube...`. `mise run test:kube` runs only `^TestKube`.
+5. When the environment of a `vm` or `kube` test is missing, call `testenv.SkipOrFailf`. It skips, or fails when `SBXR_TEST_REQUIRE=1`. `internal/testenv` checks rules 3 and 4.
+
 ## Tests
 
 | Command                | Runs                                                       | Needs                                 |
 | ---------------------- | ---------------------------------------------------------- | ------------------------------------- |
 | `mise run test`        | Unit tests and the scenarios against the fake VM           | Nothing: no hypervisor, no network    |
-| `mise run test:hv`     | The scenarios and the `libkrun` tests against real VMs     | A hypervisor and a signed binary      |
-| `mise run test:kind`   | The scenarios and the Kubernetes tests in a kind cluster   | Linux with KVM, Docker, kind, kubectl |
+| `mise run test:vm`     | The scenarios and the `libkrun` tests against real VMs     | A hypervisor and a signed binary      |
+| `mise run test:kube`   | The scenarios and the Kubernetes tests in a kind cluster   | Linux with KVM, Docker, kind, kubectl |
 | `mise run fuzz [TIME]` | Fuzzing of the config writer against the guest init parser | Nothing. Default duration `1m`        |
 
-- `test:hv` and `test:kind` skip with exit 0 when no hypervisor exists. With `SBXR_REQUIRE_HV=1`, they fail instead. CI sets this variable.
-- `test:hv` and `test:kind` run with `-count=1`, because Go's test cache does not notice changes to the built binary or to `libkrun`.
-- `test:kind` creates the kind cluster `sbxr` from [kind.yaml](kind.yaml), or reuses the cluster named by `SBXR_KIND_CLUSTER`. It builds the installer image unless `SBXR_NODE_IMAGE` names one. The first image build compiles `libkrun` and takes several minutes.
+- `test:vm` and `test:kube` skip with exit 0 when their environment is missing: no hypervisor, or for `test:kube` no Linux. With `SBXR_TEST_REQUIRE=1`, they fail instead. CI sets this variable.
+- `test:vm` and `test:kube` run with `-count=1`, because Go's test cache does not notice changes to the built binary or to `libkrun`.
+- `test:kube` creates the kind cluster `sbxr` from [kind.yaml](kind.yaml), or reuses the cluster named by `SBXR_KIND_CLUSTER`. It builds the installer image unless `SBXR_NODE_IMAGE` names one. The first image build compiles `libkrun` and takes several minutes.
 - kind resets the `/dev/kvm` permissions when it creates a cluster. Run `sudo chmod 666 /dev/kvm` after `kind create cluster`.
 - `mise run build` runs `go generate ./internal/guestmount`, which builds the guest mount helper that `-v` needs. A bare `go build` embeds whatever helper is on disk, and without one `-v` fails with exit code 125.
 - CI shuffles and parallelizes tests. Publish tests must bind port 0, and cleanup checks must look only at the test's own run directory and processes.

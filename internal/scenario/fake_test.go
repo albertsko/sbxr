@@ -27,7 +27,7 @@ func buildAndRun(m *testing.M) int {
 
 	fakeBin = filepath.Join(dir, "sbxr")
 
-	err = scenario.Build(context.Background(), fakeBin, "sbxrfake")
+	err = scenario.Build(context.Background(), fakeBin, scenario.FakePkg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 

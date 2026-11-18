@@ -1,4 +1,4 @@
-//go:build hv && (darwin || linux)
+//go:build vm && (darwin || linux)
 
 package libkrun
 

@@ -1,4 +1,4 @@
-//go:build hv
+//go:build vm
 
 package scenario_test
 
@@ -34,8 +34,8 @@ const hvBase = "mirror.gcr.io/library/busybox:1.37.0"
 // hvFlags keep many parallel VMs small.
 var hvFlags = []string{"--cpus", "1", "--memory", "256M"}
 
-// TestHVCLITarget runs the scenarios against the release build of sbxr with a real VM.
-func TestHVCLITarget(t *testing.T) {
+// TestVMTarget runs the scenarios against the release build of sbxr with a real VM.
+func TestVMTarget(t *testing.T) {
 	t.Parallel()
 
 	bin := hvBinary(t)
@@ -58,7 +58,7 @@ func TestHVCLITarget(t *testing.T) {
 	})
 }
 
-func TestHVDoctorPasses(t *testing.T) {
+func TestVMDoctorPasses(t *testing.T) {
 	t.Parallel()
 
 	bin := hvBinary(t)
@@ -78,7 +78,7 @@ func TestHVDoctorPasses(t *testing.T) {
 	}
 }
 
-func TestHVFailedPreflightStartsNoVM(t *testing.T) {
+func TestVMFailedPreflightStartsNoVM(t *testing.T) {
 	t.Parallel()
 
 	bin := hvBinary(t)
@@ -104,8 +104,8 @@ func TestHVFailedPreflightStartsNoVM(t *testing.T) {
 	}
 }
 
-// TestHVAppArmorNeedsInstallPath checks the userns fix for a binary outside the profile paths.
-func TestHVAppArmorNeedsInstallPath(t *testing.T) {
+// TestVMAppArmorNeedsInstallPath checks the userns fix for a binary outside the profile paths.
+func TestVMAppArmorNeedsInstallPath(t *testing.T) {
 	t.Parallel()
 
 	data, err := os.ReadFile("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
@@ -115,7 +115,7 @@ func TestHVAppArmorNeedsInstallPath(t *testing.T) {
 
 	bin := filepath.Join(t.TempDir(), "sbxr")
 
-	err = scenario.Build(t.Context(), bin)
+	err = scenario.Build(t.Context(), bin, scenario.ReleasePkg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,9 +129,9 @@ func TestHVAppArmorNeedsInstallPath(t *testing.T) {
 	}
 }
 
-// TestHVStderrOnTerminalWithPipedStdout checks that each guest stream reaches its own host stream
+// TestVMStderrOnTerminalWithPipedStdout checks that each guest stream reaches its own host stream
 // when only stderr is a terminal.
-func TestHVStderrOnTerminalWithPipedStdout(t *testing.T) {
+func TestVMStderrOnTerminalWithPipedStdout(t *testing.T) {
 	t.Parallel()
 
 	bin := hvBinary(t)
@@ -170,9 +170,9 @@ func TestHVStderrOnTerminalWithPipedStdout(t *testing.T) {
 	}
 }
 
-// TestHVInteractiveShell types into an interactive shell on a terminal and resizes the terminal.
+// TestVMInteractiveShell types into an interactive shell on a terminal and resizes the terminal.
 // libkrun 1.19.8 forwards terminal resizes to the guest only on Linux.
-func TestHVInteractiveShell(t *testing.T) {
+func TestVMInteractiveShell(t *testing.T) {
 	t.Parallel()
 
 	bin := hvBinary(t)
@@ -387,7 +387,7 @@ func hvBinary(t *testing.T) string {
 		}
 
 		hvBin = filepath.Join(dir, "sbxr")
-		errHVBin = scenario.Build(context.Background(), hvBin)
+		errHVBin = scenario.Build(context.Background(), hvBin, scenario.ReleasePkg)
 
 		if errHVBin == nil && runtime.GOOS == "darwin" {
 			out, err := exec.CommandContext(context.Background(), "codesign", "--force", "--sign", "-", "--entitlements", "../../entitlements.plist", hvBin).CombinedOutput()
@@ -433,9 +433,9 @@ func hvImages(t *testing.T) map[string]string {
 	return hvRefs
 }
 
-// TestHVVolumeSymlinksCannotEscape mounts a volume through symlinks in an earlier volume that lead to a reserved path,
+// TestVMVolumeSymlinksCannotEscape mounts a volume through symlinks in an earlier volume that lead to a reserved path,
 // the guest root, or through a file.
-func TestHVVolumeSymlinksCannotEscape(t *testing.T) {
+func TestVMVolumeSymlinksCannotEscape(t *testing.T) {
 	t.Parallel()
 
 	bin := hvBinary(t)

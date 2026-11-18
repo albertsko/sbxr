@@ -1,5 +1,7 @@
-//go:build sbxrfake
-
+// Command sbxr-fake is sbxr with the fake hypervisor. Only tests build it.
+//
+// It keeps image ownership in xattrs on every platform,
+// and runs preflight checks that fail only when listed in SBXR_FAKE_PREFLIGHT_FAIL.
 package main
 
 import (
@@ -8,12 +10,15 @@ import (
 	"github.com/albertsko/sbxr/internal/cli"
 	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/preflight"
+	"github.com/albertsko/sbxr/internal/sbxrmain"
 	"github.com/albertsko/sbxr/internal/vm"
 	"github.com/albertsko/sbxr/internal/vm/fake"
 )
 
-// This build runs workloads with the fake hypervisor, keeps image ownership in xattrs on every platform,
-// and runs preflight checks that fail only when listed in SBXR_FAKE_PREFLIGHT_FAIL.
+func init() { sbxrmain.LockMainThread() }
+
+func main() { os.Exit(sbxrmain.Main("dev", hypervisor, backend)) }
+
 func hypervisor() vm.Hypervisor { return fake.Hypervisor{} }
 
 func backend() cli.Backend {

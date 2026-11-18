@@ -1,5 +1,3 @@
-//go:build kind
-
 package scenario
 
 import (
@@ -16,8 +14,8 @@ import (
 	"time"
 )
 
-// K8s is the k8s target. It runs each workload as a pod with runtimeClassName sbxr in a kind cluster.
-type K8s struct {
+// Kube is the kube target. It runs each workload as a pod with runtimeClassName sbxr in a kind cluster.
+type Kube struct {
 	// Context is the kubectl context of the cluster.
 	Context string
 	// Node is the kind node container, where the cleanup check looks for VM processes.
@@ -30,15 +28,15 @@ type K8s struct {
 	pods map[string]string // Pod name to UID.
 }
 
-// Capabilities returns the capabilities of the k8s target.
-func (k *K8s) Capabilities() []Capability {
+// Capabilities returns the capabilities of the kube target.
+func (k *Kube) Capabilities() []Capability {
 	return []Capability{Net, Publish, DNS, MemoryLimit, Probes, Exec, GracefulStop}
 }
 
 // Run creates a pod for w, waits until it ends or cannot start, and deletes it.
-func (k *K8s) Run(ctx context.Context, w Workload) (Result, error) {
+func (k *Kube) Run(ctx context.Context, w Workload) (Result, error) {
 	if w.Interactive || w.TTY || w.InterruptAfter != "" {
-		return Result{}, errors.New("the k8s targets have no stdin, tty, or signals")
+		return Result{}, errors.New("the kube target has no stdin, tty, or signals")
 	}
 
 	name := "s-" + strings.ToLower(rand.Text()[:10])
@@ -82,7 +80,7 @@ func (k *K8s) Run(ctx context.Context, w Workload) (Result, error) {
 }
 
 // wait polls the pod until its container terminates or fails to start.
-func (k *K8s) wait(ctx context.Context, name string) (Result, error) {
+func (k *Kube) wait(ctx context.Context, name string) (Result, error) {
 	for {
 		out, err := k.Kubectl(ctx, nil, "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.status.containerStatuses[0].state}")
 		if err != nil {
@@ -147,7 +145,7 @@ func startError(msg string) Result {
 }
 
 // CheckClean reports pods of this target that still exist and processes that remain in their cgroups on the node.
-func (k *K8s) CheckClean() error {
+func (k *Kube) CheckClean() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -193,7 +191,7 @@ func NoPodProcesses(ctx context.Context, node, uid string) error {
 }
 
 // Kubectl runs kubectl with the target's context and stdin, and returns stdout.
-func (k *K8s) Kubectl(ctx context.Context, stdin []byte, args ...string) (string, error) {
+func (k *Kube) Kubectl(ctx context.Context, stdin []byte, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "kubectl", append([]string{"--context", k.Context}, args...)...) //nolint:gosec // Test-controlled arguments.
 	cmd.Stdin = bytes.NewReader(stdin)
 
@@ -262,7 +260,7 @@ func podFor(name, image string, w Workload) (map[string]any, error) {
 
 			id, err := strconv.ParseInt(ids[i], 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("the k8s target needs numeric user ids, got %q", w.User)
+				return nil, fmt.Errorf("the kube target needs numeric user ids, got %q", w.User)
 			}
 
 			sc[key] = id

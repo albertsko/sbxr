@@ -195,7 +195,7 @@ func TestDrain(t *testing.T) {
 	})
 }
 
-func TestVMCPUs(t *testing.T) {
+func TestPodVMCPUs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -267,7 +267,7 @@ func TestBootWatchdog(t *testing.T) {
 	}
 }
 
-func TestVMConfigFailsOnTAP(t *testing.T) {
+func TestPodVMConfigFailsOnTAP(t *testing.T) {
 	t.Parallel()
 
 	if os.Geteuid() == 0 {

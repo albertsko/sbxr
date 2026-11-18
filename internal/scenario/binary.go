@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,17 +16,23 @@ import (
 	"testing"
 )
 
-// Build builds the sbxr binary into out with cgo off, like the release.
-// A build without the sbxrfake tag first generates the guest mount helper, which the release embeds.
-func Build(ctx context.Context, out string, tags ...string) error {
-	if !slices.Contains(tags, "sbxrfake") {
+// Packages of the sbxr binaries that tests build.
+const (
+	ReleasePkg = "github.com/albertsko/sbxr/cmd/sbxr"
+	FakePkg    = "github.com/albertsko/sbxr/internal/testbin/sbxr-fake"
+)
+
+// Build builds the sbxr binary in pkg into out with cgo off, like the release.
+// The release build first generates the guest mount helper, which it embeds.
+func Build(ctx context.Context, out, pkg string) error {
+	if pkg == ReleasePkg {
 		gen := exec.CommandContext(ctx, "go", "generate", "github.com/albertsko/sbxr/internal/guestmount")
 		if output, err := gen.CombinedOutput(); err != nil {
 			return fmt.Errorf("generate the mount helper: %w\n%s", err, output)
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "go", "build", "-tags", strings.Join(tags, ","), "-o", out, "github.com/albertsko/sbxr/cmd/sbxr") //nolint:gosec // Tests choose the arguments.
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", out, pkg)
 
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 

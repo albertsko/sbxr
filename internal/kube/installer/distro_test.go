@@ -117,7 +117,7 @@ func TestDetect(t *testing.T) {
 	}
 }
 
-func TestKubeletRange(t *testing.T) {
+func TestReadKubeletRange(t *testing.T) {
 	t.Parallel()
 
 	const ok = "0: kubelet 65536 7208960\n"

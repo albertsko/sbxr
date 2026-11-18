@@ -1,4 +1,4 @@
-//go:build hv && (darwin || linux)
+//go:build vm && (darwin || linux)
 
 package libkrun
 
@@ -20,6 +20,7 @@ import (
 
 	"github.com/albertsko/sbxr/internal/hv"
 	"github.com/albertsko/sbxr/internal/krunconfig"
+	"github.com/albertsko/sbxr/internal/testenv"
 )
 
 // The test binary re-executes itself as the VM process when these variables are set.
@@ -109,22 +110,17 @@ func TestVM(t *testing.T) {
 	})
 }
 
-// requireVM skips the test without a usable VM setup, or fails it when SBXR_REQUIRE_HV=1.
+// requireVM skips the test without a usable VM setup, or fails it when SBXR_TEST_REQUIRE=1.
 func requireVM(t *testing.T) string {
 	t.Helper()
 
-	unusable := t.Skipf
-	if os.Getenv("SBXR_REQUIRE_HV") == "1" {
-		unusable = t.Fatalf
-	}
-
 	if err := hv.Check(); err != nil {
-		unusable("no hypervisor: %v", err)
+		testenv.SkipOrFailf(t, "no hypervisor: %v", err)
 	}
 
 	libDir, err := LibDir(os.Getenv("SBXR_LIB_DIR"))
 	if err != nil {
-		unusable("no libkrun: %v", err)
+		testenv.SkipOrFailf(t, "no libkrun: %v", err)
 	}
 
 	if runtime.GOOS == "darwin" {
@@ -134,7 +130,7 @@ func requireVM(t *testing.T) string {
 		}
 
 		if err := hv.CheckEntitlement(self); err != nil {
-			unusable("%v; run go test with -exec scripts/gotest-exec.sh", err)
+			testenv.SkipOrFailf(t, "%v; run go test with -exec scripts/gotest-exec.sh", err)
 		}
 	}
 

@@ -1,4 +1,4 @@
-//go:build kind
+//go:build kube
 
 package scenario_test
 
