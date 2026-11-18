@@ -494,8 +494,8 @@ func TestDoctorJSON(t *testing.T) {
 	}
 }
 
-// TestDoctorJSONMatchesSchema checks doctor reports against docs/doctor.schema.json,
-// and that the release build runs the checks of the PRD doctor contract in order.
+// TestDoctorJSONMatchesSchema checks doctor reports against docs/doctor.schema.json.
+// It also checks that the release build runs the doctor checks of docs/cli.md in order.
 func TestDoctorJSONMatchesSchema(t *testing.T) {
 	t.Parallel()
 

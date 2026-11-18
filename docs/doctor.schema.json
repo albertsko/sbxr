@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/albertsko/sbxr/docs/doctor.schema.json",
   "title": "sbxr doctor --json",
-  "description": "The report of sbxr doctor --json, schema version 1. See PRD \"sbxr doctor contract\".",
+  "description": "The report of sbxr doctor --json, schema version 1. See docs/cli.md, section \"sbxr doctor\".",
   "type": "object",
   "required": ["schemaVersion", "ok", "checks"],
   "additionalProperties": false,

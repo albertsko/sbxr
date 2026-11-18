@@ -1,4 +1,4 @@
-// Package scenario holds behavior scenarios that run against several targets (PRD "Test contract").
+// Package scenario holds behavior scenarios that run against several targets.
 //
 // A target is a backend such as the fake VM, the real CLI, or a Kubernetes cluster.
 // Each target declares its capabilities, and each scenario runs only on targets that have the ones it needs.
@@ -17,7 +17,7 @@ import (
 // Capability is a feature that a target may support.
 type Capability string
 
-// Capabilities from the PRD.
+// Capabilities that scenarios can require.
 const (
 	Stdin        Capability = "stdin"
 	TTY          Capability = "tty"
@@ -36,14 +36,14 @@ const (
 	SpecValidation Capability = "spec-validation"
 	// ExactConfig means that the workload sees the image config and the run flags and nothing that the platform adds.
 	ExactConfig Capability = "exact-config"
-	// EgressGuard means that Net and AllowLAN select the egress policy of PRD "Networking (CLI)", and that the host resolver answers DNS.
+	// EgressGuard means that Net and AllowLAN select the CLI egress policy (docs/cli.md, section "Egress policy"), and that the host resolver answers DNS.
 	EgressGuard Capability = "egress-guard"
 )
 
 // ErrorClass is the target-neutral outcome of a run.
 type ErrorClass string
 
-// Error classes from the PRD.
+// Error classes that every target maps its own failures to.
 const (
 	OK            ErrorClass = "ok"
 	InvalidSpec   ErrorClass = "invalid-spec"

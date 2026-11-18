@@ -269,7 +269,7 @@ var (
 	reservedName     = regexp.MustCompile(`^(KRUN_.*|HOSTNAME)$`)
 )
 
-// meetsContract restates the PRD contract independently of the package code.
+// meetsContract restates the guest init config contract independently of the package code.
 func meetsContract(c Config) bool {
 	okValue := func(s string) bool { return utf8.ValidString(s) && !forbiddenControl.MatchString(s) }
 
