@@ -55,6 +55,8 @@ jobs:
         run: mise run deps
       - name: Run the unit tests and fake scenarios
         run: mise run test
+      - name: Check that the vm and kube tests skip without KVM and fail with SBXR_TEST_REQUIRE=1
+        run: scripts/ci/check-require.sh
       - name: Save the Go cache
         uses: ./.github/actions/save-go-cache
         with:
