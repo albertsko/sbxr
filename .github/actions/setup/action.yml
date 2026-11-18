@@ -1,0 +1,44 @@
+name: Set up mise and the Go cache
+description: Installs the tools from mise.toml and restores the Go build, module, and lint caches. The job checks out the repository first.
+inputs:
+  cache:
+    description: Restore the mise and Go caches. A job that publishes a release sets false, so that no cache entry can reach a release.
+    default: "true"
+  save-cache:
+    description: Save the mise cache on a push to main. The job that sets this also runs the save-go-cache action as its last step.
+    default: "false"
+outputs:
+  go-cache-paths:
+    description: The Go cache paths, one per line.
+    value: ${{ steps.go-cache.outputs.paths }}
+  go-cache-key:
+    description: The Go cache key.
+    value: ${{ steps.go-cache.outputs.key }}
+  go-cache-hit:
+    description: true when the Go cache key matched exactly.
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    # The release workflow reaches this action through CI, whose jobs only run checks, and from its publishing job, which sets cache: false and cache-mode: none.
+    # jactionlint ignore=cache-poisoning
+    - name: Install the mise tools
+      uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      with:
+        minimum_release_age: 7d
+        cache: ${{ inputs.cache == 'true' }}
+        cache_save: ${{ inputs.save-cache == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    - name: Compute the Go cache paths and key
+      if: inputs.cache == 'true'
+      id: go-cache
+      shell: bash
+      run: '"$GITHUB_WORKSPACE/scripts/ci/go-cache.sh"'
+    # jactionlint ignore=cache-poisoning
+    - name: Restore the Go cache
+      if: inputs.cache == 'true'
+      id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.go-cache.outputs.paths }}
+        key: ${{ steps.go-cache.outputs.key }}
+        restore-keys: ${{ steps.go-cache.outputs.restore-keys }}

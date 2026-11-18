@@ -67,5 +67,5 @@ x86_64 or arm64 with KVM:
 - `test:kube` runs [scripts/kind/up.sh](scripts/kind/up.sh), which creates the kind cluster `sbxr` from [scripts/kind/cluster.yaml](scripts/kind/cluster.yaml), or reuses the cluster named by `SBXR_KIND_CLUSTER`. It builds the installer image unless `SBXR_NODE_IMAGE` names one. The first image build compiles `libkrun` and takes several minutes.
 - kind resets the `/dev/kvm` permissions when it creates a cluster. Run `sudo chmod 666 /dev/kvm` after `kind create cluster`.
 - `mise run build` runs `go generate ./internal/guestmount`, which builds the guest mount helper that `-v` needs. A bare `go build` embeds whatever helper is on disk, and without one `-v` fails with exit code 125.
-- CI shuffles and parallelizes tests. Publish tests must bind port 0, and cleanup checks must look only at the test's own run directory and processes.
+- Tests run in parallel, and the nightly workflow also shuffles them. Publish tests must bind port 0, and cleanup checks must look only at the test's own run directory and processes.
 - Hosted macOS and Linux arm64 runners have no usable hypervisor, so real-VM tests on those platforms run only on a local machine or a self-hosted runner.

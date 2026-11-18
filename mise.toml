@@ -8,7 +8,7 @@ minimum_release_age = "7d"
 includes = ["tasks"]
 
 [tools]
-go = "latest"
+go = "1.27.3"
 "github:golangci/golangci-lint" = "2.15.0"
 "github:goreleaser/goreleaser" = "2.20.0"
 "github:jdx/hk" = "2.11.1"

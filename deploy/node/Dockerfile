@@ -78,6 +78,11 @@ RUN case "$(dpkg --print-architecture)" in amd64) sum=$CRUN_STATIC_SHA256_AMD64 
 FROM scratch AS bundle
 COPY --from=assemble /opt/sbxr /
 
+# libkrun and libkrunfw from the bundle, for the VM tests on a Linux host, so they test the libraries that the image ships.
+# docker buildx build -f deploy/node/Dockerfile --target libkrun --output type=local,dest=krun . (then SBXR_LIB_DIR=krun/lib)
+FROM scratch AS libkrun
+COPY --from=build /opt/sbxr/lib /lib
+
 # busybox provides nsenter, which runs host commands in the host mount namespace.
 FROM busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
 COPY --from=assemble /opt/sbxr /bundle
