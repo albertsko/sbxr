@@ -26,8 +26,11 @@ var oldTags = []string{"hv", "kind", "sbxrfake"}
 // skipDirs are directories without source files of the module.
 var skipDirs = []string{"testdata", "vendor", "bin", "dist"}
 
-// hosts are the GOOS values that the tests run on.
-var hosts = []string{"darwin", "linux"}
+// platforms are the supported GOOS and GOARCH pairs.
+var platforms = [][2]string{{"darwin", "amd64"}, {"darwin", "arm64"}, {"linux", "amd64"}, {"linux", "arm64"}}
+
+// platformTags are the build tags that the platform sets. unix is set on every supported GOOS.
+var platformTags = []string{"darwin", "linux", "amd64", "arm64", "unix"}
 
 // TestTargetFiles fails for target test files that a target task would silently not run.
 func TestTargetFiles(t *testing.T) {
@@ -88,6 +91,10 @@ func TestCheckFile(t *testing.T) {
 		{name: "vm file built without vm on unix", file: "a_vm_test.go", src: "//go:build vm || unix\n\npackage a\n", want: 1},
 		{name: "kube file built without kube with another tag", file: "a_kube_test.go", src: "//go:build kube || vm\n\npackage a\n", want: 1},
 		{name: "kube file on linux only", file: "a_kube_test.go", src: "//go:build kube && linux\n\npackage a\n", want: 0},
+		{name: "vm file built without vm on amd64", file: "a_vm_test.go", src: "//go:build vm || (amd64 && !arm64)\n\npackage a\n", want: 1},
+		{name: "vm file that needs the kube tag too", file: "a_vm_test.go", src: "//go:build vm && kube\n\npackage a\n", want: 1},
+		{name: "vm file built without vm for one other tag", file: "a_vm_test.go", src: "//go:build vm || (kube && !foo)\n\npackage a\n", want: 1},
+		{name: "vm file on no supported platform", file: "a_vm_test.go", src: "//go:build vm && windows\n\npackage a\n", want: 1},
 		{name: "vm file with an unselected test", file: "a_vm_test.go", src: "//go:build vm\n\npackage a\n\nfunc TestBoot(t *testing.T) {}\nfunc FuzzBoot(f *testing.F) {}\n", want: 2},
 		{name: "kube file with a vm test", file: "a_kube_test.go", src: "//go:build kube\n\npackage a\n\nfunc TestVMBoot(t *testing.T) {}\n", want: 2},
 		{name: "old tag", file: "a_test.go", src: "//go:build hv\n\npackage a\n", want: 1},
@@ -136,7 +143,7 @@ func checkFile(name string, src []byte) []string {
 		}
 
 		if !requires(expr, target.tag) {
-			problems = append(problems, fmt.Sprintf("%s: needs a //go:build constraint that requires the tag %q", name, target.tag))
+			problems = append(problems, fmt.Sprintf("%s: needs a //go:build constraint that requires the tag %q and builds with only that tag", name, target.tag))
 		}
 
 		for _, fn := range testFuncs(f) {
@@ -170,35 +177,42 @@ func buildConstraint(f *ast.File) constraint.Expr {
 	return nil
 }
 
-// requires reports whether expr excludes the file when tag is unset, on every host and whatever the other tags are.
+// requires reports whether expr never builds without tag, on any platform and with any other tags, and builds
+// with tag as the only other tag on at least one platform.
 func requires(expr constraint.Expr, tag string) bool {
 	if expr == nil {
 		return false
 	}
 
-	for _, goos := range hosts {
-		for _, others := range []bool{false, true} {
-			if expr.Eval(func(t string) bool { return hostTag(t, tag, goos, others) }) {
-				return false
-			}
+	var free []string
+
+	for _, t := range tags(expr) {
+		if t != tag && !slices.Contains(platformTags, t) && !slices.Contains(free, t) {
+			free = append(free, t)
 		}
 	}
 
-	return true
-}
+	builds := false
 
-// hostTag reports whether t is set when the target tag is off and the file builds for goos.
-func hostTag(t, tag, goos string, others bool) bool {
-	switch {
-	case t == tag:
-		return false
-	case t == goos || t == "unix":
-		return true
-	case slices.Contains(hosts, t):
-		return false
-	default:
-		return others
+	for _, platform := range platforms {
+		for set := range 1 << len(free) {
+			on := func(t string) bool {
+				if i := slices.Index(free, t); i >= 0 {
+					return set&(1<<i) != 0
+				}
+
+				return t == "unix" || slices.Contains(platform[:], t)
+			}
+
+			if expr.Eval(on) {
+				return false
+			}
+		}
+
+		builds = builds || expr.Eval(func(t string) bool { return t == tag || t == "unix" || slices.Contains(platform[:], t) })
 	}
+
+	return builds
 }
 
 func tags(expr constraint.Expr) []string {
