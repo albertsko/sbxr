@@ -12,8 +12,8 @@ import (
 	"github.com/albertsko/sbxr/internal/scenario"
 )
 
-// phase2Tests check the PRD "Kubernetes, phase 2" criteria.
-var phase2Tests = map[string]func(*testing.T, *kind){
+// podVMTests check the pod VM behavior: one VM per pod, exec, graceful stop, and start and boot errors.
+var podVMTests = map[string]func(*testing.T, *kind){
 	"two containers share one VM, localhost, and /dev/shm": testOneVMPerPod,
 	"the guest owns the pod IP":                            testPodIP,
 	"kubectl exec and exec probes":                         testExec,
@@ -219,7 +219,7 @@ func waitLog(k *kind, name, c, want string) {
 	k.t.Fatalf("logs of %s/%s lack %q", name, c, want)
 }
 
-// testUpgradeKeepsPods installs a changed bundle while a phase 2 pod runs. The pod's VM keeps its guest root,
+// testUpgradeKeepsPods installs a changed bundle while a pod runs. The pod's VM keeps its guest root,
 // so exec, exec probes, and graceful stop still work, and the next install removes the retired bundle.
 func testUpgradeKeepsPods(t *testing.T, k *kind) {
 	t.Helper()

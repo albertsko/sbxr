@@ -1,4 +1,4 @@
-// Package node installs and removes the phase 1 runtime on one Kubernetes node (PRD "Kubernetes contract").
+// Package node installs and removes the sbxr runtime on one Kubernetes node.
 //
 // It runs in a privileged DaemonSet pod with the host root filesystem mounted and the host PID namespace.
 // Host commands run in the host mount namespace, and the installer's own Node object holds the result.
@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -32,17 +31,17 @@ const (
 const (
 	// lockFile serializes installer pods on one node. It is never removed, so every pod locks the same inode.
 	lockFile = "/run/sbxr.lock"
-	// RuntimeRoot is the crun state directory of handler sbxr in phase 1. Each container of an sbxr pod has state there while it exists.
-	RuntimeRoot = "/run/sbxr/runc"
-	// PodsRoot holds a directory for each phase 2 pod while it exists.
-	PodsRoot = "/run/sbxr/pods"
+	// RunRoot holds the runtime state of sbxr on the host.
+	RunRoot = "/run/sbxr"
+	// PodsRoot holds a directory for each sbxr pod while it exists.
+	PodsRoot = RunRoot + "/pods"
 	// RetiredRoot holds bundles that a newer install replaced, while running VMs, shims, or crun still use them.
 	// The installer also stages each new bundle there.
 	RetiredRoot = Prefix + ".old"
 	// legacyStaged is where installers before RetiredRoot staged bundles. After an interrupted exchange it held the
 	// previous bundle.
 	legacyStaged = Prefix + ".new"
-	// ShimLink makes the phase 2 shim visible to containerd. containerd's shim sandboxer finds a shim only by its name,
+	// ShimLink makes the shim visible to containerd. containerd's shim sandboxer finds a shim only by its name,
 	// in PATH or next to the containerd binary, and ignores runtime_path.
 	ShimLink = "/usr/local/bin/containerd-shim-sbxr-v1"
 	shimPath = Prefix + "/bin/containerd-shim-sbxr-v1"
@@ -63,8 +62,6 @@ type Installer struct {
 	HostRoot string
 	// Bundle is the node bundle directory with its SHA256SUMS file.
 	Bundle string
-	// Phase selects the runtime: 1 runs crun with libkrun per container, 2 runs the sbxr shim with one VM per pod.
-	Phase int
 	// CRI returns the runtime handlers that the CRI at a socket serves.
 	CRI func(ctx context.Context, socket string) ([]string, error)
 	// Poll and Timeout bound the wait for containerd to serve handler sbxr, and for the node to report its runtime.
@@ -113,27 +110,24 @@ func (in *Installer) Install(ctx context.Context) error {
 		return err
 	}
 
-	out, err := in.Host(ctx, Prefix+"/bin/krun", "--version")
-	if err != nil || !strings.Contains(out, "+LIBKRUN") {
-		return in.reject(ctx, fmt.Sprintf("bundle: krun --version on the host: %v: %s", err, out))
+	// The shim loads libkrun and libkrunfw from the installed bundle on the host ("check" is shim.CheckArg).
+	out, err := in.Host(ctx, shimPath, "check")
+	if err != nil {
+		return in.reject(ctx, fmt.Sprintf("bundle: %s check on the host: %v: %s", shimPath, err, strings.TrimSpace(out)))
 	}
 
-	if kubelet != nil {
-		err = in.reserveIDs(*kubelet)
-		if reject, ok := errors.AsType[rejection](err); ok {
-			return in.reject(ctx, "preflight: "+reject.Error())
-		}
-
-		if err != nil {
-			return err
-		}
+	err = in.reserveIDs(kubelet)
+	if reject, ok := errors.AsType[rejection](err); ok {
+		return in.reject(ctx, "preflight: "+reject.Error())
 	}
 
-	if in.Phase == 2 {
-		err = linkShim(in.HostRoot + ShimLink)
-		if err != nil {
-			return err
-		}
+	if err != nil {
+		return err
+	}
+
+	err = linkShim(in.HostRoot + ShimLink)
+	if err != nil {
+		return err
 	}
 
 	in.removeRetired()
@@ -418,26 +412,25 @@ func (in *Installer) detect(ctx context.Context) (distro, string, error) {
 	return d, unit, nil
 }
 
-// preflight returns the distribution, its unit, and the drop-in content. A rejection error means the node is not supported.
-// It also returns the pod VM id range of phase 2 when /etc/subuid and /etc/subgid still need it.
-func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *subid.Range, error) {
+// preflight returns the distribution, its unit, the drop-in content, and the kubelet's id range.
+// A rejection error means the node is not supported.
+func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, subid.Range, error) {
 	d, unit, err := in.detect(ctx)
 	if err != nil {
-		return distro{}, "", nil, nil, err
+		return distro{}, "", nil, subid.Range{}, err
 	}
 
 	n, err := in.runtimeNode(ctx)
 	if err != nil {
-		return distro{}, "", nil, nil, err
+		return distro{}, "", nil, subid.Range{}, err
 	}
 
 	config, err := os.ReadFile(in.HostRoot + d.config)
 	if err != nil {
-		return distro{}, "", nil, nil, rejection{fmt.Errorf("read containerd config: %w", err)}
+		return distro{}, "", nil, subid.Range{}, rejection{fmt.Errorf("read containerd config: %w", err)}
 	}
 
 	_, kvmErr := in.Host(ctx, "test", "-c", "/dev/kvm")
-	_, dbusErr := in.Host(ctx, "test", "-S", "/run/dbus/system_bus_socket")
 	_, tunErr := in.Host(ctx, "test", "-c", "/dev/net/tun")
 	glibc, _ := in.Host(ctx, "getconf", "GNU_LIBC_VERSION")
 	kernel, _ := in.Host(ctx, "uname", "-r")
@@ -452,8 +445,6 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *su
 		glibc:       glibc,
 		runtime:     n.RuntimeVersion,
 		config:      string(config),
-		systemd:     runcSystemdCgroup(append([]string{string(config)}, in.imported(string(config), d)...)...),
-		dbus:        dbusErr == nil,
 		kernel:      kernel,
 		tun:         tunErr == nil,
 		subuid:      string(subuid),
@@ -464,21 +455,17 @@ func (in *Installer) preflight(ctx context.Context) (distro, string, []byte, *su
 		maxPods:     n.MaxPods,
 	}
 
-	dropIn, err := preflight(d, f, in.Phase)
+	dropIn, err := preflight(d, f)
 	if err != nil {
-		return distro{}, "", nil, nil, rejection{err}
-	}
-
-	if in.Phase != 2 {
-		return d, unit, dropIn, nil, nil
+		return distro{}, "", nil, subid.Range{}, rejection{err}
 	}
 
 	kubelet, err := podIDs(f)
 	if err != nil {
-		return distro{}, "", nil, nil, rejection{err}
+		return distro{}, "", nil, subid.Range{}, rejection{err}
 	}
 
-	return d, unit, dropIn, &kubelet, nil
+	return d, unit, dropIn, kubelet, nil
 }
 
 // hostOutput runs a host command and returns its output, or nothing when it fails.
@@ -512,27 +499,6 @@ func (in *Installer) runtimeNode(ctx context.Context) (Node, error) {
 		case <-time.After(in.Poll):
 		}
 	}
-}
-
-// imported returns the content of every file that the main config imports, in import order, except the sbxr drop-in.
-func (in *Installer) imported(config string, d distro) []string {
-	var files []string
-
-	for _, p := range importPatterns(config, d.config) {
-		matches, _ := filepath.Glob(in.HostRoot + p)
-		for _, m := range matches {
-			if m == in.HostRoot+d.dropInFile() {
-				continue
-			}
-
-			data, err := os.ReadFile(m)
-			if err == nil {
-				files = append(files, string(data))
-			}
-		}
-	}
-
-	return files
 }
 
 // restart restarts unit, checks that it is active, and clears the pending restart.

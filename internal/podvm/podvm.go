@@ -1,4 +1,4 @@
-// Package podvm holds the contract between the phase 2 shim on the host and the guest agent in the pod VM.
+// Package podvm holds the contract between the shim on the host and the guest agent in the pod VM.
 //
 // The shim writes a [Pod] into the pod share before the VM boots. The agent serves the containerd task API
 // on [ControlPort] and carries raw stdio and port-forward streams on [StreamPort]. Each stream starts with one [Header] line.

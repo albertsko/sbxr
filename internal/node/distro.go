@@ -78,8 +78,6 @@ type facts struct {
 	glibc   string // Output of "getconf GNU_LIBC_VERSION", for example "glibc 2.39".
 	runtime string // Node containerRuntimeVersion, for example "containerd://2.2.1".
 	config  string // Main containerd config.
-	systemd bool   // The node's runc runtime uses systemd cgroups.
-	dbus    bool   // The D-Bus system socket exists.
 	kernel  string // Output of "uname -r", for example "6.8.0-1015-azure".
 	tun     bool   // /dev/net/tun exists.
 	// subuid and subgid are /etc/subuid and /etc/subgid.
@@ -94,11 +92,11 @@ type facts struct {
 var (
 	minGlibc      = version{2, 35}
 	minContainerd = version{2, 2}
-	// Phase 2 mounts overlays on idmapped lower layers, which Linux supports since 5.19.
+	// Pod VMs mount overlays on idmapped lower layers, which Linux supports since 5.19.
 	minKernel = version{5, 19}
 )
 
-// podIDs returns the kubelet's id range, and checks that a range for phase 2 pod VMs fits next to it.
+// podIDs returns the kubelet's id range, and checks that a range for pod VMs fits next to it.
 //
 // Without a kubelet entry, the kubelet gives pods with user namespaces (hostUsers: false) random ids from almost the
 // whole id space, so any range could overlap them. With one, it uses only that entry, and the sbxr range stays apart.
@@ -145,8 +143,8 @@ func kubeletRange(f facts) (subid.Range, error) {
 	return uids, nil
 }
 
-// preflight returns the drop-in for d and phase, or the reason why the node is not supported.
-func preflight(d distro, f facts, phase int) ([]byte, error) {
+// preflight returns the drop-in for d, or the reason why the node is not supported.
+func preflight(d distro, f facts) ([]byte, error) {
 	if !f.kvm {
 		return nil, errors.New("/dev/kvm is missing")
 	}
@@ -170,36 +168,27 @@ func preflight(d distro, f facts, phase int) ([]byte, error) {
 		return nil, fmt.Errorf("%s does not import %s/*.toml", d.config, d.dropIn)
 	}
 
-	if phase == 2 {
-		kernel, ok := parseVersion(f.kernel)
-		if !ok || kernel.less(minKernel) {
-			return nil, fmt.Errorf("kernel %q is older than Linux %s", f.kernel, minKernel)
-		}
-
-		if !f.tun {
-			return nil, errors.New("/dev/net/tun is missing")
-		}
-
-		return renderDropIn(v, f.systemd, phase), nil
+	kernel, ok := parseVersion(f.kernel)
+	if !ok || kernel.less(minKernel) {
+		return nil, fmt.Errorf("kernel %q is older than Linux %s", f.kernel, minKernel)
 	}
 
-	if f.systemd && !f.dbus {
-		return nil, errors.New("runc uses systemd cgroups, but /run/dbus/system_bus_socket is missing: install D-Bus")
+	if !f.tun {
+		return nil, errors.New("/dev/net/tun is missing")
 	}
 
-	return renderDropIn(v, f.systemd, phase), nil
+	return renderDropIn(v), nil
 }
 
-// renderDropIn returns the drop-in for handler sbxr. Its version must match the main config.
-// Phase 1 runs crun with libkrun through the runc shim. Phase 2 uses the sbxr shim as the pod sandboxer.
-func renderDropIn(version int, systemd bool, phase int) []byte {
+// renderDropIn returns the drop-in for handler sbxr, which uses the sbxr shim as the pod sandboxer.
+// Its version must match the main config.
+func renderDropIn(version int) []byte {
 	plugin := "io.containerd.grpc.v1.cri"
 	if version == 3 {
 		plugin = "io.containerd.cri.v1.runtime"
 	}
 
-	if phase == 2 {
-		return fmt.Appendf(nil, `# Written by the sbxr installer. sbxr-uninstall.yaml removes it.
+	return fmt.Appendf(nil, `# Written by the sbxr installer. sbxr-uninstall.yaml removes it.
 version = %d
 
 [plugins.%q.containerd.runtimes.sbxr]
@@ -207,28 +196,13 @@ version = %d
   runtime_path = "%s/bin/containerd-shim-sbxr-v1"
   sandboxer = "shim"
 `, version, plugin, Prefix)
-	}
-
-	return fmt.Appendf(nil, `# Written by the sbxr installer. sbxr-uninstall.yaml removes it.
-version = %d
-
-[plugins.%q.containerd.runtimes.sbxr]
-  runtime_type = "io.containerd.runc.v2"
-
-[plugins.%q.containerd.runtimes.sbxr.options]
-  BinaryName = "%s/bin/krun"
-  Root = "%s"
-  SystemdCgroup = %t
-`, version, plugin, plugin, Prefix, RuntimeRoot, systemd)
 }
 
 var (
-	versionLine   = regexp.MustCompile(`(?m)^\s*version\s*=\s*(\d+)`)
-	importsLine   = regexp.MustCompile(`(?ms)^\s*imports\s*=\s*\[(.*?)\]`)
-	quoted        = regexp.MustCompile(`"([^"]*)"|'([^']*)'`)
-	runcOptions   = regexp.MustCompile(`^\[\s*plugins\.\s*["']io\.containerd\.(grpc\.v1\.cri|cri\.v1\.runtime)["']\s*\.containerd\.runtimes\.'?"?runc"?'?\.options\s*\]$`)
-	systemdCgroup = regexp.MustCompile(`^SystemdCgroup\s*=\s*(true|false)\b`)
-	versionInStr  = regexp.MustCompile(`(\d+)\.(\d+)`)
+	versionLine  = regexp.MustCompile(`(?m)^\s*version\s*=\s*(\d+)`)
+	importsLine  = regexp.MustCompile(`(?ms)^\s*imports\s*=\s*\[(.*?)\]`)
+	quoted       = regexp.MustCompile(`"([^"]*)"|'([^']*)'`)
+	versionInStr = regexp.MustCompile(`(\d+)\.(\d+)`)
 )
 
 // configVersion returns the top-level version of a containerd config, or 0 when it has none.
@@ -271,32 +245,6 @@ func imports(config, path, file string) bool {
 
 		return ok
 	})
-}
-
-// runcSystemdCgroup returns the SystemdCgroup option of containerd's runc runtime, which the sbxr runtime must match.
-// configs are in containerd's merge order (the main config, then each import), so the last setting wins.
-// Other runtimes and the default (false) do not count.
-func runcSystemdCgroup(configs ...string) bool {
-	systemd := false
-
-	for _, config := range configs {
-		inRunc := false
-
-		for line := range strings.Lines(config) {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "[") {
-				inRunc = runcOptions.MatchString(line)
-
-				continue
-			}
-
-			if m := systemdCgroup.FindStringSubmatch(line); inRunc && m != nil {
-				systemd = m[1] == "true"
-			}
-		}
-	}
-
-	return systemd
 }
 
 type version struct{ major, minor int }

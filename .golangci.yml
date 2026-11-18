@@ -107,9 +107,9 @@ linters:
             - pkg: k8s.io
               desc: the core has no Kubernetes code
             - pkg: github.com/containerd
-              desc: only the phase 2 adapters (internal/shim, internal/agent) may use containerd APIs
+              desc: only the Kubernetes adapters (internal/shim, internal/agent) may use containerd APIs
             - pkg: github.com/vishvananda
-              desc: only the phase 2 adapters (internal/podnet, internal/agent) may use netlink
+              desc: only the Kubernetes adapters (internal/podnet, internal/agent) may use netlink
 
     dupl:
       threshold: 200

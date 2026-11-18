@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -58,7 +57,7 @@ func (in *Installer) Uninstall(ctx context.Context) error {
 
 	err = errors.Join(os.RemoveAll(in.HostRoot+RetiredRoot), os.RemoveAll(in.HostRoot+legacyVerifyAfter),
 		os.RemoveAll(in.HostRoot+Prefix),
-		os.RemoveAll(in.HostRoot+filepath.Dir(RuntimeRoot)), unlinkShim(in.HostRoot+ShimLink), in.releaseIDs(),
+		os.RemoveAll(in.HostRoot+RunRoot), unlinkShim(in.HostRoot+ShimLink), in.releaseIDs(),
 	)
 	if err != nil {
 		return in.fail(ctx, fmt.Errorf("remove files: %w", err))
@@ -118,46 +117,16 @@ func (in *Installer) removeDropIns(ctx context.Context) error {
 	return in.restart(ctx, unit)
 }
 
-// containers lists the phase 2 pods under PodsRoot, and the containers that crun still has state for under RuntimeRoot/<namespace>/<id>.
-// This covers phase 1 pod sandboxes too, which run as normal processes.
-// Every released drop-in sets RuntimeRoot, so no sbxr container has state under containerd's default runc root.
+// containers lists the sbxr pods under PodsRoot.
 func (in *Installer) containers() ([]string, error) {
-	var ids []string
-
 	pods, err := os.ReadDir(in.HostRoot + PodsRoot)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("list sbxr pods: %w", err)
 	}
 
+	ids := make([]string, 0, len(pods))
 	for _, p := range pods {
 		ids = append(ids, p.Name())
-	}
-
-	namespaces, err := os.ReadDir(in.HostRoot + RuntimeRoot)
-	if errors.Is(err, fs.ErrNotExist) {
-		return ids, nil
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("list sbxr containers: %w", err)
-	}
-
-	for _, ns := range namespaces {
-		if !ns.IsDir() {
-			continue
-		}
-
-		entries, err := os.ReadDir(filepath.Join(in.HostRoot+RuntimeRoot, ns.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("list sbxr containers: %w", err)
-		}
-
-		for _, e := range entries {
-			// crun keeps its own .cache and .empty-directory there.
-			if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-				ids = append(ids, e.Name())
-			}
-		}
 	}
 
 	return ids, nil

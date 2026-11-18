@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Adds the phase 2 runtime to the bundle at <prefix>: the containerd shim, the guest root with the agent and a static crun,
+# Adds the runtime to the bundle at <prefix>: the containerd shim, the guest root with the agent and a static crun,
 # and the licenses of the Go modules. Then it writes SHA256SUMS for the whole bundle.
 # Usage: assemble.sh <prefix> <go-out>
 # Environment: CRUN_VERSION, CRUN_STATIC_SHA256 (of crun-<version>-linux-<arch>-disable-systemd).

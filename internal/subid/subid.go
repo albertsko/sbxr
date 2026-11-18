@@ -1,6 +1,6 @@
 // Package subid reads and chooses subordinate id ranges in the format of /etc/subuid and /etc/subgid.
 //
-// The phase 2 installer reserves the range Name for pod VMs, apart from every other range, such as the one of the
+// The installer reserves the range Name for pod VMs, apart from every other range, such as the one of the
 // kubelet user that bounds the ids of Kubernetes pods with user namespaces. The shim takes each pod's ids from it.
 package subid
 

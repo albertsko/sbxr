@@ -1,6 +1,6 @@
 //go:build linux
 
-// Package shim is containerd-shim-sbxr-v1, the phase 2 containerd runtime (PRD "Kubernetes phase 2").
+// Package shim is containerd-shim-sbxr-v1, the sbxr containerd runtime.
 //
 // containerd uses the shim as the pod sandboxer: one shim process serves the sandbox API for one pod and the task API
 // for the pod's containers. The shim starts the pod VM as a child process without host capabilities and forwards each
@@ -59,10 +59,21 @@ type flags struct {
 	debug                          bool
 }
 
-// Main runs one shim action: start, delete, the hidden serve daemon, or the hidden VM process.
+// Main runs one shim action: start, delete, the hidden serve daemon, the hidden VM process, or the hidden bundle check.
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == VMArg {
 		return RunVM(args[1:], stderr)
+	}
+
+	if len(args) == 1 && args[0] == CheckArg {
+		exe, err := executable()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "containerd-shim-sbxr-v1 check: %v\n", err)
+
+			return 1
+		}
+
+		return runCheck(exe, stdout, stderr)
 	}
 
 	var f flags

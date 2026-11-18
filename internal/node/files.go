@@ -148,9 +148,9 @@ const sumsFile = "SHA256SUMS"
 // directory and dst atomically, so the previous bundle lands in the retired directory in the same step. A failure leaves
 // dst unchanged, and a partial copy is a retired bundle that no process uses, which removeRetired deletes.
 //
-// The previous bundle must not go away while it is in use. A running phase 2 VM holds its guest root by a descriptor
+// The previous bundle must not go away while it is in use. A running VM holds its guest root by a descriptor
 // that follows renames (libkrun's virtio-fs opens the root with O_PATH and looks up every path relative to it), and its
-// agent still runs crun from that root for each exec, probe, kill, and delete. Old shims and phase 1 VMs keep their
+// agent still runs crun from that root for each exec, probe, kill, and delete. Old shims keep their
 // binaries and libraries there too. afterExchange is for tests and is nil otherwise.
 func installBundle(src, dst, retired string, afterExchange func() error) error {
 	want, err := os.ReadFile(filepath.Join(src, sumsFile))

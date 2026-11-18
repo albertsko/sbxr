@@ -1,6 +1,6 @@
 //go:build linux
 
-// Package podnet moves a pod's network to a TAP device for its VM (PRD "Kubernetes phase 2", pod networking).
+// Package podnet moves a pod's network to a TAP device for its VM.
 //
 // In the pod network namespace, [Setup] creates a TAP device owned by the VM process's uid, redirects all traffic
 // both ways between the pod interface and the TAP device, and moves the pod interface's addresses and routes to the guest.

@@ -1,4 +1,4 @@
-// Command sbxr-node installs or removes the sbxr phase 1 runtime on the node it runs on.
+// Command sbxr-node installs or removes the sbxr runtime on the node it runs on.
 package main
 
 import (

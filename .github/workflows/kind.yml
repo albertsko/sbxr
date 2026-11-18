@@ -11,18 +11,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   kind:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: kind
-            phase: "1"
-            upgrade-from: ""
-          # Phase 2 starts from phase 1, so the phase 1 criteria run after the node upgrade.
-          - name: kind-p2
-            phase: "2"
-            upgrade-from: "1"
+    name: kind
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -66,8 +55,6 @@ jobs:
         env:
           SBXR_REQUIRE_HV: "1"
           SBXR_NODE_IMAGE: sbxr-node:ci
-          SBXR_PHASE: ${{ matrix.phase }}
-          SBXR_UPGRADE_FROM: ${{ matrix.upgrade-from }}
         run: mise run test:kind -v
       - name: Diagnostics
         if: failure()
@@ -81,6 +68,6 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ matrix.name }}-logs
+          name: kind-logs
           path: kind-logs
           retention-days: 7

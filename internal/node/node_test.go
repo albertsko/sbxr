@@ -24,8 +24,8 @@ const dropInPath = "/etc/containerd/conf.d/sbxr.toml"
 
 // fakeNode is the API server and the host of one node.
 type fakeNode struct {
-	// onKrun runs when the installer checks the installed bundle, after preflight.
-	onKrun func()
+	// onBundleCheck runs when the installer checks the installed bundle, after preflight.
+	onBundleCheck func()
 
 	root string
 
@@ -50,8 +50,8 @@ type fakeNode struct {
 	nodeReads, failReadsAfter int
 	// failReady makes the patch that labels the node ready fail.
 	failReady bool
-	// krunFails makes the bundle self-test on the host fail.
-	krunFails bool
+	// bundleCheckFails makes the bundle self-test on the host fail.
+	bundleCheckFails bool
 }
 
 func (f *fakeNode) Node(context.Context) (Node, error) {
@@ -114,8 +114,6 @@ func (f *fakeNode) host(_ context.Context, args ...string) (string, error) {
 		if f.kvm {
 			return "", nil
 		}
-	case "test -S /run/dbus/system_bus_socket":
-		return "", nil
 	case "getconf GNU_LIBC_VERSION":
 		return "glibc 2.39\n", nil
 	case "uname -r":
@@ -132,13 +130,13 @@ func (f *fakeNode) host(_ context.Context, args ...string) (string, error) {
 				return fmt.Sprintf("0: kubelet %d %d\n", r.First, r.Count), nil
 			}
 		}
-	case "/opt/sbxr/bin/krun --version":
-		if f.onKrun != nil {
-			f.onKrun()
+	case "/opt/sbxr/bin/containerd-shim-sbxr-v1 check":
+		if f.onBundleCheck != nil {
+			f.onBundleCheck()
 		}
 
-		if !f.krunFails {
-			return "crun version 1.31\n+SYSTEMD +SELINUX +LIBKRUN\n", nil
+		if !f.bundleCheckFails {
+			return "libkrun ok, libkrunfw 5.6.4\n", nil
 		}
 	case "systemctl is-active containerd.service":
 		if !f.inactive {
@@ -182,21 +180,22 @@ func newFakeNode(t *testing.T) (*fakeNode, *Installer) {
 		labels:      map[string]string{},
 		annotations: map[string]string{},
 		handlers:    []string{"runc"},
-		units:       "dbus.service loaded active running D-Bus\ncontainerd.service loaded active running containerd\n",
+		units:       "containerd.service loaded active running containerd\n",
 		kvm:         true,
 		serveSbxr:   true,
 	}
 
 	write(t, f.root+"/etc/containerd/config.toml", kindConfig)
 	write(t, f.root+"/run/.keep", "")
+	write(t, f.root+"/etc/subuid", kubeletIDs)
+	write(t, f.root+"/etc/subgid", kubeletIDs)
 
 	return f, &Installer{
 		API:      f,
 		Host:     f.host,
 		CRI:      f.cri,
 		HostRoot: f.root,
-		Bundle:   newBundle(t, "crun"),
-		Phase:    1,
+		Bundle:   newBundle(t, "shim"),
 		Poll:     time.Millisecond,
 		Timeout:  50 * time.Millisecond,
 		Log:      slog.New(slog.DiscardHandler),
@@ -204,16 +203,18 @@ func newFakeNode(t *testing.T) (*fakeNode, *Installer) {
 	}
 }
 
-// newBundle writes a bundle whose crun holds the given content.
-func newBundle(t *testing.T, crun string) string {
+// kubeletIDs is a valid kubelet entry of /etc/subuid and /etc/subgid for 110 pods.
+const kubeletIDs = "kubelet:65536:7208960\n"
+
+// newBundle writes a bundle whose shim holds the given content.
+func newBundle(t *testing.T, shim string) string {
 	t.Helper()
 
 	bundle := t.TempDir()
-	write(t, bundle+"/bin/crun", crun)
+	write(t, bundle+"/bin/containerd-shim-sbxr-v1", shim)
 	write(t, bundle+"/lib/libkrun.so.1.19.8", "libkrun")
-	symlink(t, "crun", bundle+"/bin/krun")
 	symlink(t, "libkrun.so.1.19.8", bundle+"/lib/libkrun.so.1")
-	write(t, bundle+"/SHA256SUMS", sum(crun)+"  ./bin/crun\n"+sum("libkrun")+"  ./lib/libkrun.so.1.19.8\n")
+	write(t, bundle+"/SHA256SUMS", sum(shim)+"  ./bin/containerd-shim-sbxr-v1\n"+sum("libkrun")+"  ./lib/libkrun.so.1.19.8\n")
 
 	return bundle
 }
@@ -233,13 +234,13 @@ func TestInstall(t *testing.T) {
 	}
 
 	dropIn := read(t, f.root+dropInPath)
-	for _, want := range []string{"version = 2", "SystemdCgroup = true", `Root = "/run/sbxr/runc"`} {
+	for _, want := range []string{"version = 2", `runtime_type = "io.containerd.sbxr.v1"`} {
 		if !strings.Contains(dropIn, want) {
 			t.Errorf("drop-in lacks %q:\n%s", want, dropIn)
 		}
 	}
 
-	if read(t, f.root+"/opt/sbxr/bin/crun") != "crun" || read(t, f.root+"/opt/sbxr/bin/krun") != "crun" {
+	if read(t, f.root+"/opt/sbxr/bin/containerd-shim-sbxr-v1") != "shim" {
 		t.Error("bundle not installed")
 	}
 
@@ -530,7 +531,7 @@ func TestInstallBundle(t *testing.T) {
 
 	f, in := newFakeNode(t)
 	dst := f.root + Prefix
-	bundles := []string{in.Bundle, newBundle(t, "crun v2")}
+	bundles := []string{in.Bundle, newBundle(t, "shim v2")}
 
 	err := installBundle(bundles[0], dst, dst+".old", nil)
 	if err != nil {
@@ -553,7 +554,7 @@ func TestInstallBundle(t *testing.T) {
 				default:
 				}
 
-				if _, err := os.Stat(dst + "/bin/krun"); err != nil {
+				if _, err := os.Stat(dst + "/bin/containerd-shim-sbxr-v1"); err != nil {
 					missing.Add(1)
 				}
 			}
@@ -576,22 +577,22 @@ func TestInstallBundle(t *testing.T) {
 		}
 
 		if entries, _ := os.ReadDir(dst + ".old"); missing.Load() > 0 || exists(dst+".new") || len(entries) > 0 {
-			t.Errorf("krun missing %d times, files %v", missing.Load(), files(t, f.root+"/opt"))
+			t.Errorf("shim missing %d times, files %v", missing.Load(), files(t, f.root+"/opt"))
 		}
 	})
 
 	t.Run("a bad bundle leaves the installed one", func(t *testing.T) { //nolint:paralleltest // The steps share one install directory.
-		bad := newBundle(t, "crun v3")
-		write(t, bad+"/bin/crun", "tampered")
+		bad := newBundle(t, "shim v3")
+		write(t, bad+"/bin/containerd-shim-sbxr-v1", "tampered")
 
-		before := read(t, dst+"/bin/crun")
+		before := read(t, dst+"/bin/containerd-shim-sbxr-v1")
 
 		err := installBundle(bad, dst, dst+".old", nil)
-		if err == nil || !strings.Contains(err.Error(), "bin/crun has SHA-256") {
+		if err == nil || !strings.Contains(err.Error(), "bin/containerd-shim-sbxr-v1 has SHA-256") {
 			t.Fatalf("error %v, want a checksum error", err)
 		}
 
-		if entries, _ := os.ReadDir(dst + ".old"); read(t, dst+"/bin/crun") != before || len(entries) > 0 {
+		if entries, _ := os.ReadDir(dst + ".old"); read(t, dst+"/bin/containerd-shim-sbxr-v1") != before || len(entries) > 0 {
 			t.Errorf("bundle changed: %v", files(t, f.root+"/opt"))
 		}
 	})
@@ -609,7 +610,7 @@ func TestUninstall(t *testing.T) {
 
 	// A drop-in of another distribution goes too.
 	write(t, f.root+"/etc/k0s/containerd.d/sbxr.toml", "stale")
-	write(t, f.root+RuntimeRoot+"/k8s.io/.keep", "")
+	write(t, f.root+RunRoot+"/.keep", "")
 	write(t, f.root+legacyVerifyAfter, "2026-11-15T00:00:00Z\n") // From an older installer.
 
 	err = in.Uninstall(t.Context())
@@ -661,16 +662,15 @@ func TestUninstallKeepsBundleUntilSafe(t *testing.T) {
 			reason: "uninstall: restart containerd.service",
 		},
 		{
-			name: "container still exists",
+			name: "pod still exists",
 			fault: func(t *testing.T, f *fakeNode) {
 				t.Helper()
-				write(t, f.root+RuntimeRoot+"/k8s.io/0123abcd/state.json", "{}")
-				write(t, f.root+RuntimeRoot+"/k8s.io/.cache/x", "")
+				write(t, f.root+PodsRoot+"/0123abcd/vm.pid", "42")
 			},
 			fix: func(t *testing.T, f *fakeNode) {
 				t.Helper()
 
-				err := os.RemoveAll(f.root + RuntimeRoot + "/k8s.io/0123abcd")
+				err := os.RemoveAll(f.root + PodsRoot + "/0123abcd")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -697,7 +697,7 @@ func TestUninstallKeepsBundleUntilSafe(t *testing.T) {
 				t.Fatalf("error %v, annotation %q; want an error and reason %q", err, f.annotations[PreflightAnnotation], tt.reason)
 			}
 
-			if !exists(f.root+Prefix+"/bin/crun") || exists(f.root+dropInPath) {
+			if !exists(f.root+Prefix+"/bin/containerd-shim-sbxr-v1") || exists(f.root+dropInPath) {
 				t.Errorf("files %v; want the bundle and no drop-in", files(t, f.root))
 			}
 
@@ -744,8 +744,8 @@ func TestUninstallRestartsAfterFailedReinstall(t *testing.T) {
 
 			failed := f.restarts
 
-			in.Bundle = newBundle(t, "crun v2")
-			f.krunFails = true
+			in.Bundle = newBundle(t, "shim v2")
+			f.bundleCheckFails = true
 
 			if !tt.recovers {
 				f.failRestarts = 1
@@ -833,11 +833,12 @@ func sum(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-func TestInstallPhase2(t *testing.T) {
+func TestInstallReservesIDs(t *testing.T) {
 	t.Parallel()
 
 	f, in := newFakeNode(t)
-	in.Phase = 2
+	write(t, f.root+"/etc/subuid", "")
+	write(t, f.root+"/etc/subgid", "")
 
 	// Without a kubelet range, kubelet pods with user namespaces could get any id.
 	err := in.Install(t.Context())
@@ -937,13 +938,9 @@ func TestReserveIDsChoosesUnderTheLock(t *testing.T) {
 	t.Parallel()
 
 	f, in := newFakeNode(t)
-	in.Phase = 2
-
-	write(t, f.root+"/etc/subuid", "kubelet:65536:7208960\n")
-	write(t, f.root+"/etc/subgid", "kubelet:65536:7208960\n")
 
 	// After preflight chose 7274496, a user takes the ids right there.
-	f.onKrun = func() {
+	f.onBundleCheck = func() {
 		data := read(t, f.root+"/etc/subuid")
 		write(t, f.root+"/etc/subuid", data+"alice:7274496:65536\n")
 	}
@@ -1024,7 +1021,7 @@ func TestRemoveRetired(t *testing.T) {
 	}
 
 	fakeProc(t, proc, 100, "/opt/sbxr.old/a/guest", "")                                      // A VM's guest root.
-	fakeProc(t, proc, 101, "", root+"/opt/sbxr.old/b/lib/libkrun.so.1")                      // A phase 1 VM's library, seen below the host root.
+	fakeProc(t, proc, 101, "", root+"/opt/sbxr.old/b/lib/libkrun.so.1")                      // A VM's library, seen below the host root.
 	fakeProc(t, proc, 102, "/opt/sbxr.old/cc/guest", "/opt/sbxr/lib/libkrun.so.1 (deleted)") // Neither is c.
 
 	kept, err := removeRetired(retired, root, proc)
@@ -1037,7 +1034,7 @@ func TestRemoveRetired(t *testing.T) {
 	}
 }
 
-// TestUpgradeKeepsTheGuestRoot installs a new bundle while a phase 2 VM runs from the old one.
+// TestUpgradeKeepsTheGuestRoot installs a new bundle while a VM runs from the old one.
 // The old bundle stays until the VM is gone, and uninstall waits for it too.
 func TestUpgradeKeepsTheGuestRoot(t *testing.T) {
 	t.Parallel()
@@ -1050,7 +1047,7 @@ func TestUpgradeKeepsTheGuestRoot(t *testing.T) {
 
 	// The VM holds the guest root of the installed bundle. After the rename its fd shows the retired path,
 	// which the fake /proc names with the retired directory's real name below.
-	in.Bundle = newBundle(t, "crun v2")
+	in.Bundle = newBundle(t, "shim v2")
 
 	if err := in.Install(t.Context()); err != nil {
 		t.Fatal(err)
@@ -1061,10 +1058,10 @@ func TestUpgradeKeepsTheGuestRoot(t *testing.T) {
 		t.Fatalf("retired %v without a VM, want them removed", entries)
 	}
 
-	in.Bundle = newBundle(t, "crun v3")
-	old := read(t, f.root+Prefix+"/bin/crun")
+	in.Bundle = newBundle(t, "shim v3")
+	old := read(t, f.root+Prefix+"/bin/containerd-shim-sbxr-v1")
 
-	f.onKrun = func() {
+	f.onBundleCheck = func() {
 		// installBundle retired the previous bundle just before the installer checks the new one.
 		entries, _ := os.ReadDir(f.root + RetiredRoot)
 		for _, e := range entries {
@@ -1077,7 +1074,7 @@ func TestUpgradeKeepsTheGuestRoot(t *testing.T) {
 	}
 
 	entries, _ = os.ReadDir(f.root + RetiredRoot)
-	if len(entries) != 1 || read(t, f.root+RetiredRoot+"/"+entries[0].Name()+"/bin/crun") != old {
+	if len(entries) != 1 || read(t, f.root+RetiredRoot+"/"+entries[0].Name()+"/bin/containerd-shim-sbxr-v1") != old {
 		t.Fatalf("retired %v, want the previous bundle kept for the VM", entries)
 	}
 
@@ -1103,7 +1100,7 @@ func TestInstallBundleFailsAfterExchange(t *testing.T) {
 
 	root, proc := t.TempDir(), t.TempDir()
 	dst, retired := root+Prefix, root+RetiredRoot
-	v1, v2 := newBundle(t, "crun v1"), newBundle(t, "crun v2")
+	v1, v2 := newBundle(t, "shim v1"), newBundle(t, "shim v2")
 
 	if err := installBundle(v1, dst, retired, nil); err != nil {
 		t.Fatal(err)
@@ -1135,8 +1132,8 @@ func TestInstallBundleFailsAfterExchange(t *testing.T) {
 	}
 
 	for name := range kept {
-		if got := read(t, retired+"/"+name+"/bin/crun"); got != "crun v1" {
-			t.Errorf("retired crun %q, want crun v1", got)
+		if got := read(t, retired+"/"+name+"/bin/containerd-shim-sbxr-v1"); got != "shim v1" {
+			t.Errorf("retired shim %q, want shim v1", got)
 		}
 	}
 }

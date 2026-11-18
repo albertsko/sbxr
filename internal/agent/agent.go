@@ -1,6 +1,6 @@
 //go:build linux
 
-// Package agent is the sbxr guest agent, PID 1 of a phase 2 pod VM (PRD "Kubernetes phase 2").
+// Package agent is the sbxr guest agent, PID 1 of a pod VM.
 //
 // It applies the pod config, then serves the containerd task API on a vsock port and runs each container with crun.
 // The shim on the host forwards containerd's task requests here and carries stdio over a second vsock port.

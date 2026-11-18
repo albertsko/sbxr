@@ -214,7 +214,7 @@ func TestVMCPUs(t *testing.T) {
 	}
 }
 
-// TestBootWatchdog checks PRD "Kubernetes, phase 2": a VM whose guest agent does not answer, or whose VM process fails
+// TestBootWatchdog checks that a VM whose guest agent does not answer, or whose VM process fails
 // at once (for example on the TAP device), is stopped within the boot timeout, and the sandbox start reports an error.
 func TestBootWatchdog(t *testing.T) {
 	t.Parallel()

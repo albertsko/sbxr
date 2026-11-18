@@ -16,10 +16,8 @@ import (
 	"time"
 )
 
-// K8s is the k8s-p1 or k8s-p2 target. It runs each workload as a pod with runtimeClassName sbxr in a kind cluster.
+// K8s is the k8s target. It runs each workload as a pod with runtimeClassName sbxr in a kind cluster.
 type K8s struct {
-	// Phase is the installed sbxr phase, 1 or 2.
-	Phase int
 	// Context is the kubectl context of the cluster.
 	Context string
 	// Node is the kind node container, where the cleanup check looks for VM processes.
@@ -32,14 +30,9 @@ type K8s struct {
 	pods map[string]string // Pod name to UID.
 }
 
-// Capabilities returns the k8s-p1 or k8s-p2 capabilities from PRD "Test contract".
+// Capabilities returns the capabilities of the k8s target.
 func (k *K8s) Capabilities() []Capability {
-	caps := []Capability{Net, Publish, DNS, MemoryLimit, Probes}
-	if k.Phase == 2 {
-		caps = append(caps, Exec, GracefulStop)
-	}
-
-	return caps
+	return []Capability{Net, Publish, DNS, MemoryLimit, Probes, Exec, GracefulStop}
 }
 
 // Run creates a pod for w, waits until it ends or cannot start, and deletes it.
@@ -117,7 +110,7 @@ func (k *K8s) wait(ctx context.Context, name string) (Result, error) {
 
 		switch {
 		case state.Terminated != nil && state.Terminated.Reason == "StartError":
-			// Phase 2 reports a command that cannot run as a start error, like runc.
+			// A command that cannot run is a start error, as with runc.
 			return startError(state.Terminated.Message), nil
 		case state.Terminated != nil:
 			logs, err := k.Kubectl(ctx, nil, "-n", k.Namespace, "logs", name)
@@ -269,7 +262,7 @@ func podFor(name, image string, w Workload) (map[string]any, error) {
 
 			id, err := strconv.ParseInt(ids[i], 10, 64)
 			if err != nil {
-				return nil, fmt.Errorf("k8s-p1 needs numeric user ids, got %q", w.User)
+				return nil, fmt.Errorf("the k8s target needs numeric user ids, got %q", w.User)
 			}
 
 			sc[key] = id

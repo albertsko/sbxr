@@ -16,12 +16,11 @@ func TestPreflight(t *testing.T) {
 
 	containerd := distros[len(distros)-1]
 	k3s := distros[0]
-	ok := facts{kvm: true, glibc: "glibc 2.39", runtime: "containerd://2.3.4", config: kindConfig, systemd: true, dbus: true, kernel: "6.8.0-1015-azure", tun: true}
+	ok := facts{kvm: true, glibc: "glibc 2.39", runtime: "containerd://2.3.4", config: kindConfig, kernel: "6.8.0-1015-azure", tun: true}
 
 	tests := []struct {
 		name   string
 		distro distro
-		phase  int // 1 when zero.
 		change func(*facts)
 		reason string // Empty when preflight passes.
 	}{
@@ -42,12 +41,8 @@ func TestPreflight(t *testing.T) {
 		{name: "no version", distro: containerd, change: func(f *facts) { f.config = "imports = [\"/etc/containerd/conf.d/*.toml\"]" }, reason: "config version 0, want 2 or 3"},
 		{name: "no imports", distro: containerd, change: func(f *facts) { f.config = "version = 2\n" }, reason: "does not import /etc/containerd/conf.d/*.toml"},
 		{name: "other imports", distro: containerd, change: func(f *facts) { f.config = "version = 2\nimports = [\"/etc/other/*.toml\"]" }, reason: "does not import"},
-		{name: "systemd without dbus", distro: containerd, change: func(f *facts) { f.dbus = false }, reason: "install D-Bus"},
-		{name: "cgroupfs without dbus", distro: containerd, change: func(f *facts) { f.systemd, f.dbus = false, false }},
-		{name: "phase 2", distro: containerd, phase: 2, change: func(*facts) {}},
-		{name: "phase 2 without dbus", distro: containerd, phase: 2, change: func(f *facts) { f.dbus = false }},
-		{name: "phase 2 on old Linux", distro: containerd, phase: 2, change: func(f *facts) { f.kernel = "5.15.0-91-generic" }, reason: `kernel "5.15.0-91-generic" is older than Linux 5.19`},
-		{name: "phase 2 without TUN", distro: containerd, phase: 2, change: func(f *facts) { f.tun = false }, reason: "/dev/net/tun is missing"},
+		{name: "old Linux", distro: containerd, change: func(f *facts) { f.kernel = "5.15.0-91-generic" }, reason: `kernel "5.15.0-91-generic" is older than Linux 5.19`},
+		{name: "no TUN", distro: containerd, change: func(f *facts) { f.tun = false }, reason: "/dev/net/tun is missing"},
 	}
 
 	for _, tt := range tests {
@@ -57,7 +52,7 @@ func TestPreflight(t *testing.T) {
 			f := ok
 			tt.change(&f)
 
-			dropIn, err := preflight(tt.distro, f, max(tt.phase, 1))
+			dropIn, err := preflight(tt.distro, f)
 			if tt.reason == "" {
 				if err != nil {
 					t.Fatalf("preflight failed: %v", err)
@@ -80,23 +75,18 @@ func TestPreflight(t *testing.T) {
 func TestRenderDropIn(t *testing.T) {
 	t.Parallel()
 
-	phase1 := []string{`BinaryName = "/opt/sbxr/bin/krun"`, `runtime_type = "io.containerd.runc.v2"`}
-	phase2 := []string{`runtime_type = "io.containerd.sbxr.v1"`, `runtime_path = "/opt/sbxr/bin/containerd-shim-sbxr-v1"`, `sandboxer = "shim"`}
+	shim := []string{`runtime_type = "io.containerd.sbxr.v1"`, `runtime_path = "/opt/sbxr/bin/containerd-shim-sbxr-v1"`, `sandboxer = "shim"`}
 
 	tests := []struct {
 		version int
-		systemd bool
-		phase   int
 		want    []string
 	}{
-		{2, true, 1, append([]string{"version = 2", `[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr]`, "SystemdCgroup = true"}, phase1...)},
-		{3, false, 1, append([]string{"version = 3", `[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr.options]`, "SystemdCgroup = false"}, phase1...)},
-		{2, true, 2, append([]string{"version = 2", `[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr]`}, phase2...)},
-		{3, true, 2, append([]string{"version = 3", `[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr]`}, phase2...)},
+		{2, append([]string{"version = 2", `[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr]`}, shim...)},
+		{3, append([]string{"version = 3", `[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr]`}, shim...)},
 	}
 
 	for _, tt := range tests {
-		got := string(renderDropIn(tt.version, tt.systemd, tt.phase))
+		got := string(renderDropIn(tt.version))
 		for _, w := range tt.want {
 			if !strings.Contains(got, w) {
 				t.Errorf("drop-in v%d lacks %q:\n%s", tt.version, w, got)
@@ -123,36 +113,6 @@ func TestDetect(t *testing.T) {
 		_, unit, err := detect(tt.active)
 		if unit != tt.want || (err == nil) != (tt.want != "") {
 			t.Errorf("detect(%v) = %q, %v; want %q", tt.active, unit, err, tt.want)
-		}
-	}
-}
-
-func TestRuncSystemdCgroup(t *testing.T) {
-	t.Parallel()
-
-	const (
-		v2Runc   = "[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc.options]\n"
-		v3Runc   = "[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]\n"
-		v2Nvidia = "[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.nvidia.options]\n"
-	)
-
-	tests := []struct {
-		name    string
-		configs []string
-		want    bool
-	}{
-		{"kind", []string{kindConfig}, true},
-		{"v3", []string{"version = 3\n" + v3Runc + "  SystemdCgroup = true\n"}, true},
-		{"unset", []string{"version = 2\n" + v2Runc + "  BinaryName = \"runc\"\n"}, false},
-		{"other runtime only", []string{v2Runc + "  SystemdCgroup = false\n" + v2Nvidia + "  SystemdCgroup = true\n"}, false},
-		{"runc after other runtime", []string{v2Nvidia + "  SystemdCgroup = false\n" + v2Runc + "  SystemdCgroup = true\n"}, true},
-		{"import overrides main", []string{v2Runc + "  SystemdCgroup = true\n", v2Runc + "  SystemdCgroup = false\n"}, false},
-		{"import without runc keeps main", []string{v2Runc + "  SystemdCgroup = true\n", v2Nvidia + "  SystemdCgroup = false\n"}, true},
-	}
-
-	for _, tt := range tests {
-		if got := runcSystemdCgroup(tt.configs...); got != tt.want {
-			t.Errorf("%s: %t, want %t", tt.name, got, tt.want)
 		}
 	}
 }
