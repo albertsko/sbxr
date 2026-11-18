@@ -153,6 +153,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # The layer cache keeps the node bundle until a version argument in the Dockerfile changes.
+      # Only a push to main writes the layer cache. An empty cache-to skips the export.
       - name: Build the installer image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -163,7 +164,7 @@ jobs:
           provenance: false
           sbom: false
           cache-from: type=gha,scope=node-${{ runner.arch }}
-          cache-to: type=gha,mode=max,scope=node-${{ runner.arch }}
+          cache-to: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && format('type=gha,mode=max,scope=node-{0}', runner.arch) || '' }}
       - name: Vendor the Go modules
         run: mise run deps
       - name: Run the Kubernetes tests
