@@ -38,9 +38,6 @@ const (
 	// RetiredRoot holds bundles that a newer install replaced, while running VMs, shims, or crun still use them.
 	// The installer also stages each new bundle there.
 	RetiredRoot = Prefix + ".old"
-	// legacyStaged is where installers before RetiredRoot staged bundles. After an interrupted exchange it held the
-	// previous bundle.
-	legacyStaged = Prefix + ".new"
 	// ShimLink makes the shim visible to containerd. containerd's shim sandboxer finds a shim only by its name,
 	// in PATH or next to the containerd binary, and ignores runtime_path.
 	ShimLink = "/usr/local/bin/containerd-shim-sbxr-v1"
@@ -49,8 +46,6 @@ const (
 	stateDir = "/var/lib/sbxr"
 	// restartPending exists from a drop-in change until containerd restarts successfully. It holds the unit to restart.
 	restartPending = stateDir + "/restart-pending"
-	// legacyVerifyAfter is a verification cutoff of older installers, which waited for a fresh node status.
-	legacyVerifyAfter = stateDir + "/verify-after"
 )
 
 // Installer holds what Install and Uninstall need.
@@ -131,19 +126,12 @@ func (in *Installer) Install(ctx context.Context) error {
 	}
 
 	in.removeRetired()
-	_ = os.Remove(in.HostRoot + legacyVerifyAfter)
 
 	return in.configure(ctx, in.HostRoot+d.dropInFile(), unit, in.HostRoot+d.socket, dropIn)
 }
 
-// removeRetired deletes the retired bundles that no process uses any more, and the staging directory of older
-// installers, which can hold a previous bundle. A failure only delays it to the next install.
+// removeRetired deletes the retired bundles that no process uses any more. A failure only delays it to the next install.
 func (in *Installer) removeRetired() {
-	pid, err := removeUnused(in.HostRoot+legacyStaged, in.HostRoot, in.Proc)
-	if err != nil || pid != 0 {
-		in.Log.Warn("keep "+legacyStaged, "pid", pid, "error", err)
-	}
-
 	kept, err := removeRetired(in.HostRoot+RetiredRoot, in.HostRoot, in.Proc)
 	if err != nil {
 		in.Log.Warn("remove retired bundles", "error", err)

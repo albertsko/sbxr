@@ -441,14 +441,13 @@ func TestInstallAsksContainerd(t *testing.T) {
 	}
 }
 
-// TestInstallVerifiesInSeconds checks that the installer asks the distribution's containerd socket, and that a
-// verification cutoff of an older installer neither delays the install nor stays.
+// TestInstallVerifiesInSeconds checks that the installer asks the distribution's containerd socket and does not wait
+// for the node status.
 func TestInstallVerifiesInSeconds(t *testing.T) {
 	t.Parallel()
 
 	f, in := newFakeNode(t)
 	in.Timeout = time.Hour
-	write(t, f.root+legacyVerifyAfter, time.Now().Add(time.Hour).Format(time.RFC3339Nano)+"\n")
 
 	start := time.Now()
 
@@ -457,8 +456,8 @@ func TestInstallVerifiesInSeconds(t *testing.T) {
 		t.Fatalf("install: %v after %s, labels %v", err, time.Since(start), f.labels)
 	}
 
-	if exists(f.root+legacyVerifyAfter) || !slices.Contains(f.criSockets, f.root+"/run/containerd/containerd.sock") {
-		t.Errorf("verify-after left %v, CRI sockets %v", exists(f.root+legacyVerifyAfter), f.criSockets)
+	if !slices.Contains(f.criSockets, f.root+"/run/containerd/containerd.sock") {
+		t.Errorf("CRI sockets %v, want the containerd socket", f.criSockets)
 	}
 }
 
@@ -611,7 +610,6 @@ func TestUninstall(t *testing.T) {
 	// A drop-in of another distribution goes too.
 	write(t, f.root+"/etc/k0s/containerd.d/sbxr.toml", "stale")
 	write(t, f.root+RunRoot+"/.keep", "")
-	write(t, f.root+legacyVerifyAfter, "2026-11-15T00:00:00Z\n") // From an older installer.
 
 	err = in.Uninstall(t.Context())
 	if err != nil {
@@ -622,7 +620,7 @@ func TestUninstall(t *testing.T) {
 		t.Errorf("labels %v, annotations %v, restarts %d", f.labels, f.annotations, f.restarts)
 	}
 
-	for _, p := range []string{dropInPath, "/etc/k0s/containerd.d/sbxr.toml", Prefix, restartPending, legacyVerifyAfter, "/run/sbxr"} {
+	for _, p := range []string{dropInPath, "/etc/k0s/containerd.d/sbxr.toml", Prefix, restartPending, "/run/sbxr"} {
 		if exists(f.root + p) {
 			t.Errorf("%s remains", p)
 		}
@@ -1135,26 +1133,6 @@ func TestInstallBundleFailsAfterExchange(t *testing.T) {
 		if got := read(t, retired+"/"+name+"/bin/containerd-shim-sbxr-v1"); got != "shim v1" {
 			t.Errorf("retired shim %q, want shim v1", got)
 		}
-	}
-}
-
-func TestRemoveUnusedLegacyStaging(t *testing.T) {
-	t.Parallel()
-
-	root, proc := t.TempDir(), t.TempDir()
-	write(t, root+legacyStaged+"/guest/usr/bin/crun", "crun")
-	fakeProc(t, proc, 7, legacyStaged+"/guest", "")
-
-	if pid, err := removeUnused(root+legacyStaged, root, proc); err != nil || pid != 7 || !exists(root+legacyStaged+"/guest/usr/bin/crun") {
-		t.Errorf("removeUnused = %d, %v; want it kept for pid 7", pid, err)
-	}
-
-	if err := os.RemoveAll(proc + "/7"); err != nil {
-		t.Fatal(err)
-	}
-
-	if pid, err := removeUnused(root+legacyStaged, root, proc); err != nil || pid != 0 || exists(root+legacyStaged) {
-		t.Errorf("removeUnused = %d, %v; want it removed", pid, err)
 	}
 }
 

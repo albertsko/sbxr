@@ -246,24 +246,6 @@ func removeRetired(retired, hostRoot, proc string) (map[string]int, error) {
 	return kept, errors.Join(errs...)
 }
 
-// removeUnused deletes dir unless a process uses it, and returns that process.
-func removeUnused(dir, hostRoot, proc string) (int, error) {
-	if _, err := os.Lstat(dir); errors.Is(err, fs.ErrNotExist) {
-		return 0, nil
-	}
-
-	users, err := dirUsers(proc, hostRoot, []string{dir})
-	if err != nil {
-		return 0, err
-	}
-
-	if pid, ok := users[dir]; ok {
-		return pid, nil
-	}
-
-	return 0, os.RemoveAll(dir) //nolint:wrapcheck // os errors name the path.
-}
-
 // dirUsers returns, for each directory in dirs that some process uses, one such process. dirs are paths below hostRoot.
 //
 // A process uses a directory when its executable, working directory, root, an open file, or a mapped file is in it.

@@ -113,7 +113,7 @@ kubectl -n sbxr-system rollout status ds/sbxr-node
 kubectl delete -f https://github.com/albertsko/sbxr/releases/latest/download/sbxr-uninstall.yaml
 ```
 
-The first command replaces the installer with a DaemonSet that removes the label and annotation, removes the drop-in of every supported distribution, restarts containerd, and removes `/opt/sbxr` and `/opt/sbxr.old`. It also removes the shim link and the `sbxr` id range. While `sbxr` pods still exist under `/run/sbxr/pods`, a process still uses a retired bundle, or containerd cannot restart, it keeps `/opt/sbxr`, writes the reason to `sbxr.dev/preflight`, and retries. It keeps `/run/sbxr.lock`, which goes away at reboot. It removes `/var/lib/sbxr/verify-after`, which older installers left. The last command removes the RuntimeClass, the policies, and the namespace.
+The first command replaces the installer with a DaemonSet that removes the label and annotation, removes the drop-in of every supported distribution, restarts containerd, and removes `/opt/sbxr` and `/opt/sbxr.old`. It also removes the shim link and the `sbxr` id range. While `sbxr` pods still exist under `/run/sbxr/pods`, a process still uses a retired bundle, or containerd cannot restart, it keeps `/opt/sbxr`, writes the reason to `sbxr.dev/preflight`, and retries. It keeps `/run/sbxr.lock`, which goes away at reboot. The last command removes the RuntimeClass, the policies, and the namespace.
 
 ## kind
 

@@ -46,17 +46,7 @@ func (in *Installer) Uninstall(ctx context.Context) error {
 		return in.fail(ctx, fmt.Errorf("process %d still uses the retired bundle %s/%s; delete the sbxr pods on this node", pid, RetiredRoot, name))
 	}
 
-	pid, err := removeUnused(in.HostRoot+legacyStaged, in.HostRoot, in.Proc)
-	if err != nil {
-		return in.fail(ctx, err)
-	}
-
-	if pid != 0 {
-		return in.fail(ctx, fmt.Errorf("process %d still uses the bundle %s; delete the sbxr pods on this node", pid, legacyStaged))
-	}
-
-	err = errors.Join(os.RemoveAll(in.HostRoot+RetiredRoot), os.RemoveAll(in.HostRoot+legacyVerifyAfter),
-		os.RemoveAll(in.HostRoot+Prefix),
+	err = errors.Join(os.RemoveAll(in.HostRoot+RetiredRoot), os.RemoveAll(in.HostRoot+Prefix),
 		os.RemoveAll(in.HostRoot+RunRoot), unlinkShim(in.HostRoot+ShimLink), in.releaseIDs(),
 	)
 	if err != nil {
