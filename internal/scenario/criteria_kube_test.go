@@ -549,7 +549,7 @@ func httpGet(t *testing.T, url string) string {
 	return string(body)
 }
 
-// kindBase is the busybox image that the scenario images build on, as in the hv tests.
+// kindBase is the busybox image that the scenario images build on, as in the vm tests.
 const kindBase = "mirror.gcr.io/library/busybox:1.37.0"
 
 // kindImages builds the scenario images, loads them into the cluster, and returns their names there.

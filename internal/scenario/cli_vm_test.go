@@ -379,7 +379,7 @@ func hvBinary(t *testing.T) string {
 			return
 		}
 
-		dir, err := os.MkdirTemp("", "sbxr-hv-") //nolint:usetesting // The binary outlives the first test.
+		dir, err := os.MkdirTemp("", "sbxr-vm-") //nolint:usetesting // The binary outlives the first test.
 		if err != nil {
 			errHVBin = err
 
