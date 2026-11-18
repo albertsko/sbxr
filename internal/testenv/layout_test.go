@@ -3,6 +3,7 @@ package testenv_test
 import (
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/build/constraint"
 	"go/parser"
 	"go/token"
@@ -94,6 +95,8 @@ func TestCheckFile(t *testing.T) {
 		{name: "vm file built without vm on amd64", file: "a_vm_test.go", src: "//go:build vm || (amd64 && !arm64)\n\npackage a\n", want: 1},
 		{name: "vm file that needs the kube tag too", file: "a_vm_test.go", src: "//go:build vm && kube\n\npackage a\n", want: 1},
 		{name: "vm file built without vm for one other tag", file: "a_vm_test.go", src: "//go:build vm || (kube && !foo)\n\npackage a\n", want: 1},
+		{name: "vm file that never builds with the gc compiler", file: "a_vm_test.go", src: "//go:build vm && !gc\n\npackage a\n", want: 1},
+		{name: "vm file for the current Go release", file: "a_vm_test.go", src: "//go:build vm && gc && go1.21 && cgo\n\npackage a\n", want: 0},
 		{name: "vm file on no supported platform", file: "a_vm_test.go", src: "//go:build vm && windows\n\npackage a\n", want: 1},
 		{name: "vm file with an unselected test", file: "a_vm_test.go", src: "//go:build vm\n\npackage a\n\nfunc TestBoot(t *testing.T) {}\nfunc FuzzBoot(f *testing.F) {}\n", want: 2},
 		{name: "kube file with a vm test", file: "a_kube_test.go", src: "//go:build kube\n\npackage a\n\nfunc TestVMBoot(t *testing.T) {}\n", want: 2},
@@ -178,7 +181,7 @@ func buildConstraint(f *ast.File) constraint.Expr {
 }
 
 // requires reports whether expr never builds without tag, on any platform and with any other tags, and builds
-// with tag as the only other tag on at least one platform.
+// with tag and the toolchain's implicit tags on at least one platform, with or without cgo.
 func requires(expr constraint.Expr, tag string) bool {
 	if expr == nil {
 		return false
@@ -192,6 +195,7 @@ func requires(expr constraint.Expr, tag string) bool {
 		}
 	}
 
+	implicit := append([]string{build.Default.Compiler, "unix"}, build.Default.ReleaseTags...)
 	builds := false
 
 	for _, platform := range platforms {
@@ -209,7 +213,11 @@ func requires(expr constraint.Expr, tag string) bool {
 			}
 		}
 
-		builds = builds || expr.Eval(func(t string) bool { return t == tag || t == "unix" || slices.Contains(platform[:], t) })
+		for _, cgo := range []bool{false, true} {
+			builds = builds || expr.Eval(func(t string) bool {
+				return t == tag || (t == "cgo" && cgo) || slices.Contains(implicit, t) || slices.Contains(platform[:], t)
+			})
+		}
 	}
 
 	return builds
