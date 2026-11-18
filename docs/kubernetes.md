@@ -49,7 +49,7 @@ A run can record a rejection: it removes the label `sbxr.dev/ready` and writes t
 
 - Preflight, the shim check, or the id range fails: the installer records a rejection and ends without an error. A rejection after step 2 keeps the new bundle in `/opt/sbxr`.
 - containerd does not restart, its unit is not active, or it does not serve handler `sbxr` in time, and the rollback succeeds: the installer records a rejection and ends without an error.
-- The same, but the rollback fails: the installer records a rejection and ends with an error. The next run first finishes the pending containerd restart.
+- The same, but the rollback fails: the installer records a rejection and ends with an error. The next run first finishes the containerd restart, if one was left pending.
 - Writing the drop-in or the installer's restart state in `/var/lib/sbxr` fails: the installer rolls back, records a rejection, and ends with an error.
 - The pending restart from an earlier run fails: the installer records a rejection and ends with an error.
 - The final patch that sets the label and `ok` fails, although containerd serves `sbxr`: the installer keeps the drop-in, tries to record a rejection, and ends with an error.
