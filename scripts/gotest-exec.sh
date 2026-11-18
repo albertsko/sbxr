@@ -4,7 +4,7 @@
 set -euo pipefail
 
 if [[ "$(uname -s)" == Darwin ]]; then
-	entitlements="$(dirname -- "${BASH_SOURCE[0]}")/../entitlements.plist"
+	entitlements="$(dirname -- "${BASH_SOURCE[0]}")/../cmd/sbxr/entitlements.plist"
 
 	if ! out="$(codesign --force --sign - --entitlements "$entitlements" "$1" 2>&1)"; then
 		printf '%s\n' "$out" >&2

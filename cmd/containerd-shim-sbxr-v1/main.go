@@ -1,12 +1,12 @@
 //go:build linux
 
-// Command containerd-shim-sbxr-v1 is the sbxr phase 2 containerd runtime, runtime type io.containerd.sbxr.v1.
+// Command containerd-shim-sbxr-v1 is the sbxr containerd runtime, runtime type io.containerd.sbxr.v1.
 package main
 
 import (
 	"os"
 
-	"github.com/albertsko/sbxr/internal/shim"
+	"github.com/albertsko/sbxr/internal/kube/shim"
 )
 
 func main() {

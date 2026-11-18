@@ -1,8 +1,0 @@
-#!/usr/bin/env bash
-#MISE description="Run the scenarios and Kubernetes criteria against a kind cluster, phase 2 unless SBXR_PHASE=1. Skips without a hypervisor unless SBXR_REQUIRE_HV=1"
-set -euo pipefail
-
-cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
-
-# The first run builds the node bundle and the cluster, which takes longer than the test itself.
-exec go test -tags kind -count=1 -timeout 45m -run '^TestKind' ./internal/scenario "$@"

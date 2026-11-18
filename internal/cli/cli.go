@@ -21,7 +21,7 @@ import (
 	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/preflight"
 	"github.com/albertsko/sbxr/internal/run"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 )
 
 // Exit codes of commands other than run.
@@ -175,7 +175,7 @@ func (a *app) setup(cmd *cobra.Command) error {
 
 	level, err := charmlog.ParseLevel(raw)
 	if err != nil {
-		return failure(cmd, &spec.Error{Source: "SBXR_LOG_LEVEL", Value: raw, Problem: "unknown level", Fix: "use debug, info, warn, or error"})
+		return failure(cmd, &runspec.Error{Source: "SBXR_LOG_LEVEL", Value: raw, Problem: "unknown level", Fix: "use debug, info, warn, or error"})
 	}
 
 	a.level = level
@@ -242,7 +242,7 @@ func cacheDir() (string, error) {
 
 	dir, err := os.UserCacheDir()
 	if err != nil {
-		return "", &spec.Error{Source: "SBXR_CACHE_DIR", Problem: "not set, and the user cache directory is unknown", Fix: err.Error()}
+		return "", &runspec.Error{Source: "SBXR_CACHE_DIR", Problem: "not set, and the user cache directory is unknown", Fix: err.Error()}
 	}
 
 	return filepath.Join(dir, "sbxr"), nil

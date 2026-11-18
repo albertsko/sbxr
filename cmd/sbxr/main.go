@@ -3,46 +3,13 @@ package main
 
 import (
 	"os"
-	"runtime"
-	"runtime/debug"
 
-	"github.com/albertsko/sbxr/internal/cli"
-	"github.com/albertsko/sbxr/internal/vm"
+	"github.com/albertsko/sbxr/internal/sbxrmain"
 )
 
 // version is set by goreleaser through -ldflags.
 var version = "dev"
 
-func init() {
-	// The VM process keeps the hypervisor on the main thread.
-	if len(os.Args) > 1 && os.Args[1] == vm.ChildArg {
-		runtime.LockOSThread()
-	}
-}
+func init() { sbxrmain.LockMainThread() }
 
-func main() {
-	if code, done := platformMain(os.Args[1:]); done {
-		os.Exit(code)
-	}
-
-	// The VM process is a hidden mode of the same binary, dispatched before the CLI.
-	if len(os.Args) > 1 && os.Args[1] == vm.ChildArg {
-		os.Exit(vm.Child(os.Args[2:], hypervisor(), os.Stderr))
-	}
-
-	info, _ := debug.ReadBuildInfo()
-	os.Exit(cli.Main(os.Args[1:], resolveVersion(version, info), backend()))
-}
-
-// resolveVersion falls back to the module version that go install records.
-func resolveVersion(linked string, info *debug.BuildInfo) string {
-	if linked != "dev" || info == nil {
-		return linked
-	}
-
-	if info.Main.Version == "" || info.Main.Version == "(devel)" {
-		return linked
-	}
-
-	return info.Main.Version
-}
+func main() { os.Exit(sbxrmain.Main(version, hypervisor, backend)) }

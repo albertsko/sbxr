@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/albertsko/sbxr/internal/run"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 )
 
 // Store is the image store of a run.
@@ -25,7 +25,7 @@ func (s Store) Hold(ctx context.Context) (*os.File, error) {
 }
 
 // Pull returns the image for ref. The image ID is its cached root directory.
-func (s Store) Pull(ctx context.Context, ref string, policy spec.Pull) (run.Image, error) {
+func (s Store) Pull(ctx context.Context, ref string, policy runspec.Pull) (run.Image, error) {
 	img, err := s.Cache.Pull(ctx, ref, PullPolicy(policy), s.Progress)
 	if err != nil {
 		return run.Image{}, err

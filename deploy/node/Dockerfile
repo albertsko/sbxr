@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# Node installer image: the phase 1 bundle (crun with libkrun, under /bundle) and sbxr-node.
+# Node installer image: the node bundle (libkrun, libkrunfw, the shim, and the guest root, under /bundle) and sbxr-node.
 # Build from the repository root: docker build -f deploy/node/Dockerfile -t sbxr-node .
 # Bundle only: docker build -f deploy/node/Dockerfile --target bundle --output type=local,dest=out .
 # Ubuntu 22.04 sets the glibc floor (2.35) for every binary in the bundle.
@@ -22,12 +22,10 @@ ARG CRUN_VERSION=1.31
 ARG CRUN_SHA256=17d04ba159fada1f1300a36b8afe869afb38bf1bbda28da052e83bb4bee20108
 
 ENV DEBIAN_FRONTEND=noninteractive
-# The assemble stage reads the crun version for the static guest build.
+# The assemble stage reads the crun version for the static guest crun. The source tarball below provides its license texts.
 ENV CRUN_VERSION=$CRUN_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      autoconf automake build-essential ca-certificates clang curl git gperf libcap-dev \
-      libclang-dev libjson-c-dev libseccomp-dev libsystemd-dev libtool patchelf \
-      pkg-config python3 xz-utils \
+      build-essential ca-certificates clang curl git libclang-dev patchelf pkg-config xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # The Rust toolchain from the pinned official image. rustc needs only an old glibc, so it runs here.
@@ -48,10 +46,7 @@ RUN /src/fetch.sh git https://github.com/libkrun/libkrun "$LIBKRUN_VERSION" "$LI
     && make -C libkrun -j"$(nproc)" NET=1 \
     && make -C libkrun install NET=1 PREFIX=/usr/local LIBDIR_Linux=lib
 
-RUN /src/fetch.sh tar "https://github.com/containers/crun/releases/download/$CRUN_VERSION/crun-$CRUN_VERSION.tar.gz" "$CRUN_SHA256" crun 1 \
-    && cd crun \
-    && ./configure --prefix=/usr/local --with-libkrun --disable-criu \
-    && make -j"$(nproc)"
+RUN /src/fetch.sh tar "https://github.com/containers/crun/releases/download/$CRUN_VERSION/crun-$CRUN_VERSION.tar.gz" "$CRUN_SHA256" crun 1
 
 RUN case "$(uname -m)" in x86_64) sum=$LIBKRUNFW_SHA256_X86_64 ;; aarch64) sum=$LIBKRUNFW_SHA256_AARCH64 ;; esac \
     && /src/fetch.sh tar "https://github.com/libkrun/libkrunfw/releases/download/$LIBKRUNFW_VERSION/libkrunfw-$(uname -m).tgz" "$sum" fw \
@@ -60,7 +55,7 @@ RUN case "$(uname -m)" in x86_64) sum=$LIBKRUNFW_SHA256_X86_64 ;; aarch64) sum=$
 COPY deploy/node/collect.sh /src/collect.sh
 RUN /src/collect.sh /opt/sbxr
 
-# The installer, the phase 2 shim, and the guest agent: static Go programs.
+# The installer, the shim, and the guest agent: static Go programs.
 FROM golang:1.27@sha256:ec47ea3725fea0cc88f6de94919aef19f40f12fc1ec0e2d1b3426dbf15ecca04 AS go
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -82,6 +77,11 @@ RUN case "$(dpkg --print-architecture)" in amd64) sum=$CRUN_STATIC_SHA256_AMD64 
 
 FROM scratch AS bundle
 COPY --from=assemble /opt/sbxr /
+
+# libkrun and libkrunfw from the bundle, for the VM tests on a Linux host, so they test the libraries that the image ships.
+# docker buildx build -f deploy/node/Dockerfile --target libkrun --output type=local,dest=krun . (then SBXR_LIB_DIR=krun/lib)
+FROM scratch AS libkrun
+COPY --from=build /opt/sbxr/lib /lib
 
 # busybox provides nsenter, which runs host commands in the host mount namespace.
 FROM busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec

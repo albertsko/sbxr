@@ -1,7 +1,10 @@
 version: 2
 updates:
   - package-ecosystem: github-actions
-    directory: /
+    # The workflows and the composite actions.
+    directories:
+      - /
+      - /.github/actions/*
     commit-message:
       prefix: build
       include: scope

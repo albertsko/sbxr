@@ -1,0 +1,43 @@
+name: Update tools
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * *"
+permissions: {}
+concurrency:
+  group: update-tools
+  cancel-in-progress: false
+jobs:
+  update:
+    name: Update the mise tools
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Set up
+        uses: ./.github/actions/setup
+      - name: Upgrade the tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: mise run upgrade
+      - name: Run mise run ci
+        run: mise run ci
+      # This step fails while the repository setting "Allow GitHub Actions to create and approve pull requests" is off.
+      - name: Open the pull request
+        uses: peter-evans/create-pull-request@15733dbdfeedb4f7fdb73d13c6f5ac83b710fab8 # v8.1.2
+        with:
+          branch: automation/update-tools
+          delete-branch: true
+          add-paths: |
+            hk.pkl
+            mise.toml
+          commit-message: "build(tools): update mise tools"
+          title: "build(tools): update mise tools"
+          body: Updates mise tools after a seven-day release delay. Verified with `mise run ci`.

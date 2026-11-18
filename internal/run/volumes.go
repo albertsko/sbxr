@@ -11,12 +11,12 @@ import (
 
 	"github.com/albertsko/sbxr/internal/guestmount"
 	"github.com/albertsko/sbxr/internal/krunconfig"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
 // checkVolumes checks that each host path is a directory and that this build can mount volumes.
-func (r *Runner) checkVolumes(volumes []spec.Volume) error {
+func (r *Runner) checkVolumes(volumes []runspec.Volume) error {
 	if len(volumes) == 0 {
 		return nil
 	}
@@ -24,13 +24,13 @@ func (r *Runner) checkVolumes(volumes []spec.Volume) error {
 	for _, v := range volumes {
 		info, err := os.Stat(v.Host)
 		if err != nil || !info.IsDir() {
-			return &spec.Error{Source: "-v", Value: v.Host, Problem: "the host path is not a directory", Fix: "create the directory or fix the path"}
+			return &runspec.Error{Source: "-v", Value: v.Host, Problem: "the host path is not a directory", Fix: "create the directory or fix the path"}
 		}
 	}
 
 	err := r.MountHelper()
 	if errors.Is(err, guestmount.ErrMissing) {
-		return &spec.Error{Source: "-v", Problem: err.Error(), Fix: "build sbxr with mise run build"}
+		return &runspec.Error{Source: "-v", Problem: err.Error(), Fix: "build sbxr with mise run build"}
 	}
 
 	if err != nil {
@@ -42,13 +42,13 @@ func (r *Runner) checkVolumes(volumes []spec.Volume) error {
 
 // withVolumes makes the guest init run the mount helper as root before the workload.
 // The helper then applies the user, groups, and working directory of cfg. Without volumes, cfg stays unchanged.
-func withVolumes(volumes []spec.Volume, cfg krunconfig.Config) (krunconfig.Config, []vm.Volume) {
+func withVolumes(volumes []runspec.Volume, cfg krunconfig.Config) (krunconfig.Config, []vm.Volume) {
 	if len(volumes) == 0 {
 		return cfg, nil
 	}
 
 	// A volume inside another one mounts after it.
-	sorted := slices.SortedFunc(slices.Values(volumes), func(a, b spec.Volume) int { return cmp.Compare(a.Guest, b.Guest) })
+	sorted := slices.SortedFunc(slices.Values(volumes), func(a, b runspec.Volume) int { return cmp.Compare(a.Guest, b.Guest) })
 
 	mounts := make([]guestmount.Mount, 0, len(sorted))
 	devices := make([]vm.Volume, 0, len(sorted))

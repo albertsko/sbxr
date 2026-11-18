@@ -1,5 +1,3 @@
-//go:build !sbxrfake
-
 package main
 
 import "github.com/albertsko/sbxr/internal/cli"

@@ -269,7 +269,7 @@ var (
 	reservedName     = regexp.MustCompile(`^(KRUN_.*|HOSTNAME)$`)
 )
 
-// meetsContract restates the PRD contract independently of the package code.
+// meetsContract restates the guest init config contract independently of the package code.
 func meetsContract(c Config) bool {
 	okValue := func(s string) bool { return utf8.ValidString(s) && !forbiddenControl.MatchString(s) }
 
@@ -425,7 +425,7 @@ func splitList(s string) []string {
 }
 
 // FuzzMarshal checks Marshal against the guest init parser copy.
-// The seed corpus is in testdata/fuzz/FuzzMarshal. The hv tests of internal/vm/libkrun also boot it through the real guest init.
+// The seed corpus is in testdata/fuzz/FuzzMarshal. The vm tests of internal/vm/libkrun also boot it through the real guest init.
 func FuzzMarshal(f *testing.F) {
 	f.Fuzz(func(t *testing.T, uid, gid uint32, workdir, env, args string) {
 		checkMarshal(t, Config{UID: uid, GID: gid, WorkingDir: workdir, Env: splitList(env), Args: splitList(args)})

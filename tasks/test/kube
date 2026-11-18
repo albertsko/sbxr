@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Run the kube target tests in a kind cluster. Skips without Linux or a hypervisor unless SBXR_TEST_REQUIRE=1"
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
+
+# Only the packages with kube test files, so no other TestMain runs.
+# The first run builds the node bundle and the cluster, which takes longer than the test itself.
+pkgs="$(scripts/target-packages.sh kube)"
+# shellcheck disable=SC2086 # One package per word.
+exec go test -tags kube -count=1 -timeout 45m -run '^TestKube' $pkgs "$@"

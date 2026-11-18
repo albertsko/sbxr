@@ -1,0 +1,21 @@
+name: Save the Go cache
+description: Saves the Go cache that the setup action restored, only on a push to main and only when its key did not match exactly.
+inputs:
+  paths:
+    description: The go-cache-paths output of the setup action.
+    required: true
+  key:
+    description: The go-cache-key output of the setup action.
+    required: true
+  hit:
+    description: The go-cache-hit output of the setup action.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Save the Go cache
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && inputs.hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ inputs.paths }}
+        key: ${{ inputs.key }}

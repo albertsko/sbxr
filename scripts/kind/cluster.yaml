@@ -1,0 +1,13 @@
+# kind cluster for sbxr (mise run test:kube, scripts/kind/up.sh). See docs/kubernetes.md, section "kind".
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+# kind writes a version 2 containerd config, so the sbxr drop-in uses version 2 too.
+containerdConfigPatches:
+  - |-
+    imports = ["/etc/containerd/conf.d/*.toml"]
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    extraMounts:
+      - hostPath: /dev/kvm
+        containerPath: /dev/kvm

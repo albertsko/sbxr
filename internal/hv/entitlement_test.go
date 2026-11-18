@@ -72,7 +72,7 @@ func TestCheckEntitlementSignedBinary(t *testing.T) {
 	}{
 		{"unsigned", []string{"--remove-signature"}, true},
 		{"no entitlements", []string{"--force", "--sign", "-"}, true},
-		{"hypervisor entitlement", []string{"--force", "--sign", "-", "--entitlements", "../../entitlements.plist"}, false},
+		{"hypervisor entitlement", []string{"--force", "--sign", "-", "--entitlements", "../../cmd/sbxr/entitlements.plist"}, false},
 	}
 
 	for _, tt := range tests {

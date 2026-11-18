@@ -9,7 +9,7 @@ import (
 
 	"github.com/albertsko/sbxr/internal/guestmount"
 	"github.com/albertsko/sbxr/internal/krunconfig"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
@@ -17,7 +17,7 @@ func TestWithVolumes(t *testing.T) {
 	t.Parallel()
 
 	cfg := krunconfig.Config{UID: 1000, GID: 42, WorkingDir: "/a/b", Env: []string{"PATH=/bin"}, Args: []string{"sh", "-c", "pwd"}}
-	volumes := []spec.Volume{
+	volumes := []runspec.Volume{
 		{Host: "/h/ab", Guest: "/a/b", ReadOnly: false},
 		{Host: "/h/a-b", Guest: "/a-b", ReadOnly: true},
 		{Host: "/h/a", Guest: "/a", ReadOnly: false},

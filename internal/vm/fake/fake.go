@@ -2,7 +2,7 @@
 //
 // Hypervisor interprets a small busybox subset in the VM process instead of booting a VM.
 // Images serves image roots from a local directory. Checks are preflight checks with chosen results.
-// Only binaries built with the sbxrfake build tag use this package.
+// Only tests and the test-only binary internal/testbin/sbxr-fake use this package.
 package fake
 
 import (

@@ -4,14 +4,12 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
-if [[ -n "${CI:-}" ]]; then
-	# Diagnostics for a macOS CI flake that kills this task with SIGHUP: show which processes share its group.
-	# go test runs in the foreground without exec, so the trap stays, and set -e keeps its status.
-	# A SIGHUP that reaches only this task still fails it after go test ends.
-	hup=0
-	trap 'hup=1; echo "test task: SIGHUP" >&2; ps -axo pid,ppid,pgid,sess,tt,stat,etime,command >&2' HUP
-	go test -race -shuffle=on ./... "$@"
-	exit $((hup ? 129 : 0))
-fi
+uncached=(./cmd/sbxr ./internal/scenario)
+cached=()
+while IFS= read -r pkg; do
+	cached+=("$pkg")
+done < <(go list ./... | grep -v -x -e "$(go list -m)/cmd/sbxr" -e "$(go list -m)/internal/scenario")
 
-exec go test -race ./... "$@"
+go test -race "${cached[@]}" "$@"
+# These tests build the CLI in a go build subprocess, which the test cache does not track, so a cached PASS can be false.
+go test -race -count=1 "${uncached[@]}" "$@"

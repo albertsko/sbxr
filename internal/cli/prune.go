@@ -12,7 +12,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/albertsko/sbxr/internal/image"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 )
 
 const pruneName = "prune"
@@ -72,7 +72,7 @@ func (a *app) prune(cmd *cobra.Command, force bool) error {
 
 	err = store.Cache.Prune()
 	if errors.Is(err, image.ErrBusy) {
-		return &spec.Error{Source: pruneName, Problem: "a running sbxr run uses the image cache", Fix: "try again after it ends"}
+		return &runspec.Error{Source: pruneName, Problem: "a running sbxr run uses the image cache", Fix: "try again after it ends"}
 	}
 
 	return err //nolint:wrapcheck // Prune errors name the cache.
@@ -81,7 +81,7 @@ func (a *app) prune(cmd *cobra.Command, force bool) error {
 // confirm asks a yes or no question on the terminal. It fails when stdin is not a terminal.
 func confirm(cmd *cobra.Command, question string) (bool, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return false, &spec.Error{Source: pruneName, Problem: "cannot ask for confirmation, because stdin is not a terminal", Fix: "pass --force"}
+		return false, &runspec.Error{Source: pruneName, Problem: "cannot ask for confirmation, because stdin is not a terminal", Fix: "pass --force"}
 	}
 
 	_, err := io.WriteString(cmd.ErrOrStderr(), question)

@@ -10,14 +10,13 @@ concurrency:
 env:
   NODE_IMAGE: ghcr.io/${{ github.repository_owner }}/sbxr-node
 jobs:
-  check:
-    uses: ./.github/workflows/check.yml
-  # The install jobs test a snapshot of the tagged commit, so no release ships untested archives.
-  install:
-    uses: ./.github/workflows/install.yml
+  # CI runs on the tagged commit, including the install jobs on a snapshot of it, so no release ships untested archives.
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
   node-image:
-    name: node-image (${{ matrix.arch }})
-    needs: [check, install]
+    name: Node image (${{ matrix.arch }})
+    needs: ci
     strategy:
       matrix:
         include:
@@ -31,34 +30,39 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      - name: Build and push the image by digest
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: build
         with:
           context: .
           file: deploy/node/Dockerfile
           platforms: linux/${{ matrix.arch }}
           outputs: type=image,name=${{ env.NODE_IMAGE }},push-by-digest=true,name-canonical=true,push=true
-      - run: |
-          mkdir digests
-          echo "$DIGEST" >"digests/${{ matrix.arch }}"
+      - name: Write the digest
         env:
+          ARCH: ${{ matrix.arch }}
           DIGEST: ${{ steps.build.outputs.digest }}
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        run: mkdir digests && echo "$DIGEST" >"digests/$ARCH"
+      - name: Upload the digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.arch }}
           path: digests
           retention-days: 1
   node-manifests:
-    name: node-manifests
+    name: Node index and manifests
     needs: node-image
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -66,55 +70,58 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - name: Download the digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: digest-*
           path: digests
           merge-multiple: true
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # One multi-architecture index per release. The manifests pin it by digest.
       - name: Push the index and render the manifests
-        shell: bash
-        run: |
-          tag="$NODE_IMAGE:$GITHUB_REF_NAME"
-          mapfile -t refs < <(sed "s|^|$NODE_IMAGE@|" digests/*)
-          docker buildx imagetools create -t "$tag" "${refs[@]}"
-          digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)
-          scripts/node-manifests.sh "$tag@$digest" node-manifests
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        run: scripts/ci/push-node-index.sh "$NODE_IMAGE" "$GITHUB_REF_NAME" digests node-manifests
+      - name: Upload the manifests
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: node-manifests
           path: node-manifests
           retention-days: 1
   release:
-    name: release
+    name: GitHub release
     needs: node-manifests
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The job that publishes must not read a cache entry, which any workflow run could have written.
+    cache-mode: none
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - name: Download the manifests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: node-manifests
           path: node-manifests
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - name: Set up without caches
+        uses: ./.github/actions/setup
         with:
-          minimum_release_age: 7d
           cache: false
-          install_args: go github:goreleaser/goreleaser
-      - run: scripts/release.sh
+      - name: Publish the release
+        run: scripts/ci/release.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

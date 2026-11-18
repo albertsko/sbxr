@@ -12,12 +12,12 @@ import (
 	"golang.org/x/term"
 
 	"github.com/albertsko/sbxr/internal/run"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 )
 
 func (a *app) runCommand() *cobra.Command {
 	var (
-		in         spec.Input
+		in         runspec.Input
 		envFiles   []string
 		entrypoint string
 		quiet      bool
@@ -53,8 +53,8 @@ func (a *app) runCommand() *cobra.Command {
 
 	flags := cmd.Flags()
 	flags.SetInterspersed(false)
-	flags.StringVar(&in.CPUs, "cpus", "", fmt.Sprintf("Number of vCPUs (default %d, at most the host CPU count)", spec.DefaultCPUs))
-	flags.StringVar(&in.Memory, "memory", "", "Guest RAM, for example 512M or 2G (default "+spec.DefaultMemory+")")
+	flags.StringVar(&in.CPUs, "cpus", "", fmt.Sprintf("Number of vCPUs (default %d, at most the host CPU count)", runspec.DefaultCPUs))
+	flags.StringVar(&in.Memory, "memory", "", "Guest RAM, for example 512M or 2G (default "+runspec.DefaultMemory+")")
 	flags.StringArrayVarP(&in.Env, "env", "e", nil, "Set an env var KEY=VALUE")
 	flags.StringArrayVar(&envFiles, "env-file", nil, "Read env vars from a file")
 	flags.StringArrayVarP(&in.Volumes, "volume", "v", nil, "Share a host directory HOST:GUEST[:ro]")
@@ -64,7 +64,7 @@ func (a *app) runCommand() *cobra.Command {
 	flags.StringVarP(&in.Workdir, "workdir", "w", "", "Working directory in the guest, absolute")
 	flags.StringVarP(&in.User, "user", "u", "", "User in the guest, UID[:GID]")
 	flags.StringVar(&entrypoint, "entrypoint", "", "Replace the image entrypoint")
-	flags.StringVar(&in.Pull, "pull", string(spec.PullMissing), "When to download the image: missing, always, or never")
+	flags.StringVar(&in.Pull, "pull", string(runspec.PullMissing), "When to download the image: missing, always, or never")
 	flags.BoolVarP(&in.Interactive, "interactive", "i", false, "Keep stdin open")
 	flags.BoolVarP(&in.TTY, "tty", "t", false, "Allocate a terminal")
 	flags.BoolVarP(&quiet, "quiet", "q", false, "Hide progress output")
@@ -86,7 +86,7 @@ func splitArgs(args []string) (string, []string) {
 	return image, rest
 }
 
-func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string, quiet bool) (int, error) {
+func (a *app) run(cmd *cobra.Command, in runspec.Input, envFiles []string, quiet bool) (int, error) {
 	// Writes to a closed pipe fail with EPIPE instead of ending sbxr. Notify, not Ignore, keeps the default for the VM process.
 	// The notifier stays active for the whole process.
 	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
@@ -94,10 +94,10 @@ func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string, quiet bo
 	for _, path := range envFiles {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return 0, &spec.Error{Source: "--env-file", Value: path, Problem: "cannot read the file", Fix: err.Error()}
+			return 0, &runspec.Error{Source: "--env-file", Value: path, Problem: "cannot read the file", Fix: err.Error()}
 		}
 
-		in.EnvFiles = append(in.EnvFiles, spec.EnvFile{Path: path, Data: data})
+		in.EnvFiles = append(in.EnvFiles, runspec.EnvFile{Path: path, Data: data})
 	}
 
 	wd, err := os.Getwd()
@@ -107,7 +107,7 @@ func (a *app) run(cmd *cobra.Command, in spec.Input, envFiles []string, quiet bo
 
 	in.Dir = wd
 
-	s, err := spec.Parse(in, runtime.NumCPU())
+	s, err := runspec.Parse(in, runtime.NumCPU())
 	if err != nil {
 		return 0, err //nolint:wrapcheck // spec errors are complete user messages.
 	}
