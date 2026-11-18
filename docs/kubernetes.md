@@ -119,3 +119,42 @@ sudo chmod 666 /dev/kvm
 ```
 
 `mise run test:kind` creates the cluster, builds the installer image, and runs the tests.
+
+## Contract
+
+Tools, policies, and pod specs can depend on these names and values.
+
+### Cluster objects
+
+- Release assets: `sbxr-install.yaml` and `sbxr-uninstall.yaml`. Both pin the installer image `ghcr.io/albertsko/sbxr-node` by digest.
+- Namespace `sbxr-system`, with the DaemonSet and ServiceAccount `sbxr-node`.
+- RuntimeClass `sbxr`:
+  - `handler: sbxr`.
+  - `scheduling.nodeSelector`: `sbxr.dev/ready: "true"`.
+  - `overhead.podFixed.memory`: `64Mi`, for the guest kernel and the VMM.
+  - Annotation `sbxr.dev/limits`: a comma-separated list of the limits in "Limits".
+  - Annotation `sbxr.dev/docs`: the URL of this guide.
+- Node label `sbxr.dev/ready=true`: the node passed preflight, and its containerd serves handler `sbxr`. The installer removes the label when a node fails.
+- Node annotation `sbxr.dev/preflight`: `ok` after a successful install, otherwise the reason why the node is not ready or why uninstall waits.
+
+### Admission policies
+
+- `sbxr-deny` (ValidatingAdmissionPolicy, action `Deny`) applies to pods with `runtimeClassName: sbxr` on create and update, including ephemeral containers that `kubectl debug` adds. It rejects:
+  - the host network, the host PID namespace, and the host IPC namespace.
+  - privileged mode in any container, init container, or ephemeral container.
+  - added capabilities in any container, init container, or ephemeral container.
+- `sbxr-node-self` (ValidatingAdmissionPolicy, action `Deny`) lets the installer's ServiceAccount change only the node that its pod runs on.
+
+### containerd
+
+- The installer writes the drop-in `sbxr.toml` into the drop-in directory of the distribution. It uses the version of the main config (2 or 3), because containerd rejects a version 3 drop-in under a version 2 main config.
+- The drop-in adds runtime `sbxr` with `runtime_type = "io.containerd.sbxr.v1"`, `runtime_path = "/opt/sbxr/bin/containerd-shim-sbxr-v1"`, and `sandboxer = "shim"`. The shim is the pod sandboxer, so an `sbxr` pod has no pause container.
+- containerd pulls the container images, not `sbxr`.
+
+### Host paths
+
+- `/opt/sbxr`: the bundle. `/opt/sbxr.old`: retired bundles, and new bundles while the installer stages them.
+- `/usr/local/bin/containerd-shim-sbxr-v1`: a link to the shim in the bundle.
+- `/run/sbxr/pods/<id>`: one directory per `sbxr` pod while it exists.
+- `/run/sbxr.lock`: the installer lock.
+- `/etc/subuid` and `/etc/subgid`: the entry `sbxr:<first>:33554432`, room for 512 pod VMs of 65536 ids each. The installer places it above the host ids (0 to 65535), aligned to 65536, and clear of every other entry and of the `kubelet` range. Uninstall removes it.

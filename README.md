@@ -4,7 +4,7 @@
 
 ## Status
 
-Released as [v0.1.0](https://github.com/albertsko/sbxr/releases/tag/v0.1.0). `sbxr run`, `sbxr doctor`, and `sbxr prune` work with real VMs on macOS arm64 and on Linux with KVM, without root, and with images pulled from registries. `--net`, `--allow-lan`, and `-p` give the VM a guarded userspace network, and `-v` shares host directories. On Kubernetes, the RuntimeClass `sbxr` runs one VM per pod. See [docs/kubernetes.md](docs/kubernetes.md) for the cluster install, [docs/PRD.md](docs/PRD.md) for the requirements, and [docs/HANDOFF.md](docs/HANDOFF.md) for the current state and open work.
+Released as [v0.1.0](https://github.com/albertsko/sbxr/releases/tag/v0.1.0). `sbxr run`, `sbxr doctor`, and `sbxr prune` work with real VMs on macOS arm64 and on Linux with KVM, without root, and with images pulled from registries. `--net`, `--allow-lan`, and `-p` give the VM a guarded userspace network, and `-v` shares host directories. On Kubernetes, the RuntimeClass `sbxr` runs one VM per pod. See [docs/cli.md](docs/cli.md) for the CLI reference, [docs/kubernetes.md](docs/kubernetes.md) for the cluster install, and [CONTRIBUTING.md](CONTRIBUTING.md) for the developer setup.
 
 ## Usage
 
@@ -61,3 +61,5 @@ mise run test:hv     # scenarios against a real VM, skipped without a hypervisor
 mise run test:kind   # Kubernetes in kind (Linux with KVM and Docker)
 mise run ci          # everything CI runs
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for signing on macOS, the Linux setup, and the test suites.

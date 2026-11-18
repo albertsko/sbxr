@@ -102,7 +102,7 @@ func Failed(id, detail, fix string) Result {
 	return Result{ID: id, Status: Fail, Detail: detail, Fix: fix}
 }
 
-// Checks returns the doctor checks of this platform in the PRD order.
+// Checks returns the doctor checks of this platform in the order of docs/cli.md.
 // libDir is the SBXR_LIB_DIR value, empty for the default library directories.
 func Checks(cacheDir, libDir string) []Check {
 	checks := []Check{Hypervisor, Libkrun(libDir), Libkrunfw(libDir)}

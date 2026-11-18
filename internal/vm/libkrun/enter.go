@@ -97,6 +97,8 @@ type VsockPort struct {
 }
 
 // api holds the libkrun functions that sbxr uses. Each one returns 0 or a negative errno.
+// Do not add krun_set_exec, krun_set_workdir, or krun_set_rlimits: they put values on the kernel command line.
+// The kernel command line breaks on quotes and non-ASCII text, and its values override /.krun_config.json.
 type api struct {
 	setLogLevel          func(level uint32) int32
 	createCtx            func() int32

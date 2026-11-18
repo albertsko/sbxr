@@ -104,7 +104,7 @@ func openFDs() int {
 	return len(entries)
 }
 
-// TestCloseAtCaps holds the default caps, then closes the network, which is the process exit case of PRD assumption A10.
+// TestCloseAtCaps holds the default caps, then checks that the network still closes quickly, so a guest at the caps cannot keep sbxr from exiting.
 func TestCloseAtCaps(t *testing.T) {
 	t.Parallel()
 

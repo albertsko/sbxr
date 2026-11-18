@@ -19,7 +19,7 @@ import (
 	"github.com/albertsko/sbxr/internal/subid"
 )
 
-// Node label, annotation, handler, and install directory from the PRD.
+// Node label, annotation, handler, and install directory (docs/kubernetes.md, section "Contract").
 const (
 	ReadyLabel          = "sbxr.dev/ready"
 	PreflightAnnotation = "sbxr.dev/preflight"
@@ -78,7 +78,7 @@ type Installer struct {
 // rejection is a reason why this node cannot run sbxr.
 type rejection struct{ error }
 
-// Install runs the installer steps of PRD "Kubernetes contract" on this node.
+// Install runs the installer steps of docs/kubernetes.md on this node.
 // A node that fails preflight or verification gets the reason in its annotation, not an error.
 // An error means that the installer itself failed and should be retried.
 func (in *Installer) Install(ctx context.Context) error {

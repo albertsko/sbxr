@@ -38,7 +38,7 @@ var (
 	limitedBroadcast = netip.AddrFrom4([4]byte{255, 255, 255, 255})
 )
 
-// policy is the egress policy from the PRD "Networking (CLI)" section.
+// policy is the egress policy of --net and --allow-lan (docs/cli.md, section "Egress policy").
 // The frame filter and the forwarders use the same policy.
 type policy struct {
 	allowLAN bool

@@ -140,6 +140,7 @@ func (k *kind) node(script string) string {
 }
 
 // pod returns a pod manifest with runtimeClassName sbxr and the given container lines, indented by 6 spaces.
+// Kubernetes turns $$ into $ in commands, args, and env values, so write $$$$ for a shell $$ in these lines.
 func pod(name, extraSpec, container string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: Pod
