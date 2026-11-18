@@ -45,12 +45,18 @@ The DaemonSet runs on every node. On each node, it:
 4. Reserves the `sbxr` id range in `/etc/subuid` and `/etc/subgid`. It links the shim to `/usr/local/bin/containerd-shim-sbxr-v1`, because containerd finds a sandboxer shim only by its name. Then it writes the drop-in `sbxr.toml` atomically and restarts the containerd unit only when the drop-in changed. It never edits a main containerd config.
 5. Waits until the unit is active and the restarted containerd serves runtime handler `sbxr`, which it asks through the CRI `Status` call on the containerd socket. Then it sets the label `sbxr.dev/ready=true` and the annotation `sbxr.dev/preflight: ok`. If the restart or this check fails, it restores the previous drop-in (or removes it) and restarts containerd again.
 
-A run that does not finish ends in one of two ways:
+A run can record a rejection: it removes the label `sbxr.dev/ready` and writes the reason to the node annotation `sbxr.dev/preflight`. A run can also end with an error: the installer logs it and exits, and Kubernetes restarts the container, which retries. A run without an error stays done until the next rollout. A failed run ends in one of these ways:
 
-- Node rejection: preflight, the shim check, the id range, or the verification in step 5 fails. The installer removes the label `sbxr.dev/ready` and writes the reason to the node annotation `sbxr.dev/preflight`. A rejection after step 2 keeps the new bundle in `/opt/sbxr`.
-- Installer error: for example the bundle copy, a host file, or the API server fails. The installer exits with an error and leaves the label and the annotation as they are, so they can still show an earlier run. Kubernetes restarts the container, which retries. The pod log shows the error.
+- Preflight, the shim check, or the id range fails: the installer records a rejection and ends without an error. A rejection after step 2 keeps the new bundle in `/opt/sbxr`.
+- containerd does not restart, its unit is not active, or it does not serve handler `sbxr` in time, and the rollback succeeds: the installer records a rejection and ends without an error.
+- The same, but the rollback fails: the installer records a rejection and ends with an error. The next run first finishes the pending containerd restart.
+- Writing the drop-in or the installer's restart state in `/var/lib/sbxr` fails: the installer rolls back, records a rejection, and ends with an error.
+- The pending restart from an earlier run fails: the installer records a rejection and ends with an error.
+- The final patch that sets the label and `ok` fails, although containerd serves `sbxr`: the installer keeps the drop-in, tries to record a rejection, and ends with an error.
+- An earlier step fails without a rejection, for example the bundle copy, the shim link, or reading a host file: the installer ends with an error and leaves the label and the annotation as they are, so they can still show an earlier run.
+- Recording a rejection fails, because the API server rejects the patch: the installer ends with an error.
 
-A failed containerd restart, or a failed rollback, does both: it records the reason and exits with an error.
+The pod log shows every error.
 
 Read the result of a node:
 
@@ -142,8 +148,8 @@ Tools, policies, and pod specs can depend on these names and values.
   - `overhead.podFixed.memory`: `64Mi`, for the guest kernel and the VMM.
   - Annotation `sbxr.dev/limits`: a comma-separated list of the limits in "Limits".
   - Annotation `sbxr.dev/docs`: the URL of this guide.
-- Node label `sbxr.dev/ready=true`: the node passed preflight, and its containerd serves handler `sbxr`. The installer removes the label when it rejects the node. An installer error leaves the label as it is until a retry succeeds or rejects the node.
-- Node annotation `sbxr.dev/preflight`: `ok` after a successful install, the reason after a rejection, or the reason why uninstall waits. An installer error does not update it, so check the installer pod log too.
+- Node label `sbxr.dev/ready=true`: the node passed preflight, and its containerd serves handler `sbxr`. The installer removes the label when it records a rejection. A run that ends with an error before any rejection leaves the label as it is (see "Install").
+- Node annotation `sbxr.dev/preflight`: `ok` after a successful install, the reason after a rejection, or the reason why uninstall waits. A run that ends with an error before any rejection does not update it, so check the installer pod log too.
 
 ### Admission policies
 
