@@ -90,7 +90,9 @@ linters:
             - "!**/internal/netstack/**"
             - "!**/internal/scenario/**"
             - "!**/internal/vm/fake/**"
-            - "!**/internal/kube/**"
+            - "!**/internal/kube/shim/**"
+            - "!**/internal/kube/agent/**"
+            - "!**/internal/kube/podnet/**"
           deny:
             - pkg: github.com/spf13/cobra
               desc: only internal/cli may use the CLI framework
@@ -103,19 +105,56 @@ linters:
             - pkg: gvisor.dev
               desc: only internal/netstack and internal/vm/fake may use the network stack
             - pkg: k8s.io
-              desc: the core has no Kubernetes code
+              desc: no package uses the Kubernetes libraries
             - pkg: github.com/containerd
-              desc: only the Kubernetes code (internal/kube) may use containerd APIs
+              desc: only internal/kube/shim and internal/kube/agent may use containerd APIs
             - pkg: github.com/vishvananda
-              desc: only the Kubernetes code (internal/kube) may use netlink
+              desc: only internal/kube/shim, internal/kube/agent, and internal/kube/podnet may use netlink
+        kube-containerd:
+          files:
+            - "**/internal/kube/shim/**"
+            - "**/internal/kube/agent/**"
+          deny:
+            - pkg: github.com/spf13/cobra
+              desc: only internal/cli may use the CLI framework
+            - pkg: charm.land
+              desc: only internal/cli may use charm libraries
+            - pkg: github.com/charmbracelet
+              desc: only internal/cli may use charm libraries
+            - pkg: github.com/containers/gvisor-tap-vsock
+              desc: only internal/netstack and internal/vm/fake may use the network stack
+            - pkg: gvisor.dev
+              desc: only internal/netstack and internal/vm/fake may use the network stack
+            - pkg: k8s.io
+              desc: no package uses the Kubernetes libraries
+        kube-netlink:
+          files:
+            - "**/internal/kube/podnet/**"
+          deny:
+            - pkg: github.com/spf13/cobra
+              desc: only internal/cli may use the CLI framework
+            - pkg: charm.land
+              desc: only internal/cli may use charm libraries
+            - pkg: github.com/charmbracelet
+              desc: only internal/cli may use charm libraries
+            - pkg: github.com/containers/gvisor-tap-vsock
+              desc: only internal/netstack and internal/vm/fake may use the network stack
+            - pkg: gvisor.dev
+              desc: only internal/netstack and internal/vm/fake may use the network stack
+            - pkg: k8s.io
+              desc: no package uses the Kubernetes libraries
+            - pkg: github.com/containerd
+              desc: only internal/kube/shim and internal/kube/agent may use containerd APIs
         kube:
           files:
             - $all
-            - "!**/cmd/**"
+            - "!**/cmd/sbxr-node/**"
+            - "!**/cmd/sbxr-agent/**"
+            - "!**/cmd/containerd-shim-sbxr-v1/**"
             - "!**/internal/kube/**"
           deny:
             - pkg: github.com/albertsko/sbxr/internal/kube
-              desc: only cmd and internal/kube may import the Kubernetes code
+              desc: only internal/kube and the Kubernetes commands (cmd/sbxr-node, cmd/sbxr-agent, cmd/containerd-shim-sbxr-v1) may import the Kubernetes code
         product:
           files:
             - "**/cmd/**"

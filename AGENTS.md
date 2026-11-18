@@ -19,7 +19,7 @@
 
 - `cmd/` has one directory per binary. `cmd/sbxr/entitlements.plist` holds the macOS hypervisor entitlement, and the release archive carries it at its root.
 - `internal/` holds all Go packages.
-- `internal/kube/` holds all Kubernetes code: `installer`, `shim`, `agent`, `podnet`, `podvm`, and `subid`. Nothing outside `internal/kube/` may import it.
+- `internal/kube/` holds all Kubernetes code: `installer`, `shim`, `agent`, `podnet`, `podvm`, and `subid`. Only `internal/kube/` and the Kubernetes commands `cmd/sbxr-node`, `cmd/sbxr-agent`, and `cmd/containerd-shim-sbxr-v1` may import it.
 - `internal/sbxrmain/` holds the startup that `cmd/sbxr` and the fake CLI share.
 - `internal/testbin/` holds test-only binaries, such as the fake CLI `internal/testbin/sbxr-fake`. Tests build them themselves.
 - `internal/testenv/` holds the test helper `SkipOrFailf` and the layout test that checks the target file names, build tags, and test names.
