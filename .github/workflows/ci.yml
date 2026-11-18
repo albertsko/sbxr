@@ -237,7 +237,7 @@ jobs:
       - name: Check the trust and sbxr doctor
         run: scripts/ci/check-brew-install.sh
 
-  # The one check to require: it fails when any other job failed or was cancelled.
+  # The one check to require: it fails when any other job failed, was cancelled, or was skipped.
   result:
     name: CI result
     if: always()
@@ -245,6 +245,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fail when a needed job failed or was cancelled
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      # always() replaces the implicit success(), which is false after a failed or cancelled needed job and would skip this step.
+      - name: Fail when a needed job failed, was cancelled, or was skipped
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped'))
         run: exit 1
