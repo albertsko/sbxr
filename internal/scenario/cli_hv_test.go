@@ -390,7 +390,7 @@ func hvBinary(t *testing.T) string {
 		errHVBin = scenario.Build(context.Background(), hvBin)
 
 		if errHVBin == nil && runtime.GOOS == "darwin" {
-			out, err := exec.CommandContext(context.Background(), "codesign", "--force", "--sign", "-", "--entitlements", "../../entitlements.plist", hvBin).CombinedOutput()
+			out, err := exec.CommandContext(context.Background(), "codesign", "--force", "--sign", "-", "--entitlements", "../../cmd/sbxr/entitlements.plist", hvBin).CombinedOutput()
 			if err != nil {
 				errHVBin = errors.New("codesign: " + string(out))
 			}

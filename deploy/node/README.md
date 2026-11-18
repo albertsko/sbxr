@@ -7,9 +7,10 @@ The image behind `sbxr-install.yaml` and `sbxr-uninstall.yaml`. It holds the nod
 ```sh
 docker build -f deploy/node/Dockerfile -t sbxr-node .                                     # installer image
 docker build -f deploy/node/Dockerfile --target bundle --output type=local,dest=out .     # bundle only
-scripts/node-manifests.sh sbxr-node out                                                   # out/sbxr-install.yaml, out/sbxr-uninstall.yaml
+deploy/node/render.sh sbxr-node out                                                       # out/sbxr-install.yaml, out/sbxr-uninstall.yaml
 ```
 
+- The build context is the repository root. `Dockerfile.dockerignore` limits it to the files the image needs. Docker reads that file only with BuildKit, the default builder since Docker 23.
 - Every input is pinned: base images, the Go image, and the Rust toolchain image by digest, `libkrun` and `libkrunfw` by tag and commit, and the `crun` and `libkrunfw` tarballs and the static guest `crun` by SHA-256 (`fetch.sh`). To update a version, update its pins in the `ARG` lines together.
 - The bundle carries the license texts under `share/licenses/` (Go module licenses under `share/licenses/go/`) and a `NOTICE` with versions, sources, and the one change to `libkrun`.
 - The bundle builds on Ubuntu 22.04, so it needs glibc 2.35 or later on the node.

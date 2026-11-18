@@ -36,7 +36,7 @@ const (
 )
 
 // TestKind runs the scenarios for the k8s target capabilities and the Kubernetes criteria in a kind cluster.
-// scripts/kind-up.sh creates or reuses the cluster and installs sbxr. The last subtests uninstall it.
+// scripts/kind/up.sh creates or reuses the cluster and installs sbxr. The last subtests uninstall it.
 func TestKind(t *testing.T) {
 	t.Parallel()
 
@@ -51,7 +51,7 @@ func TestKind(t *testing.T) {
 		cluster = "sbxr"
 	}
 
-	setup := exec.CommandContext(t.Context(), "../../scripts/kind-up.sh")
+	setup := exec.CommandContext(t.Context(), "../../scripts/kind/up.sh")
 	setup.Stdout, setup.Stderr = os.Stderr, os.Stderr
 
 	err := setup.Run()
@@ -491,7 +491,7 @@ func (k *kind) manifests() string {
 
 	dir := k.t.TempDir()
 
-	out, err := exec.CommandContext(k.t.Context(), "../../scripts/node-manifests.sh", k.image, dir).CombinedOutput()
+	out, err := exec.CommandContext(k.t.Context(), "../../deploy/node/render.sh", k.image, dir).CombinedOutput()
 	if err != nil {
 		k.t.Fatalf("render manifests: %v: %s", err, out)
 	}

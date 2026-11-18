@@ -3,10 +3,11 @@
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
-# shellcheck disable=SC1091
-source scripts/_lib.sh
 
-[[ $# -eq 0 || "$1" == "--check" ]] || die "usage: mise run fmt [--check]"
+if [[ $# -ne 0 && "$1" != "--check" ]]; then
+	printf 'usage: mise run fmt [--check]\n' >&2
+	exit 1
+fi
 
 steps=(
 	--step go-format

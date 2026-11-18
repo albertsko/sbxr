@@ -88,7 +88,7 @@ jobs:
           mapfile -t refs < <(sed "s|^|$NODE_IMAGE@|" digests/*)
           docker buildx imagetools create -t "$tag" "${refs[@]}"
           digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -r .digest)
-          scripts/node-manifests.sh "$tag@$digest" node-manifests
+          deploy/node/render.sh "$tag@$digest" node-manifests
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: node-manifests

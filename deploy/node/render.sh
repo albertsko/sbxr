@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Renders the template deploy/node/sbxr.yaml into the release assets sbxr-install.yaml and sbxr-uninstall.yaml.
-# Usage: scripts/node-manifests.sh <image> <out-dir>
+# Usage: deploy/node/render.sh <image> <out-dir>
 # Releases pass the installer image pinned by digest, for example ghcr.io/albertsko/sbxr-node:v1.2.3@sha256:....
 set -euo pipefail
 
-template="$(dirname -- "${BASH_SOURCE[0]}")/../deploy/node/sbxr.yaml"
+template="$(dirname -- "${BASH_SOURCE[0]}")/sbxr.yaml"
 image=$1
 out=$2
 

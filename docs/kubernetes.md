@@ -109,16 +109,16 @@ The first command replaces the installer with a DaemonSet that removes the label
 
 ## kind
 
-kind needs two changes at cluster creation, both in [kind.yaml](../kind.yaml): the `/dev/kvm` mount and an `imports` entry for `/etc/containerd/conf.d/*.toml`. kind writes a version 2 containerd config, so the installer writes a version 2 drop-in.
+kind needs two changes at cluster creation, both in [scripts/kind/cluster.yaml](../scripts/kind/cluster.yaml): the `/dev/kvm` mount and an `imports` entry for `/etc/containerd/conf.d/*.toml`. kind writes a version 2 containerd config, so the installer writes a version 2 drop-in.
 
 kind resets the `/dev/kvm` permissions, so open them again after you create the cluster:
 
 ```sh
-kind create cluster --config kind.yaml
+kind create cluster --config scripts/kind/cluster.yaml
 sudo chmod 666 /dev/kvm
 ```
 
-`mise run test:kind` creates the cluster, builds the installer image, and runs the tests.
+`mise run test:kube` creates the cluster with [scripts/kind/up.sh](../scripts/kind/up.sh), builds the installer image, and runs the tests.
 
 ## Contract
 
