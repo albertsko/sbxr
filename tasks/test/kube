@@ -4,5 +4,6 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
+# All packages, so a kube file in a new package runs too.
 # The first run builds the node bundle and the cluster, which takes longer than the test itself.
-exec go test -tags kube -count=1 -timeout 45m -run '^TestKube' ./internal/scenario "$@"
+exec go test -tags kube -count=1 -timeout 45m -run '^TestKube' ./... "$@"
