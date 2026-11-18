@@ -13,13 +13,13 @@ import (
 	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/krunconfig"
 	"github.com/albertsko/sbxr/internal/run"
+	"github.com/albertsko/sbxr/internal/runspec"
 	"github.com/albertsko/sbxr/internal/scenario"
-	"github.com/albertsko/sbxr/internal/spec"
 	"github.com/albertsko/sbxr/internal/vm/fake"
 )
 
 // reference is an in-process target that checks the scenarios themselves without the sbxr binary.
-// It validates with spec.Parse, prepares the root with the image store, and runs the fake guest init directly.
+// It validates with runspec.Parse, prepares the root with the image store, and runs the fake guest init directly.
 type reference struct {
 	images   image.Store
 	refs     map[string]string
@@ -48,7 +48,7 @@ func (r *reference) CheckClean() error {
 }
 
 func (r *reference) Run(ctx context.Context, w scenario.Workload) (scenario.Result, error) {
-	s, err := spec.Parse(spec.Input{Image: r.refs[w.Image], Args: w.Args, Env: w.Env, Workdir: w.Workdir, User: w.User}, 2)
+	s, err := runspec.Parse(runspec.Input{Image: r.refs[w.Image], Args: w.Args, Env: w.Env, Workdir: w.Workdir, User: w.User}, 2)
 	if err != nil {
 		return scenario.Result{ExitCode: 125, Class: scenario.InvalidSpec}, nil
 	}

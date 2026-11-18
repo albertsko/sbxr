@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/albertsko/sbxr/internal/krunconfig"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 )
 
 // DefaultPath is the guest PATH when the image sets none.
@@ -16,7 +16,7 @@ const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bi
 // Workload merges the run request with the image config into the guest init config.
 // The -u flag wins over the image User, which resolveUser resolves only when needed.
 // It returns warnings for image env entries that it drops.
-func Workload(s spec.Spec, img ImageConfig, resolveUser UserResolver) (krunconfig.Config, []string, error) {
+func Workload(s runspec.Spec, img ImageConfig, resolveUser UserResolver) (krunconfig.Config, []string, error) {
 	var uid, gid uint32
 
 	if s.User != nil {
@@ -42,7 +42,7 @@ func Workload(s spec.Spec, img ImageConfig, resolveUser UserResolver) (krunconfi
 }
 
 // args follows docker: --entrypoint replaces the image entrypoint and drops the image Cmd.
-func args(s spec.Spec, img ImageConfig) []string {
+func args(s runspec.Spec, img ImageConfig) []string {
 	entrypoint, cmd := img.Entrypoint, img.Cmd
 
 	if s.Entrypoint != nil {

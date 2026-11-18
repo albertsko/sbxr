@@ -1,0 +1,154 @@
+package installer
+
+import (
+	"strings"
+	"testing"
+)
+
+const kindConfig = `version = 2
+imports = ["/etc/containerd/conf.d/*.toml"]
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+  SystemdCgroup = true
+`
+
+func TestPreflight(t *testing.T) {
+	t.Parallel()
+
+	containerd := distros[len(distros)-1]
+	k3s := distros[0]
+	ok := facts{kvm: true, glibc: "glibc 2.39", runtime: "containerd://2.3.4", config: kindConfig, kernel: "6.8.0-1015-azure", tun: true}
+
+	tests := []struct {
+		name   string
+		distro distro
+		change func(*facts)
+		reason string // Empty when preflight passes.
+	}{
+		{name: "kind", distro: containerd, change: func(*facts) {}},
+		{name: "k3s", distro: k3s, change: func(f *facts) {
+			f.runtime = "containerd://v2.2.10-k3s1"
+			f.config = "version = 3\nimports = [\"/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/*.toml\"]\n"
+		}},
+		{name: "relative import", distro: containerd, change: func(f *facts) { f.config = "version = 3\nimports = ['conf.d/*.toml']" }},
+		{name: "multi-line imports", distro: containerd, change: func(f *facts) {
+			f.config = "version = 3\nimports = [\n  \"/etc/a.toml\",\n  \"/etc/containerd/conf.d/*.toml\",\n]"
+		}},
+		{name: "no kvm", distro: containerd, change: func(f *facts) { f.kvm = false }, reason: "/dev/kvm is missing"},
+		{name: "old glibc", distro: containerd, change: func(f *facts) { f.glibc = "glibc 2.31" }, reason: `glibc "glibc 2.31" is older than 2.35`},
+		{name: "no glibc", distro: containerd, change: func(f *facts) { f.glibc = "" }, reason: "older than 2.35"},
+		{name: "old containerd", distro: containerd, change: func(f *facts) { f.runtime = "containerd://1.7.24" }, reason: "not containerd 2.2 or later"},
+		{name: "cri-o", distro: containerd, change: func(f *facts) { f.runtime = "cri-o://1.34.0" }, reason: "not containerd 2.2 or later"},
+		{name: "no version", distro: containerd, change: func(f *facts) { f.config = "imports = [\"/etc/containerd/conf.d/*.toml\"]" }, reason: "config version 0, want 2 or 3"},
+		{name: "no imports", distro: containerd, change: func(f *facts) { f.config = "version = 2\n" }, reason: "does not import /etc/containerd/conf.d/*.toml"},
+		{name: "other imports", distro: containerd, change: func(f *facts) { f.config = "version = 2\nimports = [\"/etc/other/*.toml\"]" }, reason: "does not import"},
+		{name: "old Linux", distro: containerd, change: func(f *facts) { f.kernel = "5.15.0-91-generic" }, reason: `kernel "5.15.0-91-generic" is older than Linux 5.19`},
+		{name: "no TUN", distro: containerd, change: func(f *facts) { f.tun = false }, reason: "/dev/net/tun is missing"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := ok
+			tt.change(&f)
+
+			dropIn, err := preflight(tt.distro, f)
+			if tt.reason == "" {
+				if err != nil {
+					t.Fatalf("preflight failed: %v", err)
+				}
+
+				if configVersion(string(dropIn)) != configVersion(f.config) {
+					t.Errorf("drop-in version differs from the main config:\n%s", dropIn)
+				}
+
+				return
+			}
+
+			if err == nil || !strings.Contains(err.Error(), tt.reason) {
+				t.Fatalf("error %v, want it to contain %q", err, tt.reason)
+			}
+		})
+	}
+}
+
+func TestRenderDropIn(t *testing.T) {
+	t.Parallel()
+
+	shim := []string{`runtime_type = "io.containerd.sbxr.v1"`, `runtime_path = "/opt/sbxr/bin/containerd-shim-sbxr-v1"`, `sandboxer = "shim"`}
+
+	tests := []struct {
+		version int
+		want    []string
+	}{
+		{2, append([]string{"version = 2", `[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.sbxr]`}, shim...)},
+		{3, append([]string{"version = 3", `[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.sbxr]`}, shim...)},
+	}
+
+	for _, tt := range tests {
+		got := string(renderDropIn(tt.version))
+		for _, w := range tt.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("drop-in v%d lacks %q:\n%s", tt.version, w, got)
+			}
+		}
+	}
+}
+
+func TestDetect(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		active []string
+		want   string // Unit, or empty when nothing is detected.
+	}{
+		{[]string{"dbus.service", "containerd.service", "kubelet.service"}, "containerd.service"},
+		{[]string{"containerd.service", "k3s-agent.service"}, "k3s-agent.service"},
+		{[]string{"rke2-server.service"}, "rke2-server.service"},
+		{[]string{"k0sworker.service"}, "k0sworker.service"},
+		{[]string{"docker.service", "crio.service"}, ""},
+	}
+
+	for _, tt := range tests {
+		_, unit, err := detect(tt.active)
+		if unit != tt.want || (err == nil) != (tt.want != "") {
+			t.Errorf("detect(%v) = %q, %v; want %q", tt.active, unit, err, tt.want)
+		}
+	}
+}
+
+func TestKubeletRange(t *testing.T) {
+	t.Parallel()
+
+	const ok = "0: kubelet 65536 7208960\n"
+
+	tests := []struct {
+		name       string
+		uids, gids string
+		maxPods    int
+		reason     string // Empty when the range is fine.
+	}{
+		{name: "110 pods", uids: ok, gids: ok, maxPods: 110},
+		{name: "no getsubids or entry", uids: "", gids: "", maxPods: 110, reason: "want one range"},
+		{name: "too small for maxPods", uids: ok, gids: ok, maxPods: 250, reason: "holds 110 pods, fewer than the node's 250"},
+		{name: "unaligned start", uids: "0: kubelet 100000 7208960", gids: "0: kubelet 100000 7208960", maxPods: 110, reason: "multiple of 65536"},
+		{name: "uids and gids differ", uids: ok, gids: "0: kubelet 131072 7208960", maxPods: 110, reason: "differ"},
+		{name: "two ranges", uids: ok + ok, gids: ok, maxPods: 110, reason: "want one range"},
+		{name: "no pod capacity", uids: ok, gids: ok, maxPods: 0, reason: "pod capacity 0 is not valid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := kubeletRange(facts{kubeletUser: true, kubeletUIDs: tt.uids, kubeletGIDs: tt.gids, maxPods: tt.maxPods})
+			if (tt.reason == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tt.reason)) {
+				t.Errorf("kubeletRange: %v, want %q", err, tt.reason)
+			}
+		})
+	}
+
+	if _, err := kubeletRange(facts{kubeletUser: false, kubeletUIDs: ok, kubeletGIDs: ok}); err == nil {
+		t.Error("kubeletRange without the kubelet user: no error")
+	}
+}

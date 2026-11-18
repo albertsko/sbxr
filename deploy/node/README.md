@@ -1,6 +1,6 @@
 # Node installer image
 
-The image behind `sbxr-install.yaml` and `sbxr-uninstall.yaml`. It holds the node bundle under `/bundle` and the `sbxr-node` installer (`cmd/sbxr-node`, `internal/node`). The bundle holds the shim, the guest root, `libkrun`, and `libkrunfw`. See [docs/kubernetes.md](../../docs/kubernetes.md) for the installer steps.
+The image behind `sbxr-install.yaml` and `sbxr-uninstall.yaml`. It holds the node bundle under `/bundle` and the `sbxr-node` installer (`cmd/sbxr-node`, `internal/kube/installer`). The bundle holds the shim, the guest root, `libkrun`, and `libkrunfw`. See [docs/kubernetes.md](../../docs/kubernetes.md) for the installer steps.
 
 ## Build
 

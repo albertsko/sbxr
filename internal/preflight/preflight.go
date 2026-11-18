@@ -9,7 +9,7 @@ import (
 	"slices"
 
 	"github.com/albertsko/sbxr/internal/hv"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 	"github.com/albertsko/sbxr/internal/vm/libkrun"
 )
 
@@ -63,7 +63,7 @@ func (r Report) Err() error {
 		return nil
 	}
 
-	return &spec.Error{Source: "preflight", Value: failed[0].ID, Problem: failed[0].Detail, Fix: failed[0].Fix}
+	return &runspec.Error{Source: "preflight", Value: failed[0].ID, Problem: failed[0].Detail, Fix: failed[0].Fix}
 }
 
 // Fixes returns the fix of each failed check, without repeats.

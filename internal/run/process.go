@@ -17,7 +17,7 @@ import (
 	"github.com/creack/pty"
 	"golang.org/x/term"
 
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
@@ -52,7 +52,7 @@ func withSignals(ctx context.Context) (context.Context, func()) {
 // The VM process inherits the cache hold and the run lock, so that sweeps and prune leave the run alone while the VM lives,
 // even after the runner died. Its fds are 3 for the lifeline (see vm.AttachLifeline), then extra in order:
 // 4 for the hold, 5 for the lock, and 6 (vm.NetFD) for the network socket.
-func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, extra []*os.File) (int, error) {
+func (r *Runner) start(ctx context.Context, s runspec.Spec, dir string, extra []*os.File) (int, error) {
 	cmd := exec.CommandContext(ctx, r.Exe, vm.ChildArg, dir) //nolint:gosec // Exe is the sbxr binary itself.
 	cmd.Env = append(os.Environ(), r.VMEnv...)
 
@@ -85,13 +85,13 @@ func (r *Runner) start(ctx context.Context, s spec.Spec, dir string, extra []*os
 		// The VM process ignores terminal signals, so a signal death means that something else killed it or the VMM crashed.
 		status, _ := exit.Sys().(syscall.WaitStatus)
 
-		return ExitSetup, &spec.Error{
+		return ExitSetup, &runspec.Error{
 			Source:  "vm",
 			Problem: fmt.Sprintf("the VM process was killed by signal %d", int(status.Signal())),
 			Fix:     "run again with --debug and report a bug",
 		}
 	default:
-		return ExitSetup, &spec.Error{Source: "vm", Problem: err.Error()}
+		return ExitSetup, &runspec.Error{Source: "vm", Problem: err.Error()}
 	}
 }
 

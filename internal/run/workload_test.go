@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/albertsko/sbxr/internal/krunconfig"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 )
 
 func TestWorkload(t *testing.T) {
@@ -26,7 +26,7 @@ func TestWorkload(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		spec         spec.Spec
+		spec         runspec.Spec
 		image        ImageConfig
 		want         krunconfig.Config
 		wantWarnings int
@@ -39,19 +39,19 @@ func TestWorkload(t *testing.T) {
 		},
 		{
 			name:  "flags override the image",
-			spec:  spec.Spec{Args: []string{"run", "uid 0"}, Env: []string{"A=one", "C=c", "A=two", "TERM=xterm"}, Workdir: "/w", User: &spec.User{UID: 1000}},
+			spec:  runspec.Spec{Args: []string{"run", "uid 0"}, Env: []string{"A=one", "C=c", "A=two", "TERM=xterm"}, Workdir: "/w", User: &runspec.User{UID: 1000}},
 			image: ImageConfig{Entrypoint: []string{"/entry"}, Env: []string{"A=image"}, User: "5"},
 			want:  krunconfig.Config{UID: 1000, GID: 0, WorkingDir: "/w", Env: []string{"A=two", "C=c", "TERM=xterm", "HOME=/", "PATH=" + DefaultPath}, Args: []string{"/entry", "run", "uid 0"}},
 		},
 		{
 			name:  "entrypoint flag drops the image command",
-			spec:  spec.Spec{Entrypoint: new("/bin/echo")},
+			spec:  runspec.Spec{Entrypoint: new("/bin/echo")},
 			image: ImageConfig{Entrypoint: []string{"/entry"}, Cmd: []string{"default"}},
 			want:  krunconfig.Config{WorkingDir: "/", Env: []string{"HOME=/", "TERM=linux", "PATH=" + DefaultPath}, Args: []string{"/bin/echo"}},
 		},
 		{
 			name:  "empty entrypoint flag clears the entrypoint",
-			spec:  spec.Spec{Entrypoint: &empty, Args: []string{"sh"}},
+			spec:  runspec.Spec{Entrypoint: &empty, Args: []string{"sh"}},
 			image: ImageConfig{Entrypoint: []string{"/entry"}},
 			want:  krunconfig.Config{WorkingDir: "/", Env: []string{"HOME=/", "TERM=linux", "PATH=" + DefaultPath}, Args: []string{"sh"}},
 		},
@@ -93,17 +93,17 @@ func TestWorkloadResolvesImageUserOnlyWithoutUserFlag(t *testing.T) {
 		return 7, 8, nil
 	}
 
-	got, _, err := Workload(spec.Spec{}, ImageConfig{User: "app", Cmd: []string{"sh"}}, resolver)
+	got, _, err := Workload(runspec.Spec{}, ImageConfig{User: "app", Cmd: []string{"sh"}}, resolver)
 	if err != nil || got.UID != 7 || got.GID != 8 {
 		t.Errorf("Workload() = %+v, %v; want uid 7 and gid 8", got, err)
 	}
 
-	_, _, err = Workload(spec.Spec{}, ImageConfig{User: "nobody", Cmd: []string{"sh"}}, resolver)
+	_, _, err = Workload(runspec.Spec{}, ImageConfig{User: "nobody", Cmd: []string{"sh"}}, resolver)
 	if err == nil {
 		t.Error("Workload() with an unknown image user succeeded, want an error")
 	}
 
-	got, _, err = Workload(spec.Spec{User: &spec.User{UID: 1}}, ImageConfig{User: "nobody", Cmd: []string{"sh"}}, resolver)
+	got, _, err = Workload(runspec.Spec{User: &runspec.User{UID: 1}}, ImageConfig{User: "nobody", Cmd: []string{"sh"}}, resolver)
 	if err != nil || got.UID != 1 {
 		t.Errorf("Workload() with -u = %+v, %v; want uid 1 without resolving the image user", got, err)
 	}

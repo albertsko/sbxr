@@ -18,7 +18,7 @@ import (
 
 	"github.com/albertsko/sbxr/internal/krunconfig"
 	"github.com/albertsko/sbxr/internal/preflight"
-	"github.com/albertsko/sbxr/internal/spec"
+	"github.com/albertsko/sbxr/internal/runspec"
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
@@ -47,7 +47,7 @@ type Images interface {
 	// The runner passes it to the VM process, so that the hold lasts while the VM runs, even when the runner dies.
 	Hold(ctx context.Context) (*os.File, error)
 	// Pull returns the image for ref, downloading it when policy allows.
-	Pull(ctx context.Context, ref string, policy spec.Pull) (Image, error)
+	Pull(ctx context.Context, ref string, policy runspec.Pull) (Image, error)
 	// ResolveUser resolves an image User value inside the image.
 	ResolveUser(img Image, user string) (uid, gid uint32, err error)
 	// NewRoot creates a private root file system for one run inside dir and returns its path.
@@ -68,7 +68,7 @@ type Network interface {
 // NetworkConfig describes the network of one run.
 type NetworkConfig struct {
 	AllowLAN bool
-	Publish  []spec.Port
+	Publish  []runspec.Port
 	Log      *slog.Logger
 }
 
@@ -100,7 +100,7 @@ type Runner struct {
 // Run runs the workload and returns its exit code.
 // An error means that sbxr failed, and the exit code is then ExitSetup.
 // A SIGINT, SIGTERM, or SIGHUP stops the run at once with exit code 130, 143, or 129 and no error.
-func (r *Runner) Run(ctx context.Context, s spec.Spec) (int, error) {
+func (r *Runner) Run(ctx context.Context, s runspec.Spec) (int, error) {
 	ctx, stop := withSignals(ctx)
 	defer stop()
 
@@ -115,7 +115,7 @@ func (r *Runner) Run(ctx context.Context, s spec.Spec) (int, error) {
 	return code, err
 }
 
-func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
+func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 	r.Log.Debug("run state", "state", "validating")
 
 	err := r.validate(ctx, s)
@@ -191,9 +191,9 @@ func (r *Runner) run(ctx context.Context, s spec.Spec) (int, error) {
 	return code, err
 }
 
-func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
+func (r *Runner) validate(ctx context.Context, s runspec.Spec) error {
 	if s.Interactive && s.TTY && !term.IsTerminal(int(r.Stdin.Fd())) {
-		return &spec.Error{Source: "-t", Problem: "the input device is not a terminal", Fix: "drop -t, or run sbxr from a terminal"}
+		return &runspec.Error{Source: "-t", Problem: "the input device is not a terminal", Fix: "drop -t, or run sbxr from a terminal"}
 	}
 
 	err := preflight.Run(ctx, r.Checks).Err()
@@ -205,7 +205,7 @@ func (r *Runner) validate(ctx context.Context, s spec.Spec) error {
 }
 
 // workload resolves and checks the guest init config before any run state exists.
-func (r *Runner) workload(s spec.Spec, img Image) (krunconfig.Config, error) {
+func (r *Runner) workload(s runspec.Spec, img Image) (krunconfig.Config, error) {
 	resolveUser := func(user string) (uint32, uint32, error) {
 		uid, gid, err := r.Images.ResolveUser(img, user)
 		if err != nil {
@@ -226,7 +226,7 @@ func (r *Runner) workload(s spec.Spec, img Image) (krunconfig.Config, error) {
 
 	_, err = krunconfig.Marshal(cfg)
 	if err != nil {
-		return krunconfig.Config{}, &spec.Error{Source: "workload", Problem: err.Error()}
+		return krunconfig.Config{}, &runspec.Error{Source: "workload", Problem: err.Error()}
 	}
 
 	return cfg, nil
@@ -234,7 +234,7 @@ func (r *Runner) workload(s spec.Spec, img Image) (krunconfig.Config, error) {
 
 // prepare creates the run root and writes the workload config and the machine into the run directory.
 // It returns the release function of the root, also on error.
-func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, cfg krunconfig.Config, dir string, network Network) (func() error, error) {
+func (r *Runner) prepare(ctx context.Context, s runspec.Spec, img Image, cfg krunconfig.Config, dir string, network Network) (func() error, error) {
 	rootPath, release, err := r.Images.NewRoot(ctx, img, dir)
 	if err != nil {
 		return func() error { return nil }, imageError(s, err)
@@ -243,7 +243,7 @@ func (r *Runner) prepare(ctx context.Context, s spec.Spec, img Image, cfg krunco
 	return release, r.configure(s, cfg, dir, rootPath, network)
 }
 
-func (r *Runner) configure(s spec.Spec, cfg krunconfig.Config, dir, rootPath string, network Network) error {
+func (r *Runner) configure(s runspec.Spec, cfg krunconfig.Config, dir, rootPath string, network Network) error {
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
 		return fmt.Errorf("open run root: %w", err)
@@ -287,8 +287,8 @@ func (r *Runner) cleanup(dir string, release func() error) {
 }
 
 // imageError names the image in an image store error.
-func imageError(s spec.Spec, err error) error {
-	return &spec.Error{Source: "image", Value: s.Image, Problem: err.Error()}
+func imageError(s runspec.Spec, err error) error {
+	return &runspec.Error{Source: "image", Value: s.Image, Problem: err.Error()}
 }
 
 // signalError is the context cause when a signal stops the run.

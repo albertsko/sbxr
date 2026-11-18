@@ -6,7 +6,7 @@ package main
 import (
 	"os"
 
-	"github.com/albertsko/sbxr/internal/shim"
+	"github.com/albertsko/sbxr/internal/kube/shim"
 )
 
 func main() {

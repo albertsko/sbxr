@@ -4,15 +4,10 @@
 !cmd/sbxr-node
 !cmd/containerd-shim-sbxr-v1
 !cmd/sbxr-agent
-!internal/node
-!internal/shim
-!internal/agent
-!internal/podvm
-!internal/podnet
+!internal/kube
 !internal/vm
 !internal/krunconfig
 !internal/guestmount
-!internal/subid
 !deploy/node/collect.sh
 !deploy/node/fetch.sh
 !deploy/node/assemble.sh

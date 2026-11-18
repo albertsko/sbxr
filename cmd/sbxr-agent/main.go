@@ -6,7 +6,7 @@ package main
 import (
 	"os"
 
-	"github.com/albertsko/sbxr/internal/agent"
+	"github.com/albertsko/sbxr/internal/kube/agent"
 )
 
 func main() {

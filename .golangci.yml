@@ -90,9 +90,7 @@ linters:
             - "!**/internal/netstack/**"
             - "!**/internal/scenario/**"
             - "!**/internal/vm/fake/**"
-            - "!**/internal/shim/**"
-            - "!**/internal/agent/**"
-            - "!**/internal/podnet/**"
+            - "!**/internal/kube/**"
           deny:
             - pkg: github.com/spf13/cobra
               desc: only internal/cli may use the CLI framework
@@ -107,9 +105,17 @@ linters:
             - pkg: k8s.io
               desc: the core has no Kubernetes code
             - pkg: github.com/containerd
-              desc: only the Kubernetes adapters (internal/shim, internal/agent) may use containerd APIs
+              desc: only the Kubernetes code (internal/kube) may use containerd APIs
             - pkg: github.com/vishvananda
-              desc: only the Kubernetes adapters (internal/podnet, internal/agent) may use netlink
+              desc: only the Kubernetes code (internal/kube) may use netlink
+        kube:
+          files:
+            - $all
+            - "!**/cmd/**"
+            - "!**/internal/kube/**"
+          deny:
+            - pkg: github.com/albertsko/sbxr/internal/kube
+              desc: only cmd and internal/kube may import the Kubernetes code
 
     dupl:
       threshold: 200
@@ -143,7 +149,7 @@ linters:
         - '.+/internal/run\.ImageConfig'
         - '.+/internal/scenario\.(Scenario|Workload|Volume)'
         - '.+/internal/vm/libkrun\.Config'
-        - '.+/internal/spec\.Error'
+        - '.+/internal/runspec\.Error'
 
     gocritic:
       enabled-tags:
