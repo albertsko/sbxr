@@ -25,7 +25,7 @@ Do not add `--options runtime`. Hardened runtime removes the `DYLD_*` variables 
 `scripts/gotest-exec.sh` signs a test binary and then runs it. `mise run test:vm` uses it. Pass it as an absolute path, because `go test` runs the `-exec` program from the package directory:
 
 ```sh
-go test -tags vm -exec "$PWD/scripts/gotest-exec.sh" -count=1 -run '^TestVM' ./internal/vm/libkrun/...
+go test -tags vm -exec "$PWD/scripts/gotest-exec.sh" -count=1 -run '^TestVM' ./internal/libkrun/...
 ```
 
 ## Setup on Linux

@@ -193,7 +193,7 @@ linters:
       # Types whose fields are optional by design.
       optional-patterns:
         - '.+/internal/image\.Config'
-        - '.+/internal/vm/libkrun\.Config'
+        - '.+/internal/libkrun\.Config'
         - '.+/internal/runspec\.Error'
 
     gocritic:

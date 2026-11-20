@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/albertsko/sbxr/internal/vm/libkrun"
+	"github.com/albertsko/sbxr/internal/libkrun"
 )
 
 // CheckArg is the hidden only argument that loads libkrun and libkrunfw from the shim's bundle and exits.

@@ -16,7 +16,7 @@ import (
 )
 
 // corpusDir is the seed corpus of krunconfig.FuzzMarshal.
-const corpusDir = "../../krunconfig/testdata/fuzz/FuzzMarshal"
+const corpusDir = "../krunconfig/testdata/fuzz/FuzzMarshal"
 
 // TestVMRunsTheFuzzSeedCorpus boots each seed that Marshal accepts through the real guest init.
 // The workload prints what it received, which must match the config.

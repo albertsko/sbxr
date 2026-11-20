@@ -14,8 +14,6 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
-
-	"github.com/albertsko/sbxr/internal/guestmount"
 	"golang.org/x/term"
 )
 
@@ -51,8 +49,10 @@ type Config struct {
 	Net *Net
 	// Volumes adds one virtio-fs device per host directory.
 	Volumes []Volume
-	// MountHelper is the guest mount helper, which libkrun serves at guestmount.Path when there are volumes.
+	// MountHelper is the guest mount helper, which libkrun serves at MountHelperPath when there are volumes.
 	MountHelper []byte
+	// MountHelperPath is the absolute guest path of MountHelper.
+	MountHelperPath string
 	// TAP adds a virtio-net device on a TAP device that the VM process can open. It excludes Net.
 	TAP *TAP
 	// Shares are extra virtio-fs devices.
@@ -278,6 +278,8 @@ func (cfg Config) validate() error {
 		return errors.New("VM volume needs a tag and an absolute host path")
 	case len(cfg.Volumes) > 0 && len(cfg.MountHelper) == 0:
 		return errors.New("VM volumes need the mount helper")
+	case len(cfg.Volumes) > 0 && !filepath.IsAbs(cfg.MountHelperPath):
+		return fmt.Errorf("VM mount helper path %q is not absolute", cfg.MountHelperPath)
 	case cfg.Net != nil && cfg.TAP != nil:
 		return errors.New("VM has both a unixgram and a TAP network device")
 	case cfg.LogLevel > maxLogLevel:
@@ -326,7 +328,7 @@ func addVolumes(krun *api, ctx uint32, cfg Config) error {
 	}
 
 	mountHelper = cfg.MountHelper
-	name := strings.TrimPrefix(guestmount.Path, "/")
+	name := strings.TrimPrefix(cfg.MountHelperPath, "/")
 
 	// One-shot: the init looks the helper up once to run it, and the workload never sees it.
 	return check("krun_fs_add_overlay_file", krun.addOverlayFile(ctx, rootTag, name, &mountHelper[0], uintptr(len(mountHelper)), 0o100755, true))

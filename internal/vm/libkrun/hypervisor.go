@@ -8,6 +8,7 @@ import (
 	"net"
 
 	"github.com/albertsko/sbxr/internal/guestmount"
+	krun "github.com/albertsko/sbxr/internal/libkrun"
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
@@ -19,7 +20,7 @@ type Hypervisor struct {
 
 // Start enters the VM described by m. On success it does not return.
 func (h Hypervisor) Start(m vm.Machine) error {
-	dir, err := LibDir(h.LibDir)
+	dir, err := krun.LibDir(h.LibDir)
 	if err != nil {
 		return err
 	}
@@ -28,20 +29,20 @@ func (h Hypervisor) Start(m vm.Machine) error {
 		return fmt.Errorf("VM CPU count %d is out of range", m.CPUs)
 	}
 
-	var netDev *Net
+	var netDev *krun.Net
 
 	if m.Net != nil {
 		mac, err := net.ParseMAC(m.Net.MAC)
-		if err != nil || len(mac) != len(Net{}.MAC) {
+		if err != nil || len(mac) != len(krun.Net{}.MAC) {
 			return fmt.Errorf("VM MAC address %q is not valid", m.Net.MAC)
 		}
 
-		netDev = &Net{FD: m.Net.FD, MAC: [6]byte(mac)}
+		netDev = &krun.Net{FD: m.Net.FD, MAC: [6]byte(mac)}
 	}
 
-	volumes := make([]Volume, 0, len(m.Volumes))
+	volumes := make([]krun.Volume, 0, len(m.Volumes))
 	for _, v := range m.Volumes {
-		volumes = append(volumes, Volume{Tag: v.Tag, Host: v.Host, ReadOnly: v.ReadOnly})
+		volumes = append(volumes, krun.Volume{Tag: v.Tag, Host: v.Host, ReadOnly: v.ReadOnly})
 	}
 
 	var helper []byte
@@ -53,7 +54,8 @@ func (h Hypervisor) Start(m vm.Machine) error {
 		}
 	}
 
-	return Enter(dir, Config{
-		Root: m.Root, CPUs: uint8(m.CPUs), MemoryMiB: m.MemoryMiB, Net: netDev, Volumes: volumes, MountHelper: helper, LogLevel: m.LogLevel,
+	return krun.Enter(dir, krun.Config{
+		Root: m.Root, CPUs: uint8(m.CPUs), MemoryMiB: m.MemoryMiB, Net: netDev, Volumes: volumes,
+		MountHelper: helper, MountHelperPath: guestmount.Path, LogLevel: m.LogLevel,
 	})
 }

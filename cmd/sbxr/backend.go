@@ -6,12 +6,13 @@ import (
 	"github.com/albertsko/sbxr/internal/cli"
 	"github.com/albertsko/sbxr/internal/guestmount"
 	"github.com/albertsko/sbxr/internal/image"
+	"github.com/albertsko/sbxr/internal/libkrun"
 	"github.com/albertsko/sbxr/internal/preflight"
 	"github.com/albertsko/sbxr/internal/vm"
-	"github.com/albertsko/sbxr/internal/vm/libkrun"
+	vmlibkrun "github.com/albertsko/sbxr/internal/vm/libkrun"
 )
 
-func hypervisor() vm.Hypervisor { return libkrun.Hypervisor{LibDir: os.Getenv("SBXR_LIB_DIR")} }
+func hypervisor() vm.Hypervisor { return vmlibkrun.Hypervisor{LibDir: os.Getenv("SBXR_LIB_DIR")} }
 
 func backend() cli.Backend {
 	b := cli.Backend{

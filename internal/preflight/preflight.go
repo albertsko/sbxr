@@ -9,8 +9,8 @@ import (
 	"slices"
 
 	"github.com/albertsko/sbxr/internal/hv"
+	"github.com/albertsko/sbxr/internal/libkrun"
 	"github.com/albertsko/sbxr/internal/runspec"
-	"github.com/albertsko/sbxr/internal/vm/libkrun"
 )
 
 // SchemaVersion is the version of the `sbxr doctor --json` output.

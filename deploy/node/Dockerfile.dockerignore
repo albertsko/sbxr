@@ -6,6 +6,7 @@
 !cmd/sbxr-agent
 !internal/kube
 !internal/vm
+!internal/libkrun
 !internal/krunconfig
 !internal/guestmount
 !deploy/node/collect.sh
