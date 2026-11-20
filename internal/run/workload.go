@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/krunconfig"
 	"github.com/albertsko/sbxr/internal/runspec"
 )
@@ -13,36 +14,41 @@ import (
 // DefaultPath is the guest PATH when the image sets none.
 const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-// Workload merges the run request with the image config into the guest init config.
-// The -u flag wins over the image User, which resolveUser resolves only when needed.
+// Workload merges the run request with the config of img into the guest init config.
 // It returns warnings for image env entries that it drops.
-func Workload(s runspec.Spec, img ImageConfig, resolveUser UserResolver) (krunconfig.Config, []string, error) {
-	var uid, gid uint32
-
-	if s.User != nil {
-		uid, gid = s.User.UID, s.User.GID
-	} else {
-		var err error
-
-		uid, gid, err = resolveUser(img.User)
-		if err != nil {
-			return krunconfig.Config{}, nil, err
-		}
+func Workload(s runspec.Spec, img *image.Image) (krunconfig.Config, []string, error) {
+	uid, gid, err := workloadUser(s, img)
+	if err != nil {
+		return krunconfig.Config{}, nil, err
 	}
 
-	env, warnings := mergeEnv(img.Env, s.Env)
+	env, warnings := mergeEnv(img.Config.Env, s.Env)
 
 	return krunconfig.Config{
 		UID:        uid,
 		GID:        gid,
-		WorkingDir: cmp.Or(s.Workdir, img.WorkingDir, "/"),
+		WorkingDir: cmp.Or(s.Workdir, img.Config.WorkingDir, "/"),
 		Env:        env,
-		Args:       args(s, img),
+		Args:       args(s, img.Config),
 	}, warnings, nil
 }
 
+// workloadUser returns the -u flag, or else the image User resolved in the image root.
+func workloadUser(s runspec.Spec, img *image.Image) (uint32, uint32, error) {
+	if s.User != nil {
+		return s.User.UID, s.User.GID, nil
+	}
+
+	uid, gid, err := img.ResolveUser(img.Config.User)
+	if err != nil {
+		return 0, 0, imageError(s, err)
+	}
+
+	return uid, gid, nil
+}
+
 // args follows docker: --entrypoint replaces the image entrypoint and drops the image Cmd.
-func args(s runspec.Spec, img ImageConfig) []string {
+func args(s runspec.Spec, img image.Config) []string {
 	entrypoint, cmd := img.Entrypoint, img.Cmd
 
 	if s.Entrypoint != nil {
@@ -62,7 +68,7 @@ func args(s runspec.Spec, img ImageConfig) []string {
 
 // mergeEnv drops invalid and reserved image entries, applies user entries (a later entry wins),
 // and adds HOME, TERM, and PATH when they are missing.
-func mergeEnv(image, user []string) ([]string, []string) {
+func mergeEnv(imageEnv, user []string) ([]string, []string) {
 	var (
 		names    []string
 		values   = map[string]string{}
@@ -77,7 +83,7 @@ func mergeEnv(image, user []string) ([]string, []string) {
 		values[name] = value
 	}
 
-	for _, kv := range image {
+	for _, kv := range imageEnv {
 		name, value, _ := strings.Cut(kv, "=")
 
 		err := krunconfig.CheckEnvName(name)
@@ -113,6 +119,3 @@ func mergeEnv(image, user []string) ([]string, []string) {
 
 	return env, warnings
 }
-
-// UserResolver returns the uid and gid for an image User value, such as "app" or "1000:staff".
-type UserResolver func(user string) (uid, gid uint32, err error)

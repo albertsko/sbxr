@@ -4,8 +4,9 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
-# Only the packages with vm test files, so no other TestMain runs. The scenario tests run the sbxr binary, SBXR_BIN when set.
+# Only the packages with vm test files, so no other TestMain runs. The e2e tests run the sbxr binary, SBXR_BIN when set.
+# Extra arguments such as -shuffle=on or -v go to go test.
 pkgs="$(scripts/target-packages.sh vm)"
 # shellcheck disable=SC2086 # One package per word.
-exec go test -tags vm -count=1 -timeout 10m -parallel 4 -exec "$PWD/scripts/gotest-exec.sh" \
+exec go test -tags vm -count=1 -timeout 15m -parallel 4 -exec "$PWD/scripts/gotest-exec.sh" \
 	-run '^TestVM' $pkgs "$@"

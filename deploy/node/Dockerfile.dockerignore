@@ -5,10 +5,9 @@
 !cmd/containerd-shim-sbxr-v1
 !cmd/sbxr-agent
 !internal/kube
-!internal/vm
-!internal/krunconfig
-!internal/guestmount
+!internal/libkrun
 !deploy/node/collect.sh
 !deploy/node/fetch.sh
 !deploy/node/assemble.sh
 **/*_test.go
+**/testdata

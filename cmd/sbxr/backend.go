@@ -8,10 +8,7 @@ import (
 	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/preflight"
 	"github.com/albertsko/sbxr/internal/vm"
-	"github.com/albertsko/sbxr/internal/vm/libkrun"
 )
-
-func hypervisor() vm.Hypervisor { return libkrun.Hypervisor{LibDir: os.Getenv("SBXR_LIB_DIR")} }
 
 func backend() cli.Backend {
 	b := cli.Backend{
@@ -24,13 +21,8 @@ func backend() cli.Backend {
 			return image.Store{Cache: c, Overlay: false, Progress: nil}, err //nolint:wrapcheck // Open errors name the cache.
 		},
 		Isolate:     nil,
-		VMEnv:       nil,
+		VMEnv:       vm.Env(os.Getenv("SBXR_LIB_DIR")),
 		MountHelper: guestmount.Check,
-	}
-
-	// Without a library directory the libkrun check fails first, so an empty environment is fine.
-	if dir, err := libkrun.LibDir(os.Getenv("SBXR_LIB_DIR")); err == nil {
-		b.VMEnv = libkrun.Env(dir)
 	}
 
 	return isolated(b)

@@ -19,7 +19,7 @@ import (
 
 	"github.com/albertsko/sbxr/internal/kube/podvm"
 	"github.com/albertsko/sbxr/internal/kube/subid"
-	"github.com/albertsko/sbxr/internal/vm/libkrun"
+	"github.com/albertsko/sbxr/internal/libkrun"
 )
 
 // VMArg is the hidden first argument that runs the shim binary as a pod's VM process.

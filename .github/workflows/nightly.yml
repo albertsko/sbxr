@@ -8,7 +8,7 @@ permissions:
 concurrency:
   group: nightly-${{ github.ref }}
   cancel-in-progress: true
-# The checks that are too slow or too random for every pull request: shuffled tests without the test cache, and a long fuzz run.
+# The checks that are too slow or too random for every pull request: shuffled tests without the test cache, shuffled VM tests, and a long fuzz run.
 jobs:
   shuffle:
     name: Shuffled tests (${{ matrix.platform }})
@@ -35,6 +35,12 @@ jobs:
         run: mise run deps
       - name: Run the tests in random order
         run: mise run test:shuffle
+
+  vm-shuffle:
+    name: Shuffled VM tests
+    uses: ./.github/workflows/vm.yml
+    with:
+      shuffle: true
 
   fuzz:
     name: Fuzz

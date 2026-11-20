@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Run unit tests and the fake target scenarios in random order, without the test cache"
+#MISE description="Run unit tests and host-only checks in random order, without the test cache"
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."

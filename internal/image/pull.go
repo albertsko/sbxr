@@ -21,35 +21,15 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"golang.org/x/sys/unix"
 
-	"github.com/albertsko/sbxr/internal/run"
+	"github.com/albertsko/sbxr/internal/runspec"
 )
 
 var (
-	// ErrNotFound means that the registry does not have the image or the cache does not have it under PullNever.
+	// ErrNotFound means that the registry does not have the image or the cache does not have it under runspec.PullNever.
 	ErrNotFound = errors.New("not found")
 	// ErrNoPlatform means that the image has no variant for the host architecture.
 	ErrNoPlatform = errors.New("no variant for the host platform")
 )
-
-// PullPolicy decides when Pull contacts the registry.
-type PullPolicy string
-
-const (
-	// PullMissing pulls only when the cache does not have the image.
-	PullMissing PullPolicy = "missing"
-	// PullAlways checks the registry and pulls when the image changed.
-	PullAlways PullPolicy = "always"
-	// PullNever uses only the cache.
-	PullNever PullPolicy = "never"
-)
-
-// Image is an unpacked image in the cache. Its files must not change.
-type Image struct {
-	// Root is the cached root directory.
-	Root string
-	// Config is the image run configuration.
-	Config run.ImageConfig
-}
 
 // hostPlatform is the only guest platform, because sbxr does not emulate other architectures.
 const hostPlatform = "linux/" + runtime.GOARCH
@@ -57,7 +37,7 @@ const hostPlatform = "linux/" + runtime.GOARCH
 // Pull returns the cached image for ref, and downloads and unpacks it first when policy requires.
 // Concurrent pulls of one reference download it once. Errors do not repeat ref, so callers name it.
 // The caller holds Hold while it pulls and uses the image. A non-nil progress receives the download progress.
-func (c *Cache) Pull(ctx context.Context, ref string, policy PullPolicy, progress func(Progress)) (*Image, error) {
+func (c *Cache) Pull(ctx context.Context, ref string, policy runspec.Pull, progress func(Progress)) (*Image, error) {
 	r, err := name.ParseReference(ref)
 	if err != nil {
 		return nil, fmt.Errorf("invalid reference: %w", err)
@@ -66,13 +46,13 @@ func (c *Cache) Pull(ctx context.Context, ref string, policy PullPolicy, progres
 	sum := sha256.Sum256([]byte(r.Name() + "\n" + hostPlatform))
 	key := hex.EncodeToString(sum[:])
 
-	if policy != PullAlways {
+	if policy != runspec.PullAlways {
 		img, err := c.lookup(key)
 		if err != nil || img != nil {
 			return img, err
 		}
 
-		if policy == PullNever {
+		if policy == runspec.PullNever {
 			return nil, fmt.Errorf("%w in the cache, and the pull policy is never", ErrNotFound)
 		}
 	}
@@ -83,7 +63,7 @@ func (c *Cache) Pull(ctx context.Context, ref string, policy PullPolicy, progres
 	}
 	defer func() { _ = lock.Close() }()
 
-	if policy == PullMissing {
+	if policy == runspec.PullMissing {
 		img, err := c.lookup(key)
 		if err != nil || img != nil {
 			return img, err
@@ -131,7 +111,7 @@ func (c *Cache) load(digest string) (*Image, error) {
 		return nil, fmt.Errorf("read image config %s: %w", digest, err)
 	}
 
-	cfg := run.ImageConfig{
+	cfg := Config{
 		Entrypoint: cf.Config.Entrypoint,
 		Cmd:        cf.Config.Cmd,
 		Env:        cf.Config.Env,

@@ -46,7 +46,7 @@ for i in busybox:1.37 alpine:3.22 debian:bookworm-slim; do
 	echo "FROM $i" | docker buildx build --load -q -t "sbxr-test/${i%%:*}:1" - >/dev/null
 done
 arch=$(docker version -f '{{.Server.Arch}}')
-CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o "$tmp/dnsgo" ./internal/scenario/testdata/dnsgo
+CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o "$tmp/dnsgo" ./internal/e2e/testdata/dnsgo
 printf 'FROM scratch\nCOPY dnsgo /dnsgo\nENTRYPOINT ["/dnsgo"]\n' >"$tmp/Dockerfile.dnsgo"
 docker buildx build --load -q -f "$tmp/Dockerfile.dnsgo" -t sbxr-test/dnsgo:1 "$tmp" >/dev/null
 kind load docker-image --name "$cluster" "$tag" sbxr-test/{busybox,alpine,debian,dnsgo}:1

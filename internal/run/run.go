@@ -16,44 +16,12 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/krunconfig"
 	"github.com/albertsko/sbxr/internal/preflight"
 	"github.com/albertsko/sbxr/internal/runspec"
 	"github.com/albertsko/sbxr/internal/vm"
 )
-
-// ExitSetup is the exit code when sbxr fails before or around the workload.
-const ExitSetup = vm.ExitSetup
-
-// ImageConfig is the part of an OCI image config that shapes the workload.
-type ImageConfig struct {
-	Entrypoint []string
-	Cmd        []string
-	Env        []string
-	WorkingDir string
-	User       string
-}
-
-// Image is a pulled image.
-type Image struct {
-	// ID identifies the image for its store, for example its cached root directory.
-	ID     string
-	Config ImageConfig
-}
-
-// Images is the image store.
-type Images interface {
-	// Hold keeps the store from removing images while the returned lock file is open.
-	// The runner passes it to the VM process, so that the hold lasts while the VM runs, even when the runner dies.
-	Hold(ctx context.Context) (*os.File, error)
-	// Pull returns the image for ref, downloading it when policy allows.
-	Pull(ctx context.Context, ref string, policy runspec.Pull) (Image, error)
-	// ResolveUser resolves an image User value inside the image.
-	ResolveUser(img Image, user string) (uid, gid uint32, err error)
-	// NewRoot creates a private root file system for one run inside dir and returns its path.
-	// release undoes what a removal of dir cannot, such as a mount.
-	NewRoot(ctx context.Context, img Image, dir string) (root string, release func() error, err error)
-}
 
 // Network is the network of one run.
 type Network interface {
@@ -74,7 +42,7 @@ type NetworkConfig struct {
 
 // Runner runs workloads.
 type Runner struct {
-	Images Images
+	Images image.Store
 	Checks []preflight.Check
 	// Network starts the network of a run with --net.
 	Network func(ctx context.Context, cfg NetworkConfig) (Network, error)
@@ -98,7 +66,7 @@ type Runner struct {
 }
 
 // Run runs the workload and returns its exit code.
-// An error means that sbxr failed, and the exit code is then ExitSetup.
+// An error means that sbxr failed, and the exit code is then vm.ExitSetup.
 // A SIGINT, SIGTERM, or SIGHUP stops the run at once with exit code 130, 143, or 129 and no error.
 func (r *Runner) Run(ctx context.Context, s runspec.Spec) (int, error) {
 	ctx, stop := withSignals(ctx)
@@ -120,7 +88,7 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 
 	err := r.validate(ctx, s)
 	if err != nil {
-		return ExitSetup, err
+		return vm.ExitSetup, err
 	}
 
 	if r.Isolate != nil {
@@ -129,7 +97,7 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 
 	hold, err := r.Images.Hold(ctx)
 	if err != nil {
-		return ExitSetup, fmt.Errorf("hold image cache: %w", err)
+		return vm.ExitSetup, fmt.Errorf("hold image cache: %w", err)
 	}
 	defer hold.Close() //nolint:errcheck // Closing a lock file releases the lock even on error.
 
@@ -137,14 +105,14 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 
 	img, err := r.Images.Pull(ctx, s.Image, s.Pull)
 	if err != nil {
-		return ExitSetup, imageError(s, err)
+		return vm.ExitSetup, imageError(s, err)
 	}
 
 	r.Log.Debug("run state", "state", "preparing")
 
 	cfg, err := r.workload(s, img)
 	if err != nil {
-		return ExitSetup, err
+		return vm.ExitSetup, err
 	}
 
 	// The network starts before any run state, so that a busy publish port fails early.
@@ -153,7 +121,7 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 	if s.Net {
 		network, err = r.Network(ctx, NetworkConfig{AllowLAN: s.AllowLAN, Publish: s.Publish, Log: r.Log})
 		if err != nil {
-			return ExitSetup, fmt.Errorf("network: %w", err)
+			return vm.ExitSetup, fmt.Errorf("network: %w", err)
 		}
 
 		defer func() {
@@ -165,16 +133,16 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 
 	dir, lock, unlock, err := newRunDir(r.RunsDir, r.Log)
 	if err != nil {
-		return ExitSetup, err
+		return vm.ExitSetup, err
 	}
 	defer unlock()
 
 	release := func() error { return nil }
 	defer func() { r.cleanup(dir, release) }()
 
-	release, err = r.prepare(ctx, s, img, cfg, dir, network)
+	release, err = r.prepare(s, img, cfg, dir, network)
 	if err != nil {
-		return ExitSetup, err
+		return vm.ExitSetup, err
 	}
 
 	r.Log.Debug("run state", "state", "running")
@@ -205,17 +173,8 @@ func (r *Runner) validate(ctx context.Context, s runspec.Spec) error {
 }
 
 // workload resolves and checks the guest init config before any run state exists.
-func (r *Runner) workload(s runspec.Spec, img Image) (krunconfig.Config, error) {
-	resolveUser := func(user string) (uint32, uint32, error) {
-		uid, gid, err := r.Images.ResolveUser(img, user)
-		if err != nil {
-			return 0, 0, imageError(s, err)
-		}
-
-		return uid, gid, nil
-	}
-
-	cfg, warnings, err := Workload(s, img.Config, resolveUser)
+func (r *Runner) workload(s runspec.Spec, img *image.Image) (krunconfig.Config, error) {
+	cfg, warnings, err := Workload(s, img)
 	if err != nil {
 		return krunconfig.Config{}, err
 	}
@@ -234,8 +193,8 @@ func (r *Runner) workload(s runspec.Spec, img Image) (krunconfig.Config, error) 
 
 // prepare creates the run root and writes the workload config and the machine into the run directory.
 // It returns the release function of the root, also on error.
-func (r *Runner) prepare(ctx context.Context, s runspec.Spec, img Image, cfg krunconfig.Config, dir string, network Network) (func() error, error) {
-	rootPath, release, err := r.Images.NewRoot(ctx, img, dir)
+func (r *Runner) prepare(s runspec.Spec, img *image.Image, cfg krunconfig.Config, dir string, network Network) (func() error, error) {
+	rootPath, release, err := r.Images.NewRoot(img, dir)
 	if err != nil {
 		return func() error { return nil }, imageError(s, err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/run"
 	"github.com/albertsko/sbxr/internal/runspec"
 )
@@ -122,32 +123,18 @@ func (a *app) run(cmd *cobra.Command, in runspec.Input, envFiles []string, quiet
 		return 0, fmt.Errorf("find the sbxr binary: %w", err)
 	}
 
-	// The workload writes to the real stdout, so restore it while the run lasts.
-	a.stdout.restore()
-	defer a.stdout.hide()
-
-	r := &run.Runner{
-		Images:      nil,
-		Checks:      a.backend.Checks(dir),
-		Network:     startNetwork,
-		MountHelper: a.backend.MountHelper,
-		Isolate:     nil,
-		Exe:         exe,
-		VMEnv:       a.backend.VMEnv,
-		VMLogLevel:  vmLogLevel(a.level),
-		RunsDir:     run.RunsDir(dir),
-		Log:         a.log,
-		Stdin:       os.Stdin,
-		Stdout:      os.Stdout,
-		Stderr:      os.Stderr,
-	}
+	var (
+		store   image.Store
+		isolate func(stdin, stdout, stderr *os.File) (int, error)
+	)
 
 	if a.backend.Isolate != nil {
-		r.Isolate = func(stdin, stdout, stderr *os.File) (int, error) {
+		// The isolated process runs this command again and opens the image store itself, so store stays empty here.
+		isolate = func(stdin, stdout, stderr *os.File) (int, error) {
 			return a.backend.Isolate(a.args, stdin, stdout, stderr)
 		}
 	} else {
-		store, err := a.backend.Images(dir)
+		store, err = a.backend.Images(dir)
 		if err != nil {
 			return 0, err
 		}
@@ -156,8 +143,26 @@ func (a *app) run(cmd *cobra.Command, in runspec.Input, envFiles []string, quiet
 		if !quiet && term.IsTerminal(int(os.Stderr.Fd())) {
 			store.Progress = pullProgress(os.Stderr, s.Image)
 		}
+	}
 
-		r.Images = store
+	// The workload writes to the real stdout, so restore it while the run lasts.
+	a.stdout.restore()
+	defer a.stdout.hide()
+
+	r := &run.Runner{
+		Images:      store,
+		Checks:      a.backend.Checks(dir),
+		Network:     startNetwork,
+		MountHelper: a.backend.MountHelper,
+		Isolate:     isolate,
+		Exe:         exe,
+		VMEnv:       a.backend.VMEnv,
+		VMLogLevel:  vmLogLevel(a.level),
+		RunsDir:     run.RunsDir(dir),
+		Log:         a.log,
+		Stdin:       os.Stdin,
+		Stdout:      os.Stdout,
+		Stderr:      os.Stderr,
 	}
 
 	return r.Run(cmd.Context(), s) //nolint:wrapcheck // Runner errors are complete user messages.

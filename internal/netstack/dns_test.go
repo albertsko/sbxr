@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/albertsko/sbxr/internal/netstack/guestsim"
 	"github.com/miekg/dns"
 )
 
@@ -175,7 +174,7 @@ func TestCloseWithUnansweredSYN(t *testing.T) {
 	defer cancel()
 
 	// The gateway resolves the guest MAC through DHCP and DNS, then the guest disappears.
-	g, err := guestsim.Start(ctx, n.VMFile(), n.GuestMAC())
+	g, err := startGuest(ctx, n.VMFile(), n.GuestMAC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +217,7 @@ func assertQuickClose(t *testing.T, n *Network) {
 
 // queryOverTCP sends one query for testHost over a new DNS TCP connection and leaves the connection open.
 // The answer shows that the DNS server has accepted the connection.
-func queryOverTCP(t *testing.T, g *guestsim.Guest) {
+func queryOverTCP(t *testing.T, g *Guest) {
 	t.Helper()
 
 	c, err := dialTCP(t, g, netip.AddrPortFrom(gatewayIP, 53).String(), 5*time.Second)

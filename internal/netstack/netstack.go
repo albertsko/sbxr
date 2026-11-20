@@ -76,12 +76,12 @@ type Config struct {
 	Logger *slog.Logger
 
 	// Dial opens host connections for allowed guest flows after the egress check. Nil uses [net.Dialer].
-	// Tests and the fake target set it to send public-looking destinations to local servers.
+	// Tests set it to send public-looking destinations to local servers.
 	Dial DialFunc
 
 	// Hosts maps DNS names to addresses that the gateway DNS answers without asking the host resolver.
 	// Names are lowercase without the trailing dot. Other query types for these names get an empty answer.
-	// Tests and the fake target use it, because they have no external DNS.
+	// Tests use it, because they have no external DNS.
 	Hosts map[string]netip.Addr
 
 	// udpIdle, resolver, and nameservers override the UDP flow idle timeout, the host resolver, and the host nameservers in tests.

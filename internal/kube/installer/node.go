@@ -1,7 +1,3 @@
-// Package installer installs and removes the sbxr runtime on one Kubernetes node.
-//
-// It runs in a privileged DaemonSet pod with the host root filesystem mounted and the host PID namespace.
-// Host commands run in the host mount namespace, and the installer's own Node object holds the result.
 package installer
 
 import (
