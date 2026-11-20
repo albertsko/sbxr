@@ -4,9 +4,12 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -188,6 +191,66 @@ func TestVMClosedTerminalStopsTheRun(t *testing.T) {
 	}
 }
 
+func TestVMCtrlCEndsAStalledDrain(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := vmCacheDir(t)
+	word := strings.Repeat("x", 100000)
+
+	// Nobody reads this pipe, so the output copy stalls once the pipe buffer is full.
+	stdout, unread, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	defer unread.Close()
+
+	full := fillPipe(t, stdout, unread)
+
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), unread, nil, runArgs("-it", vmImages(t)[Busybox], "echo", word, word)...)
+
+	for deadline := time.Now().Add(10 * time.Second); !tm.raw(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the terminal never became raw")
+		}
+	}
+
+	// The workload blocks on the full output, so the guest reads no input and the runner must stop the run itself.
+	// The runner counts a write as stalled only after 50 ms, and an earlier Ctrl-C may still reach the guest.
+	waitForStalledWriter(t, cacheDir, stdout, unread, full)
+	time.Sleep(200 * time.Millisecond)
+	tm.write("\x03")
+
+	done := make(chan int, 1)
+
+	go func() {
+		_, code, _ := tm.wait()
+		done <- code
+	}()
+
+	select {
+	case code := <-done:
+		if code != 130 {
+			t.Errorf("exit code = %d, want 130", code)
+		}
+	case <-time.After(10 * time.Second):
+		_ = tm.cmd.Process.Kill()
+
+		t.Fatal("sbxr ignored Ctrl-C while the output reader stalled")
+	}
+
+	if tm.raw() {
+		t.Error("the terminal stayed raw after the run")
+	}
+
+	waitForNoProcess(t, cacheDir)
+
+	err = CheckClean(cacheDir)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 	t.Parallel()
 
@@ -212,8 +275,23 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 		}
 	}
 
-	// The workload blocks on the full output, so the guest reads no input. The stalled drain would keep the runner waiting after the VM exits.
-	waitForStalledWriter(t, stdout, unread, full)
+	// The VM exits while the drain stalls. A Ctrl-C to the workload would not end it reliably,
+	// because libkrun can stop reading input while its output is blocked, and the VM exits only after its output.
+	waitForStalledWriter(t, cacheDir, stdout, unread, full)
+
+	err = syscall.Kill(vmProcess(t, cacheDir), syscall.SIGKILL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The stalled drain keeps the runner waiting after the VM exits.
+	for deadline := time.Now().Add(10 * time.Second); tm.raw(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the terminal stayed raw after the VM exited")
+		}
+	}
+
+	// The terminal is back in cooked mode, so Ctrl-C is a SIGINT to the runner.
 	tm.write("\x03")
 
 	done := make(chan int, 1)
@@ -232,10 +310,6 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 		_ = tm.cmd.Process.Kill()
 
 		t.Fatal("sbxr ignored Ctrl-C while the output reader stalled")
-	}
-
-	if tm.raw() {
-		t.Error("the terminal stayed raw after the run")
 	}
 
 	waitForNoProcess(t, cacheDir)
@@ -269,7 +343,7 @@ func TestVMReaderGoneAfterCtrlCWithStalledOutput(t *testing.T) {
 	}
 
 	// Output in the pipe proves that the runner handles signals. Nobody reads, so the output copy then blocks on the full pipe.
-	waitForStalledWriter(t, pr, pw, full)
+	waitForStalledWriter(t, cacheDir, pr, pw, full)
 
 	err = cmd.Process.Signal(syscall.SIGINT)
 	if err != nil {
@@ -361,7 +435,7 @@ func TestVMSIGTERMWithAStalledTTYReader(t *testing.T) {
 	}
 
 	// Output in the pipe means that the runner handles signals.
-	waitForStalledWriter(t, stdout, unread, full)
+	waitForStalledWriter(t, cacheDir, stdout, unread, full)
 
 	err = cmd.Process.Signal(syscall.SIGTERM)
 	if err != nil {
@@ -411,10 +485,11 @@ func fillPipe(t *testing.T, r, w *os.File) int {
 	return unreadInPipe(t, r)
 }
 
-// waitForStalledWriter reads one page from the pipe that fillPipe filled and waits until a writer has refilled it.
+// waitForStalledWriter reads one page from the pipe that fillPipe filled, waits for the first output of the run in cacheDir,
+// and then waits until a writer has refilled the pipe.
 // Linux frees pipe space by pages. The pipe then has no room for a write of PIPE_BUF bytes,
 // and the workloads that use it write far more than that, so the writer blocks.
-func waitForStalledWriter(t *testing.T, r, w *os.File, full int) {
+func waitForStalledWriter(t *testing.T, cacheDir string, r, w *os.File, full int) {
 	t.Helper()
 
 	page := os.Getpagesize()
@@ -424,16 +499,33 @@ func waitForStalledWriter(t *testing.T, r, w *os.File, full int) {
 		t.Fatal(err)
 	}
 
-	for deadline := time.Now().Add(readyTimeout); ; time.Sleep(10 * time.Millisecond) {
-		n := unreadInPipe(t, r)
-		if n > full-page && !writable(t, w) {
-			return
-		}
-
+	// A VM boots slowly on a loaded host, so the boot gets its own wait before the stall check.
+	for deadline := time.Now().Add(readyTimeout); unreadInPipe(t, r) <= full-page; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the pipe holds %d of %d bytes and is writable: %v; want a writer that refilled it", n, full, writable(t, w))
+			t.Fatalf("the run wrote no output in %v: %s", readyTimeout, bootState(t, cacheDir))
 		}
 	}
+
+	for deadline := time.Now().Add(readyTimeout); writable(t, w); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the pipe holds %d of %d bytes and is writable: %s; want a writer that refilled it", unreadInPipe(t, r), full, bootState(t, cacheDir))
+		}
+	}
+}
+
+// bootState tells whether the VM process of the run in cacheDir is running.
+func bootState(t *testing.T, cacheDir string) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), psTimeout)
+	defer cancel()
+
+	err := exec.CommandContext(ctx, "pgrep", "-f", "__vm "+cacheDir).Run()
+	if err != nil {
+		return fmt.Sprintf("no VM process runs (%v)", err)
+	}
+
+	return "the VM process runs"
 }
 
 // unreadInPipe returns the number of unread bytes in the pipe with the read end r.
