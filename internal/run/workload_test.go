@@ -1,11 +1,9 @@
 package run
 
 import (
-	"cmp"
-	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/albertsko/sbxr/internal/image"
@@ -62,7 +60,8 @@ func TestWorkload(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, warnings, err := Workload(tt.spec, tt.image, numericUser)
+			// The image root has no /etc/passwd, so only numeric users resolve.
+			got, warnings, err := Workload(tt.spec, &image.Image{Root: t.TempDir(), Config: tt.image})
 			if err != nil {
 				t.Fatalf("Workload() error = %v", err)
 			}
@@ -86,40 +85,50 @@ func TestWorkload(t *testing.T) {
 func TestWorkloadResolvesImageUserOnlyWithoutUserFlag(t *testing.T) {
 	t.Parallel()
 
-	resolver := func(user string) (uint32, uint32, error) {
-		if user != "app" {
-			return 0, 0, errors.New("unknown user")
-		}
+	root := t.TempDir()
 
-		return 7, 8, nil
+	err := os.MkdirAll(filepath.Join(root, "etc"), 0o755)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	got, _, err := Workload(runspec.Spec{}, image.Config{User: "app", Cmd: []string{"sh"}}, resolver)
-	if err != nil || got.UID != 7 || got.GID != 8 {
-		t.Errorf("Workload() = %+v, %v; want uid 7 and gid 8", got, err)
+	err = os.WriteFile(filepath.Join(root, "etc", "passwd"), []byte("root:x:0:0::/root:/bin/sh\napp:x:7:8::/app:/bin/sh\n"), 0o644)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	_, _, err = Workload(runspec.Spec{}, image.Config{User: "nobody", Cmd: []string{"sh"}}, resolver)
-	if err == nil {
-		t.Error("Workload() with an unknown image user succeeded, want an error")
+	tests := []struct {
+		name    string
+		spec    runspec.Spec
+		user    string
+		wantUID uint32
+		wantGID uint32
+		wantErr string
+	}{
+		{name: "named user", user: "app", wantUID: 7, wantGID: 8},
+		{name: "missing user", user: "nobody", wantErr: `image "img": user "nobody": no such user in the image /etc/passwd`},
+		{name: "user flag wins over a missing user", spec: runspec.Spec{User: &runspec.User{UID: 1, GID: 2}}, user: "nobody", wantUID: 1, wantGID: 2},
 	}
 
-	got, _, err = Workload(runspec.Spec{User: &runspec.User{UID: 1}}, image.Config{User: "nobody", Cmd: []string{"sh"}}, resolver)
-	if err != nil || got.UID != 1 {
-		t.Errorf("Workload() with -u = %+v, %v; want uid 1 without resolving the image user", got, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tt.spec.Image = "img"
+			img := &image.Image{Root: root, Config: image.Config{User: tt.user, Cmd: []string{"sh"}}}
+
+			got, _, err := Workload(tt.spec, img)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Errorf("Workload() error = %v, want %q", err, tt.wantErr)
+				}
+
+				return
+			}
+
+			if err != nil || got.UID != tt.wantUID || got.GID != tt.wantGID {
+				t.Errorf("Workload() = %+v, %v; want uid %d and gid %d", got, err, tt.wantUID, tt.wantGID)
+			}
+		})
 	}
-}
-
-// numericUser resolves uid[:gid] values like an image without /etc/passwd.
-func numericUser(user string) (uint32, uint32, error) {
-	if user == "" {
-		return 0, 0, nil
-	}
-
-	uidRaw, gidRaw, _ := strings.Cut(user, ":")
-
-	uid, err1 := strconv.ParseUint(uidRaw, 10, 32)
-	gid, err2 := strconv.ParseUint(cmp.Or(gidRaw, "0"), 10, 32)
-
-	return uint32(uid), uint32(gid), errors.Join(err1, err2)
 }

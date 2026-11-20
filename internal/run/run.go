@@ -174,16 +174,7 @@ func (r *Runner) validate(ctx context.Context, s runspec.Spec) error {
 
 // workload resolves and checks the guest init config before any run state exists.
 func (r *Runner) workload(s runspec.Spec, img *image.Image) (krunconfig.Config, error) {
-	resolveUser := func(user string) (uint32, uint32, error) {
-		uid, gid, err := img.ResolveUser(user)
-		if err != nil {
-			return 0, 0, imageError(s, err)
-		}
-
-		return uid, gid, nil
-	}
-
-	cfg, warnings, err := Workload(s, img.Config, resolveUser)
+	cfg, warnings, err := Workload(s, img)
 	if err != nil {
 		return krunconfig.Config{}, err
 	}
