@@ -339,7 +339,7 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 	defer out.close()
 
 	if interactive {
-		go copyInput(ptmx, r.Stdin, console.busy, interrupt.fire) // The VM exit ends the run, not the input copy.
+		go copyInput(ptmx, r.Stdin, console, interrupt.fire) // The VM exit ends the run, not the input copy.
 	}
 
 	go func() {
@@ -390,10 +390,10 @@ const ctrlC = 0x03
 const inputQueue = 256
 
 // copyInput copies the user's input to the guest terminal until a read fails.
-// A Ctrl-C calls interrupt and ends the copy when busy reports that the guest cannot turn it into SIGINT,
+// A Ctrl-C calls interrupt and ends the copy when the guest cannot turn it into SIGINT,
 // or when earlier input has waited too long for the guest terminal, so that the Ctrl-C would wait behind it.
 // When the guest gets stuck in this way shortly after it got a Ctrl-C, interrupt is called too.
-func copyInput(dst io.Writer, src io.Reader, busy func() bool, interrupt func()) {
+func copyInput(dst io.Writer, src io.Reader, guest *consoleWatch, interrupt func()) {
 	chunks := make(chan []byte, inputQueue)
 	defer close(chunks)
 
@@ -415,10 +415,28 @@ func copyInput(dst io.Writer, src io.Reader, busy func() bool, interrupt func())
 		}
 	}()
 
-	stuck := func() bool { return busy() || input.stalled() }
+	stuck := func() bool { return guest.busy() || input.stalled() }
 	interruptIfStuck := func() {
 		if stuck() {
 			interrupt()
+		}
+	}
+
+	// A write that is still short at the recheck may stall later, so the recheck repeats once when it would count.
+	recheck := func() {
+		if stuck() {
+			interrupt()
+
+			return
+		}
+
+		at := guest.write.stallsAt()
+		if inputAt := input.stallsAt(); inputAt.After(at) {
+			at = inputAt
+		}
+
+		if !at.IsZero() {
+			time.AfterFunc(time.Until(at), interruptIfStuck)
 		}
 	}
 
@@ -436,7 +454,7 @@ func copyInput(dst io.Writer, src io.Reader, busy func() bool, interrupt func())
 
 		// A write that started just before the Ctrl-C may be a stall that does not count yet, so a later check repeats.
 		if hasCtrlC {
-			time.AfterFunc(2*stallAfter, interruptIfStuck)
+			time.AfterFunc(2*stallAfter, recheck)
 		}
 
 		if n > 0 {
@@ -479,7 +497,7 @@ func (c *consoleWatch) busy() bool { return !c.started.Load() || c.write.stalled
 // Writes to a reader that keeps up end far sooner, so a Ctrl-C during normal output still reaches the guest.
 const stallAfter = 50 * time.Millisecond
 
-// stallWatch tells whether a write has waited longer than stallAfter.
+// stallWatch tells whether a write has waited for stallAfter or longer.
 // It holds the start of the current write in Unix nanoseconds, or 0 between writes.
 type stallWatch struct {
 	start atomic.Int64
@@ -492,7 +510,17 @@ func (s *stallWatch) end() { s.start.Store(0) }
 func (s *stallWatch) stalled() bool {
 	start := s.start.Load()
 
-	return start != 0 && time.Since(time.Unix(0, start)) > stallAfter
+	return start != 0 && time.Since(time.Unix(0, start)) >= stallAfter
+}
+
+// stallsAt returns when the current write counts as stalled, or the zero time between writes.
+func (s *stallWatch) stallsAt() time.Time {
+	start := s.start.Load()
+	if start == 0 {
+		return time.Time{}
+	}
+
+	return time.Unix(0, start).Add(stallAfter)
 }
 
 // copyUntil copies src to dst until it reads marker, which it drops.
