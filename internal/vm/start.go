@@ -9,17 +9,6 @@ import (
 	"github.com/albertsko/sbxr/internal/libkrun"
 )
 
-// Env returns the environment entries that let the VM process load libkrun from libDir, the SBXR_LIB_DIR value.
-// It returns nil without a library directory, because the libkrun check then fails before any VM starts.
-func Env(libDir string) []string {
-	dir, err := libkrun.LibDir(libDir)
-	if err != nil {
-		return nil
-	}
-
-	return libkrun.Env(dir)
-}
-
 // start enters the VM described by m with libkrun from libDir. On success it does not return.
 func start(libDir string, m Machine) error {
 	dir, err := libkrun.LibDir(libDir)

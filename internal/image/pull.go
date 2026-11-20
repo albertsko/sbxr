@@ -31,23 +31,6 @@ var (
 	ErrNoPlatform = errors.New("no variant for the host platform")
 )
 
-// Image is an unpacked image in the cache. Its files must not change.
-type Image struct {
-	// Root is the cached root directory.
-	Root string
-	// Config is the image run configuration.
-	Config Config
-}
-
-// Config is the part of an OCI image config that shapes the workload.
-type Config struct {
-	Entrypoint []string
-	Cmd        []string
-	Env        []string
-	WorkingDir string
-	User       string
-}
-
 // hostPlatform is the only guest platform, because sbxr does not emulate other architectures.
 const hostPlatform = "linux/" + runtime.GOARCH
 

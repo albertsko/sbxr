@@ -30,9 +30,9 @@ func (s Store) Pull(ctx context.Context, ref string, policy runspec.Pull) (*Imag
 }
 
 // NewRoot creates the private run root dir/root and returns its path.
-// release undoes what a removal of dir cannot, such as a mount.
-func (s Store) NewRoot(img *Image, dir string) (root string, release func() error, err error) {
-	root = filepath.Join(dir, "root")
+// The returned release function undoes what a removal of dir cannot, such as a mount.
+func (s Store) NewRoot(img *Image, dir string) (string, func() error, error) {
+	root := filepath.Join(dir, "root")
 
 	if s.Overlay {
 		release, err := img.MountRoot(dir, root)

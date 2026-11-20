@@ -2,6 +2,7 @@
 //
 // The parent writes a Machine into the run directory and starts the same binary with ChildArg.
 // The child reads the Machine and starts it with libkrun, which takes over the process.
+// The package builds only on darwin and linux, because libkrun does.
 package vm
 
 import (
@@ -13,6 +14,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+
+	"github.com/albertsko/sbxr/internal/libkrun"
 )
 
 // ChildArg is the hidden first argument that selects the child mode.
@@ -67,6 +70,17 @@ func WriteMachine(dir string, m Machine) error {
 	}
 
 	return nil
+}
+
+// Env returns the environment entries that let the VM process load libkrun from libDir, the SBXR_LIB_DIR value.
+// It returns nil without a library directory, because the libkrun check then fails before any VM starts.
+func Env(libDir string) []string {
+	dir, err := libkrun.LibDir(libDir)
+	if err != nil {
+		return nil
+	}
+
+	return libkrun.Env(dir)
 }
 
 // Child runs the child mode with the arguments after ChildArg and returns the exit code.
