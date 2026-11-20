@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/albertsko/sbxr/internal/netstack/guestsim"
 	"github.com/miekg/dns"
 )
 
@@ -74,7 +73,7 @@ func newTestDialer(t *testing.T, addrs ...netip.Addr) *testDialer {
 	return &testDialer{tcp: tcpEcho(t, "127.0.0.1:0"), udp: udpEcho(t), routed: append(addrs, publicAddr)}
 }
 
-func startNetwork(t *testing.T, cfg Config) (*Network, *guestsim.Guest) {
+func startNetwork(t *testing.T, cfg Config) (*Network, *Guest) {
 	t.Helper()
 
 	n, err := Start(t.Context(), cfg)
@@ -85,11 +84,11 @@ func startNetwork(t *testing.T, cfg Config) (*Network, *guestsim.Guest) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
-	g, err := guestsim.Start(ctx, n.VMFile(), n.GuestMAC())
+	g, err := startGuest(ctx, n.VMFile(), n.GuestMAC())
 	if err != nil {
 		_ = n.Close()
 
-		t.Fatalf("guestsim.Start: %v", err)
+		t.Fatalf("startGuest: %v", err)
 	}
 
 	t.Cleanup(func() {
@@ -188,7 +187,7 @@ func roundTrip(c net.Conn, msg string, timeout time.Duration) error {
 	return nil
 }
 
-func dialTCP(t *testing.T, g *guestsim.Guest, addr string, timeout time.Duration) (net.Conn, error) {
+func dialTCP(t *testing.T, g *Guest, addr string, timeout time.Duration) (net.Conn, error) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
@@ -204,7 +203,7 @@ func dialTCP(t *testing.T, g *guestsim.Guest, addr string, timeout time.Duration
 	return c, nil
 }
 
-func dialUDP(t *testing.T, g *guestsim.Guest, addr string) net.Conn {
+func dialUDP(t *testing.T, g *Guest, addr string) net.Conn {
 	t.Helper()
 
 	c, err := g.DialUDP(t.Context(), addr)

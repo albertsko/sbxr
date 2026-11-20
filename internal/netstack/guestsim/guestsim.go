@@ -1,5 +1,5 @@
 // Package guestsim simulates the network of a VM guest on the VM end of the netstack socket.
-// Tests and the fake hypervisor use it to get an address with DHCP, resolve names through the gateway DNS, connect out, and listen.
+// The fake hypervisor uses it to get an address with DHCP, resolve names through the gateway DNS, connect out, and listen.
 package guestsim
 
 import (
