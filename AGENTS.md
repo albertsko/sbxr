@@ -23,7 +23,7 @@
 - `internal/libkrun/` loads and starts `libkrun`. It imports no other package of this module, so the CLI and the shim share it.
 - `internal/e2e/` holds only `_test.go` files: the end-to-end tests of the release binary, which they build themselves. These are the host-only CLI tests, the behavior scenarios, and the `vm` and `kube` tests.
 - `internal/testenv/` holds the test helper `SkipOrFailf` and the layout test that checks the target file names, build tags, and test names.
-- Tests run only against real environments, never against stubs or fakes. Unit tests check pure functions on real values.
+- Tests run against real environments, with no fake targets or simulated VMs. A unit test may replace an outside system only to inject failures that a real environment cannot produce.
 - Tests come in three kinds: unit tests (no build tag, `mise run test`), `vm` (build tag `vm`, `mise run test:vm`, test names start with `TestVM`), and `kube` (build tag `kube`, `mise run test:kube`, test names start with `TestKube`).
 - The hosts are `darwin` and `linux`. Lint covers both GOOS values.
 - `SBXR_TEST_REQUIRE=1` makes a `vm` or `kube` test fail instead of skip when its environment is missing. CI sets it.
@@ -33,6 +33,15 @@
 - `scripts/ci/` holds scripts that only GitHub Actions calls.
 - `docs/` holds current user documentation only, never plans or history.
 - The root holds only `mise.toml`, `hk.pkl`, `.golangci.yml`, `.goreleaser.yaml`, `.editorconfig`, `.gitignore`, `go.mod`, `go.sum`, `README.md`, `CONTRIBUTING.md`, `LICENSE.md`, `AGENTS.md`, and the `CLAUDE.md` symlink.
+
+### Dependency rules
+
+- `cmd/sbxr` and the Kubernetes commands only wire packages together. `internal/cli` alone parses the `sbxr` flags, prints command output, and uses `cobra` and the charm libraries. The `internal/e2e` tests may also use the charm ANSI helper.
+- `internal/run` runs one workload with `runspec`, `image`, `preflight`, and `vm`. `internal/cli` passes it the network from `internal/netstack`.
+- Lower packages, such as `runspec`, `image`, `netstack`, `preflight`, `vm`, and `libkrun`, never import `internal/cli` or `internal/run`.
+- Only `internal/libkrun` loads `libkrun`. `internal/vm`, `internal/preflight`, and `internal/kube/shim` use it.
+- `internal/kube` is a separate product. Outside `internal/kube`, only the Kubernetes commands import it, and it never imports `internal/cli`, `internal/run`, or `internal/image`.
+- `depguard` in `.golangci.yml` enforces these import boundaries. Add a new lower package to its `lower-layer` rule.
 
 ### CI
 

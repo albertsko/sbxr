@@ -55,7 +55,7 @@ x86_64 or arm64 with KVM:
 
 ## Targets and hosts
 
-The project tests only against real environments and uses no stubs or fakes. A test is a unit test, or it runs against one target: `vm` (a real libkrun VM) or `kube` (Kubernetes in a kind cluster). The host is `darwin` or `linux`.
+Tests run against real environments, with no fake targets or simulated VMs. A unit test may replace an outside system only to inject failures that a real environment cannot produce. A test is a unit test, or it runs against one target: `vm` (a real libkrun VM) or `kube` (Kubernetes in a kind cluster). The host is `darwin` or `linux`.
 
 1. Put host-specific code in `_darwin.go` or `_linux.go` files, or behind a `GOOS` build constraint. Do not invent build tags for hosts.
 2. Write a unit test as a plain `_test.go` file without a build tag. It needs no hypervisor and no network. `mise run test` runs it everywhere.
