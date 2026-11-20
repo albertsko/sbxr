@@ -3,6 +3,8 @@ package run
 import (
 	"bytes"
 	"io"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 )
@@ -58,6 +60,61 @@ func TestCopyUntilDoesNotHoldBackOutput(t *testing.T) {
 	}
 
 	_ = w.Close()
+}
+
+func TestCopyInput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		busy          bool
+		want          string
+		wantInterrupt bool
+	}{
+		{name: "a ready guest gets Ctrl-C", busy: false, want: "a\x03b", wantInterrupt: false},
+		{name: "a busy guest gets no Ctrl-C", busy: true, want: "a", wantInterrupt: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				got         bytes.Buffer
+				interrupted atomic.Bool
+			)
+
+			// The first read holds only "a", so a busy guest still gets the input before the Ctrl-C.
+			src := iotest.OneByteReader(strings.NewReader("a\x03b"))
+			busy := func() bool { return tt.busy }
+
+			copyInput(&got, src, busy, func() { interrupted.Store(true) })
+
+			if got.String() != tt.want || interrupted.Load() != tt.wantInterrupt {
+				t.Errorf("copyInput() wrote %q, interrupt %v; want %q, %v", got.String(), interrupted.Load(), tt.want, tt.wantInterrupt)
+			}
+		})
+	}
+}
+
+func TestConsoleWatchBusy(t *testing.T) {
+	t.Parallel()
+
+	var busyInWrite bool
+
+	c := &consoleWatch{w: nil, started: atomic.Bool{}, writing: atomic.Bool{}}
+	c.w = writerFunc(func(p []byte) (int, error) {
+		busyInWrite = c.busy()
+
+		return len(p), nil
+	})
+
+	busyBefore := c.busy()
+	_, _ = c.Write([]byte("x"))
+
+	if !busyBefore || !busyInWrite || c.busy() {
+		t.Errorf("busy() before output, during a write, after it = %v, %v, %v; want true, true, false", busyBefore, busyInWrite, c.busy())
+	}
 }
 
 type writerFunc func([]byte) (int, error)

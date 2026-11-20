@@ -93,9 +93,6 @@ func TestVMCtrlCWithInteractiveTTYStopsTheWorkload(t *testing.T) {
 func TestVMCtrlCRightAfterRawModeStopsTheWorkload(t *testing.T) {
 	t.Parallel()
 
-	// The guest kernel turns Ctrl-C into SIGINT, so a Ctrl-C that arrives while the VM boots never reaches the workload.
-	t.Skip("known gap: a Ctrl-C while the VM boots is lost, and the workload runs on")
-
 	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[Busybox], "sleep", "30")...)
 
 	// The runner sets the user's terminal raw just before it starts the VM process.
@@ -122,6 +119,21 @@ func TestVMCtrlCReachesAWorkloadThatDoesNotReadStdin(t *testing.T) {
 
 	if _, code, _ := tm.wait(); code != 130 {
 		t.Errorf("exit code = %d, want 130", code)
+	}
+}
+
+func TestVMCtrlCReachesAWorkloadThatReadsIt(t *testing.T) {
+	t.Parallel()
+
+	// Without ISIG, the guest terminal passes Ctrl-C to the workload as a byte, as a shell or an editor wants it.
+	script := "stty raw -echo; echo raw; head -c 1 | od -An -tx1"
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[Busybox], "sh", "-c", script)...)
+	tm.waitForOutput("raw")
+	tm.write("\x03")
+
+	out, code, _ := tm.wait()
+	if code != 0 || !strings.Contains(out, " 03") {
+		t.Errorf("sbxr run -it then Ctrl-C to a raw terminal = %d, %q; want 0 and the byte 03", code, out)
 	}
 }
 
@@ -184,23 +196,8 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 		}
 	}
 
-	// The VM exits while the drain stalls. A Ctrl-C to the workload would not end it reliably,
-	// because libkrun can stop reading input while its output is blocked, and the VM exits only after its output.
+	// The workload blocks on the full output, so the guest reads no input. The stalled drain would keep the runner waiting after the VM exits.
 	waitForStalledWriter(t, stdout, unread, full)
-
-	err = syscall.Kill(vmProcess(t, cacheDir), syscall.SIGKILL)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// The stalled drain keeps the runner waiting after the VM exits.
-	for deadline := time.Now().Add(10 * time.Second); tm.raw(); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("the terminal stayed raw after the VM exited")
-		}
-	}
-
-	// The terminal is back in cooked mode, so Ctrl-C is a SIGINT to the runner.
 	tm.write("\x03")
 
 	done := make(chan int, 1)
@@ -219,6 +216,10 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 		_ = tm.cmd.Process.Kill()
 
 		t.Fatal("sbxr ignored Ctrl-C while the output reader stalled")
+	}
+
+	if tm.raw() {
+		t.Error("the terminal stayed raw after the run")
 	}
 
 	waitForNoProcess(t, cacheDir)

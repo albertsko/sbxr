@@ -77,6 +77,8 @@ func (r *Runner) start(ctx context.Context, s runspec.Spec, dir string, extra []
 		return 0, nil
 	case errors.Is(err, errBrokenPipe):
 		return 128 + int(syscall.SIGPIPE), nil
+	case errors.Is(err, errInterrupted):
+		return 128 + int(syscall.SIGINT), nil
 	case ctx.Err() != nil:
 		return vm.ExitSetup, fmt.Errorf("vm process: %w", context.Cause(ctx))
 	case isExit && exit.Exited():
@@ -107,9 +109,9 @@ func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) 
 	defer stderr.close()
 
 	// Stderr write errors are ignored.
-	pipe := newPipeBreak()
+	pipe := newRunStop(errBrokenPipe)
 
-	outPipe, outDone, err := relay(stdout, pipe.onError)
+	outPipe, outDone, err := relay(stdout, pipe.onEPIPE)
 	if err != nil {
 		return err
 	}
@@ -170,30 +172,39 @@ func (r *Runner) runPlain(ctx context.Context, cmd *exec.Cmd, interactive bool) 
 // errBrokenPipe means that the reader of the user's stdout went away, so the runner stopped the VM.
 var errBrokenPipe = errors.New("stdout reader is gone")
 
-// pipeBreak stops the VM process when a write to the user's stdout fails with EPIPE, like SIGPIPE stops a Unix pipeline.
-type pipeBreak struct {
-	broken chan struct{}
-	once   sync.Once
+// errInterrupted means that the user typed Ctrl-C while the guest could not take it, so the runner stopped the VM.
+var errInterrupted = errors.New("interrupted")
+
+// runStop stops the VM process for the runner, for example when the reader of the user's stdout went away.
+type runStop struct {
+	err   error
+	fired chan struct{}
+	once  sync.Once
 }
 
-func newPipeBreak() *pipeBreak {
-	return &pipeBreak{broken: make(chan struct{}), once: sync.Once{}}
+func newRunStop(err error) *runStop {
+	return &runStop{err: err, fired: make(chan struct{}), once: sync.Once{}}
 }
 
-// onError takes the error of a write to the user's stdout.
-func (p *pipeBreak) onError(err error) {
+func (s *runStop) fire() { s.once.Do(func() { close(s.fired) }) }
+
+// disarm makes later fires do nothing.
+func (s *runStop) disarm() { s.once.Do(func() {}) }
+
+// onEPIPE takes the error of a write to the user's stdout and fires on EPIPE, like SIGPIPE stops a Unix pipeline.
+func (s *runStop) onEPIPE(err error) {
 	if errors.Is(err, syscall.EPIPE) {
-		p.once.Do(func() { close(p.broken) })
+		s.fire()
 	}
 }
 
-// watch kills proc when the pipe breaks, until stop is called.
-func (p *pipeBreak) watch(proc *os.Process) (stop func()) {
+// watch kills proc when the stop fires, until the returned function is called.
+func (s *runStop) watch(proc *os.Process) func() {
 	exited := make(chan struct{})
 
 	go func() {
 		select {
-		case <-p.broken:
+		case <-s.fired:
 			_ = proc.Kill() // The VM process may have exited already.
 		case <-exited:
 		}
@@ -202,11 +213,11 @@ func (p *pipeBreak) watch(proc *os.Process) (stop func()) {
 	return func() { close(exited) }
 }
 
-// result returns errBrokenPipe when the pipe broke, else err.
-func (p *pipeBreak) result(err error) error {
+// result returns the error of the stop when it fired, else err.
+func (s *runStop) result(err error) error {
 	select {
-	case <-p.broken:
-		return errBrokenPipe
+	case <-s.fired:
+		return s.err
 	default:
 		return err
 	}
@@ -317,29 +328,35 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 		defer stopResize()
 	}
 
-	if interactive {
-		go func() {
-			_, _ = io.Copy(ptmx, r.Stdin) // The VM exit ends the run, not the input copy.
-		}()
-	}
-
 	marker := rand.Text()
 	out := &guardedWriter{w: r.Stdout, closed: atomic.Bool{}}
-	pipe := newPipeBreak()
+	pipe := newRunStop(errBrokenPipe)
+	interrupt := newRunStop(errInterrupted)
+	console := &consoleWatch{w: errorWriter{w: out, onError: pipe.onEPIPE}, started: atomic.Bool{}, writing: atomic.Bool{}}
 	copied := make(chan struct{})
 
 	defer out.close()
 
+	if interactive {
+		go copyInput(ptmx, r.Stdin, console.busy, interrupt.fire) // The VM exit ends the run, not the input copy.
+	}
+
 	go func() {
 		defer close(copied)
 
-		copyUntil(errorWriter{w: out, onError: pipe.onError}, ptmx, []byte(marker))
+		copyUntil(console, ptmx, []byte(marker))
 	}()
 
-	stopWatch := pipe.watch(cmd.Process)
-	defer stopWatch()
+	stopPipeWatch := pipe.watch(cmd.Process)
+	defer stopPipeWatch()
+
+	stopInterruptWatch := interrupt.watch(cmd.Process)
+	defer stopInterruptWatch()
 
 	err = cmd.Wait()
+
+	// A Ctrl-C after the VM exit comes too late to stop it, so the exit code of the workload stays.
+	interrupt.disarm()
 
 	// The user's terminal leaves raw mode before the drain, so that Ctrl-C during a stalled drain is a SIGINT that ends it.
 	restore()
@@ -353,10 +370,59 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 	select {
 	case <-copied:
 	case <-ctx.Done():
+	case <-interrupt.fired:
 	}
 
-	return pipe.result(err)
+	return interrupt.result(pipe.result(err))
 }
+
+// ctrlC is the interrupt character (VINTR) of the guest terminal.
+const ctrlC = 0x03
+
+// copyInput copies the user's input to the guest terminal until a read or write fails.
+// When busy reports that the guest cannot turn a Ctrl-C into SIGINT, a Ctrl-C calls interrupt and ends the copy.
+func copyInput(dst io.Writer, src io.Reader, busy func() bool, interrupt func()) {
+	buf := make([]byte, 32*1024)
+
+	for {
+		n, err := src.Read(buf)
+		if bytes.IndexByte(buf[:n], ctrlC) >= 0 && busy() {
+			interrupt()
+
+			return
+		}
+
+		_, werr := dst.Write(buf[:n])
+		if err != nil || werr != nil {
+			return
+		}
+	}
+}
+
+// consoleWatch passes the VM output to w and tells whether the guest terminal can turn a Ctrl-C into SIGINT.
+type consoleWatch struct {
+	w       io.Writer
+	started atomic.Bool
+	writing atomic.Bool
+}
+
+func (c *consoleWatch) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+
+	c.started.Store(true)
+
+	c.writing.Store(true)
+	defer c.writing.Store(false)
+
+	return c.w.Write(p) //nolint:wrapcheck // This is a plain write.
+}
+
+// busy reports whether the guest cannot turn a Ctrl-C into SIGINT.
+// Before the first output, the libkrun init may not have started the workload, and a SIGINT then reaches no process.
+// While a write of VM output blocks, the guest console driver waits for the host with its lock held and reads no input.
+func (c *consoleWatch) busy() bool { return !c.started.Load() || c.writing.Load() }
 
 // copyUntil copies src to dst until it reads marker, which it drops.
 // It also ends at a read error. Write errors do not stop it, so that the VM never blocks on output.

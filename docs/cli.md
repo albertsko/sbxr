@@ -75,6 +75,8 @@ Flags after `IMAGE` belong to the workload. A `--` right after `IMAGE` is option
 - With `-t`, the workload has a terminal, and its stdout and stderr both go to stdout. Terminal resizes reach the guest only on Linux.
 - Without `-i`, the workload reads an empty stdin and never reads the user's terminal.
 - `-i -t` requires stdin to be a terminal.
+- With `-i -t`, Ctrl-C goes to the guest terminal, which turns it into SIGINT unless the workload reads it as input.
+- With `-i -t`, the guest cannot take Ctrl-C before the workload writes its first output, or while a write of its output to stdout waits for the reader. A Ctrl-C then stops the run with exit code 130, even when the workload would read it as input.
 
 ### Exit codes
 
