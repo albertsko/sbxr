@@ -124,6 +124,51 @@ linters:
           deny:
             - pkg: github.com/vishvananda
               desc: only internal/kube/shim, internal/kube/agent, and internal/kube/podnet may use netlink
+        grpc:
+          files:
+            - $all
+            - "!**/internal/kube/{agent,installer,shim}/**"
+          deny:
+            - pkg: google.golang.org/grpc
+              desc: only internal/kube/agent, internal/kube/installer, and internal/kube/shim may use gRPC and protobuf
+            - pkg: google.golang.org/protobuf
+              desc: only internal/kube/agent, internal/kube/installer, and internal/kube/shim may use gRPC and protobuf
+        registry:
+          files:
+            - $all
+            - "!**/internal/{image,runspec}/**"
+            - "!**/internal/e2e/*_test.go"
+          deny:
+            - pkg: github.com/google/go-containerregistry
+              desc: only internal/image, internal/runspec, and the e2e tests may use go-containerregistry
+        runtime-spec:
+          files:
+            - $all
+            - "!**/internal/kube/shim/**"
+          deny:
+            - pkg: github.com/opencontainers/runtime-spec
+              desc: only internal/kube/shim may use the OCI runtime spec
+        pty:
+          files:
+            - $all
+            - "!**/internal/run/**"
+            - "!**/internal/e2e/*_test.go"
+          deny:
+            - pkg: github.com/creack/pty
+              desc: only internal/run and the e2e tests may open pseudo-terminals
+        jsonschema:
+          files:
+            - $all
+            - "!**/internal/e2e/*_test.go"
+          deny:
+            - pkg: github.com/santhosh-tekuri/jsonschema
+              desc: only the e2e tests may validate JSON schemas
+        run-network:
+          files:
+            - "**/internal/run/**"
+          deny:
+            - pkg: github.com/albertsko/sbxr/internal/netstack
+              desc: internal/run gets the network from internal/cli and never imports internal/netstack
         k8s:
           files:
             - $all

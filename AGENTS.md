@@ -21,7 +21,7 @@
 - `internal/` holds all Go packages.
 - `internal/kube/` holds all Kubernetes code: `installer`, `shim`, `agent`, `podnet`, `podvm`, and `subid`. Only `internal/kube/` and the Kubernetes commands `cmd/sbxr-node`, `cmd/sbxr-agent`, and `cmd/containerd-shim-sbxr-v1` may import it.
 - `internal/libkrun/` loads and starts `libkrun`. Its non-test files import no other package of this module, so the CLI and the shim share it.
-- `internal/e2e/` holds only `_test.go` files: the end-to-end tests of the release binary, which they build themselves. These are the host-only CLI tests, the behavior scenarios, and the `vm` and `kube` tests.
+- `internal/e2e/` holds only `_test.go` files and `testdata/`: the end-to-end tests of the release binary, which they build themselves. These are the host-only CLI tests, the behavior scenarios, and the `vm` and `kube` tests.
 - `internal/testenv/` holds the test helper `SkipOrFailf` and the layout test that checks the target file names, build tags, and test names.
 - Tests run against real environments, with no fake targets or simulated VMs. A unit test may replace an outside system only to check a failure path that is hard to reproduce in a real environment, and the healthy case that those failure tests start from.
 - Tests come in three kinds: unit tests and host-only e2e tests (no build tag, `mise run test`), `vm` (build tag `vm`, `mise run test:vm`, test names start with `TestVM`), and `kube` (build tag `kube`, `mise run test:kube`, test names start with `TestKube`).
@@ -41,6 +41,8 @@
 - Only `internal/netstack` uses the network stack libraries: `gvisor`, `gvisor-tap-vsock`, `miekg/dns`, `insomniacslk/dhcp`, and `logrus`.
 - Lower packages, such as `runspec`, `image`, `netstack`, `preflight`, `vm`, and `libkrun`, never import `internal/cli` or `internal/run`.
 - Only `internal/libkrun` loads `libkrun` and imports `purego`. Its non-test files import no other package of this module. `internal/vm`, `internal/preflight`, and `internal/kube/shim` use it.
+- Only `internal/kube/agent`, `internal/kube/installer`, and `internal/kube/shim` use `grpc` and `protobuf`. Only `internal/kube/shim` uses `opencontainers/runtime-spec`.
+- Only `internal/image`, `internal/runspec`, and the `internal/e2e` tests use `go-containerregistry`. Only `internal/run` and the `internal/e2e` tests use `creack/pty`. Only the `internal/e2e` tests use `santhosh-tekuri/jsonschema`.
 - `internal/kube` is a separate product. Outside `internal/kube`, only the Kubernetes commands import it, and from this module it imports only `internal/kube` and `internal/libkrun`.
 - `depguard` in `.golangci.yml` enforces these import boundaries. Add a new lower package to its `lower-layer` rule.
 
