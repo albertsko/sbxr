@@ -1,7 +1,7 @@
 // Package vm is the child side of a run: the process that becomes the VM.
 //
 // The parent writes a Machine into the run directory and starts the same binary with ChildArg.
-// The child reads the Machine and hands it to a Hypervisor, which takes over the process.
+// The child reads the Machine and starts it with libkrun, which takes over the process.
 package vm
 
 import (
@@ -54,12 +54,6 @@ type Net struct {
 	MAC string `json:"mac"`
 }
 
-// Hypervisor starts a VM in the calling process.
-// On success, Start never returns: the process exits with the workload's exit code.
-type Hypervisor interface {
-	Start(m Machine) error
-}
-
 // WriteMachine stores m in the run directory dir.
 func WriteMachine(dir string, m Machine) error {
 	data, err := json.Marshal(m)
@@ -76,8 +70,9 @@ func WriteMachine(dir string, m Machine) error {
 }
 
 // Child runs the child mode with the arguments after ChildArg and returns the exit code.
-// It returns only when the VM could not start.
-func Child(args []string, h Hypervisor, stderr io.Writer) int {
+// libDir is the SBXR_LIB_DIR value, empty for the default library directories.
+// Child returns only when the VM could not start. Otherwise the process exits with the workload's exit code.
+func Child(args []string, libDir string, stderr io.Writer) int {
 	runDir := ""
 	if len(args) == 1 {
 		runDir = args[0]
@@ -89,7 +84,7 @@ func Child(args []string, h Hypervisor, stderr io.Writer) int {
 	// which then stops the VM and removes the run state. If the runner is gone, the lifeline cleans up.
 	signal.Ignore(syscall.SIGINT, syscall.SIGQUIT, syscall.SIGHUP)
 
-	err := child(args, h)
+	err := child(args, libDir)
 
 	// A failed diagnostic write does not change the exit code.
 	_, _ = fmt.Fprintf(stderr, "sbxr: vm: %v\n", err)
@@ -97,7 +92,7 @@ func Child(args []string, h Hypervisor, stderr io.Writer) int {
 	return ExitSetup
 }
 
-func child(args []string, h Hypervisor) error {
+func child(args []string, libDir string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("want 1 argument (the run directory), got %d", len(args))
 	}
@@ -114,7 +109,7 @@ func child(args []string, h Hypervisor) error {
 		return fmt.Errorf("decode machine: %w", err)
 	}
 
-	err = h.Start(m)
+	err = start(libDir, m)
 	if err == nil {
 		return errors.New("the hypervisor returned without running the workload")
 	}

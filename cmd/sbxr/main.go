@@ -30,7 +30,7 @@ func run() int {
 
 	// The VM process is a hidden mode of the same binary, dispatched before the CLI.
 	if len(os.Args) > 1 && os.Args[1] == vm.ChildArg {
-		return vm.Child(os.Args[2:], hypervisor(), os.Stderr)
+		return vm.Child(os.Args[2:], os.Getenv("SBXR_LIB_DIR"), os.Stderr)
 	}
 
 	info, _ := debug.ReadBuildInfo()
