@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/iotest"
+	"time"
 )
 
 func TestCopyUntil(t *testing.T) {
@@ -68,43 +69,91 @@ func TestCopyInput(t *testing.T) {
 	tests := []struct {
 		name          string
 		busy          bool
-		want          string
 		wantInterrupt bool
 	}{
-		{name: "a ready guest gets Ctrl-C", busy: false, want: "a\x03b", wantInterrupt: false},
-		{name: "a busy guest gets no Ctrl-C", busy: true, want: "a", wantInterrupt: true},
+		{name: "a ready guest gets Ctrl-C", busy: false, wantInterrupt: false},
+		{name: "a busy guest gets no Ctrl-C", busy: true, wantInterrupt: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			var (
-				got         bytes.Buffer
-				interrupted atomic.Bool
-			)
+			var interrupted atomic.Bool
+
+			got := make(chan string, 3)
+			dst := writerFunc(func(p []byte) (int, error) {
+				got <- string(p)
+
+				return len(p), nil
+			})
 
 			// The first read holds only "a", so a busy guest still gets the input before the Ctrl-C.
 			src := iotest.OneByteReader(strings.NewReader("a\x03b"))
 			busy := func() bool { return tt.busy }
 
-			copyInput(&got, src, busy, func() { interrupted.Store(true) })
+			copyInput(dst, src, busy, func() { interrupted.Store(true) })
 
-			if got.String() != tt.want || interrupted.Load() != tt.wantInterrupt {
-				t.Errorf("copyInput() wrote %q, interrupt %v; want %q, %v", got.String(), interrupted.Load(), tt.want, tt.wantInterrupt)
+			want := []string{"a", "\x03", "b"}
+			if tt.wantInterrupt {
+				want = want[:1]
+			}
+
+			for _, w := range want {
+				if s := <-got; s != w {
+					t.Errorf("copyInput() wrote %q, want %q", s, w)
+				}
+			}
+
+			if interrupted.Load() != tt.wantInterrupt {
+				t.Errorf("copyInput() interrupt = %v, want %v", interrupted.Load(), tt.wantInterrupt)
 			}
 		})
+	}
+}
+
+func TestCopyInputStopsBehindStalledInput(t *testing.T) {
+	t.Parallel()
+
+	// The guest terminal takes no input, like a guest that reads none after a long paste.
+	blocked := make(chan struct{})
+	defer close(blocked)
+
+	dst := writerFunc(func(p []byte) (int, error) {
+		<-blocked
+
+		return len(p), nil
+	})
+	src, w := io.Pipe()
+	interrupted := make(chan struct{})
+
+	go copyInput(dst, src, func() bool { return false }, func() { close(interrupted) })
+
+	_, _ = w.Write([]byte("paste"))
+
+	time.Sleep(2 * stallAfter)
+
+	_, _ = w.Write([]byte{ctrlC})
+
+	select {
+	case <-interrupted:
+	case <-time.After(5 * time.Second):
+		t.Error("copyInput() forwarded Ctrl-C behind input that the guest does not take")
 	}
 }
 
 func TestConsoleWatchBusy(t *testing.T) {
 	t.Parallel()
 
-	var busyInWrite bool
+	var busyInWrite, busyInStall bool
 
-	c := &consoleWatch{w: nil, started: atomic.Bool{}, writing: atomic.Bool{}}
+	c := &consoleWatch{w: nil, started: atomic.Bool{}, write: stallWatch{}}
 	c.w = writerFunc(func(p []byte) (int, error) {
 		busyInWrite = c.busy()
+
+		time.Sleep(2 * stallAfter)
+
+		busyInStall = c.busy()
 
 		return len(p), nil
 	})
@@ -112,8 +161,9 @@ func TestConsoleWatchBusy(t *testing.T) {
 	busyBefore := c.busy()
 	_, _ = c.Write([]byte("x"))
 
-	if !busyBefore || !busyInWrite || c.busy() {
-		t.Errorf("busy() before output, during a write, after it = %v, %v, %v; want true, true, false", busyBefore, busyInWrite, c.busy())
+	if !busyBefore || busyInWrite || !busyInStall || c.busy() {
+		t.Errorf("busy() before output, in a write, in a stalled write, after it = %v, %v, %v, %v; want true, false, true, false",
+			busyBefore, busyInWrite, busyInStall, c.busy())
 	}
 }
 

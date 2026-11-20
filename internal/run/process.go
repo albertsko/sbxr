@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
@@ -332,7 +333,7 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 	out := &guardedWriter{w: r.Stdout, closed: atomic.Bool{}}
 	pipe := newRunStop(errBrokenPipe)
 	interrupt := newRunStop(errInterrupted)
-	console := &consoleWatch{w: errorWriter{w: out, onError: pipe.onEPIPE}, started: atomic.Bool{}, writing: atomic.Bool{}}
+	console := &consoleWatch{w: errorWriter{w: out, onError: pipe.onEPIPE}, started: atomic.Bool{}, write: stallWatch{}}
 	copied := make(chan struct{})
 
 	defer out.close()
@@ -373,27 +374,76 @@ func (r *Runner) runTTY(ctx context.Context, cmd *exec.Cmd, interactive bool) er
 	case <-interrupt.fired:
 	}
 
-	return interrupt.result(pipe.result(err))
+	select {
+	case <-interrupt.fired:
+		return errInterrupted
+	default:
+	}
+
+	return pipe.result(err)
 }
 
 // ctrlC is the interrupt character (VINTR) of the guest terminal.
 const ctrlC = 0x03
 
-// copyInput copies the user's input to the guest terminal until a read or write fails.
-// When busy reports that the guest cannot turn a Ctrl-C into SIGINT, a Ctrl-C calls interrupt and ends the copy.
+// inputQueue is the number of input reads that may wait for the guest terminal, so that a long paste never stops the reads.
+const inputQueue = 256
+
+// copyInput copies the user's input to the guest terminal until a read fails.
+// A Ctrl-C calls interrupt and ends the copy when busy reports that the guest cannot turn it into SIGINT,
+// or when earlier input has waited too long for the guest terminal, so that the Ctrl-C would wait behind it.
+// When the guest gets stuck in this way shortly after it got a Ctrl-C, interrupt is called too.
 func copyInput(dst io.Writer, src io.Reader, busy func() bool, interrupt func()) {
+	chunks := make(chan []byte, inputQueue)
+	defer close(chunks)
+
+	var input stallWatch
+
+	go func() {
+		failed := false
+
+		// After a failed write, the loop still empties the queue, so that the reads never block.
+		for b := range chunks {
+			input.begin()
+
+			if !failed {
+				_, err := dst.Write(b)
+				failed = err != nil
+			}
+
+			input.end()
+		}
+	}()
+
+	stuck := func() bool { return busy() || input.stalled() }
+	interruptIfStuck := func() {
+		if stuck() {
+			interrupt()
+		}
+	}
+
 	buf := make([]byte, 32*1024)
 
 	for {
 		n, err := src.Read(buf)
-		if bytes.IndexByte(buf[:n], ctrlC) >= 0 && busy() {
+		hasCtrlC := bytes.IndexByte(buf[:n], ctrlC) >= 0
+
+		if hasCtrlC && stuck() {
 			interrupt()
 
 			return
 		}
 
-		_, werr := dst.Write(buf[:n])
-		if err != nil || werr != nil {
+		// A write that started just before the Ctrl-C may be a stall that does not count yet, so a later check repeats.
+		if hasCtrlC {
+			time.AfterFunc(2*stallAfter, interruptIfStuck)
+		}
+
+		if n > 0 {
+			chunks <- bytes.Clone(buf[:n])
+		}
+
+		if err != nil {
 			return
 		}
 	}
@@ -403,7 +453,7 @@ func copyInput(dst io.Writer, src io.Reader, busy func() bool, interrupt func())
 type consoleWatch struct {
 	w       io.Writer
 	started atomic.Bool
-	writing atomic.Bool
+	write   stallWatch
 }
 
 func (c *consoleWatch) Write(p []byte) (int, error) {
@@ -411,18 +461,39 @@ func (c *consoleWatch) Write(p []byte) (int, error) {
 		return 0, nil
 	}
 
-	c.started.Store(true)
+	// The write starts before started is set, so that busy never sees a started console without its first write.
+	c.write.begin()
+	defer c.write.end()
 
-	c.writing.Store(true)
-	defer c.writing.Store(false)
+	c.started.Store(true)
 
 	return c.w.Write(p) //nolint:wrapcheck // This is a plain write.
 }
 
 // busy reports whether the guest cannot turn a Ctrl-C into SIGINT.
 // Before the first output, the libkrun init may not have started the workload, and a SIGINT then reaches no process.
-// While a write of VM output blocks, the guest console driver waits for the host with its lock held and reads no input.
-func (c *consoleWatch) busy() bool { return !c.started.Load() || c.writing.Load() }
+// While a write of VM output stalls, the guest console driver waits for the host with its lock held and reads no input.
+func (c *consoleWatch) busy() bool { return !c.started.Load() || c.write.stalled() }
+
+// stallAfter is how long a write may wait before it counts as stalled.
+// Writes to a reader that keeps up end far sooner, so a Ctrl-C during normal output still reaches the guest.
+const stallAfter = 50 * time.Millisecond
+
+// stallWatch tells whether a write has waited longer than stallAfter.
+// It holds the start of the current write in Unix nanoseconds, or 0 between writes.
+type stallWatch struct {
+	start atomic.Int64
+}
+
+func (s *stallWatch) begin() { s.start.Store(time.Now().UnixNano()) }
+
+func (s *stallWatch) end() { s.start.Store(0) }
+
+func (s *stallWatch) stalled() bool {
+	start := s.start.Load()
+
+	return start != 0 && time.Since(time.Unix(0, start)) > stallAfter
+}
 
 // copyUntil copies src to dst until it reads marker, which it drops.
 // It also ends at a read error. Write errors do not stop it, so that the VM never blocks on output.

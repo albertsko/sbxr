@@ -76,7 +76,8 @@ Flags after `IMAGE` belong to the workload. A `--` right after `IMAGE` is option
 - Without `-i`, the workload reads an empty stdin and never reads the user's terminal.
 - `-i -t` requires stdin to be a terminal.
 - With `-i -t`, Ctrl-C goes to the guest terminal, which turns it into SIGINT unless the workload reads it as input.
-- With `-i -t`, the guest cannot take Ctrl-C before the workload writes its first output, or while a write of its output to stdout waits for the reader. A Ctrl-C then stops the run with exit code 130, even when the workload would read it as input.
+- With `-i -t`, the guest cannot take Ctrl-C while the VM boots, or while its output waits for a slow reader of stdout. `sbxr` cannot see these states directly, so it judges them from the VM output: a Ctrl-C before the first output, or while a write to stdout has waited longer than 50 ms, stops the run with exit code 130. The run also stops when the guest gets stuck in this way within 100 ms after a Ctrl-C, or when earlier input has waited longer than 50 ms for the guest.
+- Known limits of this guess: a workload that has written no output may already be ready, and `sbxr` then stops it on Ctrl-C even when it would read Ctrl-C as input. Input that waits in `sbxr` delays the check by up to 100 ms. Input that the VM has already taken, for example a large paste into a workload that reads no input, can hold back a Ctrl-C until the guest reads it.
 
 ### Exit codes
 
@@ -87,7 +88,7 @@ Flags after `IMAGE` belong to the workload. A `--` right after `IMAGE` is option
 | 126           | The command exists in the image but cannot run              |
 | 127           | The command does not exist in the image                     |
 | 129           | Stopped by SIGHUP, for example a closed terminal            |
-| 130           | Interrupted by SIGINT (Ctrl-C)                              |
+| 130           | Interrupted by SIGINT, or by a Ctrl-C that `sbxr` handles   |
 | 141           | The reader of stdout went away, like SIGPIPE in a pipeline  |
 | 143           | Stopped by SIGTERM                                          |
 

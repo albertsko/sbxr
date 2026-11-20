@@ -137,6 +137,22 @@ func TestVMCtrlCReachesAWorkloadThatReadsIt(t *testing.T) {
 	}
 }
 
+func TestVMCtrlCReachesAWorkloadThatKeepsWriting(t *testing.T) {
+	t.Parallel()
+
+	// The terminal of the test drains the output at once, so the output never stalls and the guest still reads input.
+	script := "stty raw -echo; echo raw; yes & head -c 1 | od -An -tx1; kill $!"
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[Busybox], "sh", "-c", script)...)
+	tm.waitForOutput("raw")
+	tm.waitForOutput("y\ny\n")
+	tm.write("\x03")
+
+	out, code, _ := tm.wait()
+	if code != 0 || !strings.Contains(out, " 03") {
+		t.Errorf("sbxr run -it then Ctrl-C to a raw terminal with steady output = %d, %d bytes; want 0 and the byte 03", code, len(out))
+	}
+}
+
 func TestVMClosedTerminalStopsTheRun(t *testing.T) {
 	t.Parallel()
 
