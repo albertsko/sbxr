@@ -92,6 +92,9 @@ func (tm *terminal) waitForOutput(text string) {
 
 	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(tm.output(), text); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
+			_ = tm.cmd.Process.Kill()
+			_ = tm.cmd.Wait() // The kill decides the outcome.
+
 			tm.t.Fatalf("output %q, want it to contain %q", tm.output(), text)
 		}
 	}

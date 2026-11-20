@@ -3,10 +3,12 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,6 +82,7 @@ func (b *Binary) Run(ctx context.Context, w Workload) (Result, error) {
 	cmd := exec.CommandContext(ctx, b.Path, b.args(w)...)
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "SBXR_CACHE_DIR=" + b.CacheDir}, b.Env...)
 	cmd.Stdin = strings.NewReader(w.Stdin)
+	cmd.WaitDelay = 5 * time.Second
 
 	stdout := newWatchWriter(w.InterruptAfter)
 	stderr := &publishWatcher{ctx: ctx, onPublished: w.Published, mu: sync.Mutex{}, buf: bytes.Buffer{}, seen: map[string]bool{}}
@@ -252,6 +255,93 @@ func (p *publishWatcher) String() string {
 	return p.buf.String()
 }
 
+// vmTimeout bounds each sbxr process of the vm tests, so that one hang fails its test and not the whole suite.
+const vmTimeout = time.Minute
+
+// readyTimeout bounds each wait for a sign that a run is ready.
+const readyTimeout = 30 * time.Second
+
+// psTimeout bounds each process listing.
+const psTimeout = 10 * time.Second
+
+// vmCommand returns a command that runs bin with environ and args and that is killed after vmTimeout.
+// The cleanup kills the process and reaps it, unless the test already waited for it.
+func vmCommand(t *testing.T, bin string, environ []string, args ...string) *exec.Cmd {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), vmTimeout)
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = environ
+	// The VM process inherits the output pipes, so Wait must not wait for them without a limit.
+	cmd.WaitDelay = 5 * time.Second
+
+	t.Cleanup(func() {
+		cancel()
+
+		if cmd.Process != nil && cmd.ProcessState == nil {
+			_ = cmd.Wait() // The test failed before it waited, so only the reaping matters.
+		}
+	})
+
+	return cmd
+}
+
+// readReady runs read, which reads a sign of readiness from the pipe r of the started cmd, with a deadline of readyTimeout.
+// When read fails, readReady kills and reaps cmd and fails t.
+func readReady(t *testing.T, cmd *exec.Cmd, r io.Reader, read func() error) {
+	t.Helper()
+
+	pipe, ok := r.(interface{ SetReadDeadline(time.Time) error })
+	if !ok {
+		t.Fatalf("%T has no read deadline", r)
+	}
+
+	err := pipe.SetReadDeadline(time.Now().Add(readyTimeout))
+	if err == nil {
+		err = read()
+	}
+
+	if err == nil {
+		err = pipe.SetReadDeadline(time.Time{})
+	}
+
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait() // The kill decides the outcome.
+
+		t.Fatalf("wait for the run to get ready: %v", err)
+	}
+}
+
+// readLines reads n lines from r for readReady.
+func readLines(r *bufio.Reader, n int) func() error {
+	return func() error {
+		for range n {
+			_, err := r.ReadString('\n')
+			if err != nil {
+				return err //nolint:wrapcheck // readReady names the step.
+			}
+		}
+
+		return nil
+	}
+}
+
+// readText reads len(text) bytes from r for readReady and checks that they are text.
+func readText(r io.Reader, text string) func() error {
+	return func() error {
+		buf := make([]byte, len(text))
+
+		_, err := io.ReadFull(r, buf)
+		if err == nil && string(buf) != text {
+			err = fmt.Errorf("read %q, want %q", buf, text)
+		}
+
+		return err
+	}
+}
+
 // runArgs returns the arguments of `sbxr run` with the small VM flags and then args.
 func runArgs(args ...string) []string {
 	return append(append([]string{"run"}, vmFlags...), args...)
@@ -261,7 +351,10 @@ func runArgs(args ...string) []string {
 func vmProcess(t *testing.T, cacheDir string) int {
 	t.Helper()
 
-	out, err := exec.CommandContext(t.Context(), "pgrep", "-f", "__vm "+cacheDir).Output()
+	ctx, cancel := context.WithTimeout(t.Context(), psTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "pgrep", "-f", "__vm "+cacheDir).Output()
 	if err != nil {
 		t.Fatalf("find the VM process: %v", err)
 	}
@@ -272,6 +365,42 @@ func vmProcess(t *testing.T, cacheDir string) int {
 	}
 
 	return pid
+}
+
+// runnerOf returns the runner of the VM process vmPID in the run that the test started as cmd.
+// On macOS, cmd is the runner. On Linux, cmd is the user namespace wrapper, and the runner is its child.
+// The runner gets SIGTERM and cleans up when the wrapper dies, so a test that must kill the runner cannot kill cmd instead.
+func runnerOf(t *testing.T, cmd *exec.Cmd, vmPID int) int {
+	t.Helper()
+
+	runner := parentOf(t, vmPID)
+	if runner == cmd.Process.Pid || parentOf(t, runner) == cmd.Process.Pid {
+		return runner
+	}
+
+	t.Fatalf("the parent %d of the VM process %d is neither sbxr %d nor its child", runner, vmPID, cmd.Process.Pid)
+
+	return 0
+}
+
+// parentOf returns the parent process ID of pid.
+func parentOf(t *testing.T, pid int) int {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), psTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "ps", "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		t.Fatalf("find the parent of %d: %v", pid, err)
+	}
+
+	ppid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return ppid
 }
 
 // waitExit waits at most 10 seconds for the started cmd and returns its exit code.
@@ -292,6 +421,8 @@ func waitExit(t *testing.T, cmd *exec.Cmd) int {
 	case <-time.After(10 * time.Second):
 		_ = cmd.Process.Kill()
 
+		<-done
+
 		t.Fatal("sbxr did not exit")
 
 		return 0
@@ -303,7 +434,11 @@ func waitForNoProcess(t *testing.T, dir string) {
 	t.Helper()
 
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
-		out, err := exec.CommandContext(t.Context(), "ps", "-A", "-ww", "-o", "pid=,args=").Output()
+		ctx, cancel := context.WithTimeout(t.Context(), psTimeout)
+		out, err := exec.CommandContext(ctx, "ps", "-A", "-ww", "-o", "pid=,args=").Output()
+
+		cancel()
+
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -332,8 +467,12 @@ func vmCacheDir(t *testing.T) string {
 			return
 		}
 
-		cmd := exec.CommandContext(context.Background(), bin, "prune", "--force")
+		ctx, cancel := context.WithTimeout(context.Background(), vmTimeout)
+		defer cancel()
+
+		cmd := exec.CommandContext(ctx, bin, "prune", "--force")
 		cmd.Env = vmEnv(dir)
+		cmd.WaitDelay = 5 * time.Second
 
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Logf("prune %s: %v: %s", dir, err, out)
@@ -383,6 +522,9 @@ func vmImages(t *testing.T) map[string]string {
 	t.Helper()
 
 	vmImagesOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
 		ref, err := name.ParseReference(vmBase)
 		if err != nil {
 			errVMImages = err
@@ -390,14 +532,14 @@ func vmImages(t *testing.T) map[string]string {
 			return
 		}
 
-		base, err := remote.Image(ref, remote.WithPlatform(v1.Platform{OS: "linux", Architecture: runtime.GOARCH}))
+		base, err := remote.Image(ref, remote.WithContext(ctx), remote.WithPlatform(v1.Platform{OS: "linux", Architecture: runtime.GOARCH}))
 		if err != nil {
 			errVMImages = err
 
 			return
 		}
 
-		vmRefs, _, errVMImages = ServeImages(context.Background(), base)
+		vmRefs, _, errVMImages = ServeImages(ctx, base)
 	})
 
 	if errVMImages != nil {

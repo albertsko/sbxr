@@ -3,7 +3,7 @@
 package e2e
 
 import (
-	"io"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,17 +20,18 @@ func TestVMNextRunRemovesStaleRunState(t *testing.T) {
 	bin := vmBinary(t)
 	busybox := vmImages(t)[Busybox]
 	cacheDir := vmCacheDir(t)
-	runner, vmPID := startStoppedVM(t, bin, cacheDir, busybox)
+	cmd, runner, vmPID := startStoppedVM(t, bin, cacheDir, busybox)
 
 	// Killing the runner and the stopped VM process leaves no process that could clean up.
-	for _, pid := range []int{runner.Process.Pid, vmPID} {
+	for _, pid := range []int{runner, vmPID} {
 		err := syscall.Kill(pid, syscall.SIGKILL)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	_ = runner.Wait() // The process was killed.
+	// On Linux, the user namespace wrapper exits when the runner dies.
+	waitExit(t, cmd)
 
 	waitForNoProcess(t, cacheDir)
 
@@ -55,15 +56,16 @@ func TestVMLiveVMKeepsItsRunState(t *testing.T) {
 	bin := vmBinary(t)
 	busybox := vmImages(t)[Busybox]
 	cacheDir := vmCacheDir(t)
-	runner, vmPID := startStoppedVM(t, bin, cacheDir, busybox)
+	cmd, runner, vmPID := startStoppedVM(t, bin, cacheDir, busybox)
 
 	// The stopped VM process cannot see its lifeline close, so it stays alive with its run state.
-	err := syscall.Kill(runner.Process.Pid, syscall.SIGKILL)
+	err := syscall.Kill(runner, syscall.SIGKILL)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_ = runner.Wait() // The process was killed.
+	// On Linux, the user namespace wrapper exits when the runner dies.
+	waitExit(t, cmd)
 
 	runs, err := filepath.Glob(filepath.Join(cacheDir, "runs", "*", "root"))
 	if err != nil || len(runs) != 1 {
@@ -97,12 +99,11 @@ func TestVMLiveVMKeepsItsRunState(t *testing.T) {
 }
 
 // startStoppedVM starts a run, waits until its workload runs, and stops the VM process with SIGSTOP.
-// It returns the runner and the VM process ID.
-func startStoppedVM(t *testing.T, bin, cacheDir, image string) (*exec.Cmd, int) {
+// It returns the started sbxr process and the process IDs of the runner and the VM process (see runnerOf).
+func startStoppedVM(t *testing.T, bin, cacheDir, image string) (*exec.Cmd, int, int) {
 	t.Helper()
 
-	cmd := exec.CommandContext(t.Context(), bin, runArgs(image, "sh", "-c", "echo ready; sleep 30")...)
-	cmd.Env = vmEnv(cacheDir)
+	cmd := vmCommand(t, bin, vmEnv(cacheDir), runArgs(image, "sh", "-c", "echo ready; sleep 30")...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -114,14 +115,10 @@ func startStoppedVM(t *testing.T, bin, cacheDir, image string) (*exec.Cmd, int) 
 		t.Fatal(err)
 	}
 
-	t.Cleanup(func() { _ = cmd.Process.Kill() })
-
-	_, err = io.ReadFull(stdout, make([]byte, len("ready\n")))
-	if err != nil {
-		t.Fatal(err)
-	}
+	readReady(t, cmd, stdout, readText(stdout, "ready\n"))
 
 	pid := vmProcess(t, cacheDir)
+	runner := runnerOf(t, cmd, pid)
 
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 
@@ -131,9 +128,13 @@ func startStoppedVM(t *testing.T, bin, cacheDir, image string) (*exec.Cmd, int) 
 	}
 
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		state, _ := exec.CommandContext(t.Context(), "ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		ctx, cancel := context.WithTimeout(t.Context(), psTimeout)
+		state, _ := exec.CommandContext(ctx, "ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+
+		cancel()
+
 		if strings.HasPrefix(strings.TrimSpace(string(state)), "T") {
-			return cmd, pid
+			return cmd, runner, pid
 		}
 
 		if time.Now().After(deadline) {

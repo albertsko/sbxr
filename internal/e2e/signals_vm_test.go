@@ -3,11 +3,10 @@
 package e2e
 
 import (
-	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -38,8 +37,7 @@ func TestVMSignals(t *testing.T) {
 
 			cacheDir := vmCacheDir(t)
 
-			cmd := exec.CommandContext(t.Context(), bin, runArgs(busybox, "sh", "-c", "echo ready; sleep 30")...)
-			cmd.Env = vmEnv(cacheDir)
+			cmd := vmCommand(t, bin, vmEnv(cacheDir), runArgs(busybox, "sh", "-c", "echo ready; sleep 30")...)
 
 			stdout, err := cmd.StdoutPipe()
 			if err != nil {
@@ -51,10 +49,7 @@ func TestVMSignals(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err = io.ReadFull(stdout, make([]byte, len("ready\n")))
-			if err != nil {
-				t.Fatal(err)
-			}
+			readReady(t, cmd, stdout, readText(stdout, "ready\n"))
 
 			err = cmd.Process.Signal(tt.signal)
 			if err != nil {
@@ -70,6 +65,7 @@ func TestVMSignals(t *testing.T) {
 			waitForNoProcess(t, cacheDir)
 
 			// After a SIGKILL, the VM process removes the run state when it sees the parent is gone.
+			// On Linux, the signal kills the user namespace wrapper, and the runner gets SIGTERM and cleans up.
 			err = CheckClean(cacheDir)
 			if err != nil {
 				t.Error(err)
@@ -175,6 +171,8 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 	defer stdout.Close()
 	defer unread.Close()
 
+	full := fillPipe(t, stdout, unread)
+
 	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), unread, nil, runArgs("-it", vmImages(t)[Busybox], "echo", word, word)...)
 
 	for deadline := time.Now().Add(10 * time.Second); !tm.raw(); time.Sleep(10 * time.Millisecond) {
@@ -185,7 +183,7 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 
 	// The VM exits while the drain stalls. A Ctrl-C to the workload would not end it reliably,
 	// because libkrun can stop reading input while its output is blocked, and the VM exits only after its output.
-	waitForFullPipe(t, stdout)
+	waitForStalledWriter(t, stdout, unread, full)
 
 	err = syscall.Kill(vmProcess(t, cacheDir), syscall.SIGKILL)
 	if err != nil {
@@ -238,25 +236,20 @@ func TestVMReaderGoneAfterCtrlCWithStalledOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer pw.Close()
 
-	cmd := exec.CommandContext(t.Context(), vmBinary(t), runArgs(vmImages(t)[Busybox], "yes")...)
-	cmd.Env = vmEnv(cacheDir)
+	full := fillPipe(t, pr, pw)
+
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs(vmImages(t)[Busybox], "yes")...)
 	cmd.Stdout = pw
 
 	err = cmd.Start()
-	_ = pw.Close()
-
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The first line proves that the runner handles signals. Then nobody reads, so the output copy blocks on the full pipe.
-	_, err = bufio.NewReader(pr).ReadString('\n')
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	waitForFullPipe(t, pr)
+	// Output in the pipe proves that the runner handles signals. Nobody reads, so the output copy then blocks on the full pipe.
+	waitForStalledWriter(t, pr, pw, full)
 
 	err = cmd.Process.Signal(syscall.SIGINT)
 	if err != nil {
@@ -285,8 +278,7 @@ func TestVMKilledVMProcessIsAnSbxrError(t *testing.T) {
 
 	cacheDir := vmCacheDir(t)
 
-	cmd := exec.CommandContext(t.Context(), vmBinary(t), runArgs(vmImages(t)[Busybox], "sh", "-c", "echo ready; sleep 30")...)
-	cmd.Env = vmEnv(cacheDir)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs(vmImages(t)[Busybox], "sh", "-c", "echo ready; sleep 30")...)
 
 	var stderr bytes.Buffer
 
@@ -302,10 +294,7 @@ func TestVMKilledVMProcessIsAnSbxrError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = io.ReadFull(stdout, make([]byte, len("ready\n")))
-	if err != nil {
-		t.Fatal(err)
-	}
+	readReady(t, cmd, stdout, readText(stdout, "ready\n"))
 
 	err = syscall.Kill(vmProcess(t, cacheDir), syscall.SIGKILL)
 	if err != nil {
@@ -339,20 +328,20 @@ func TestVMSIGTERMWithAStalledTTYReader(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stdout.Close()
+	defer unread.Close()
 
-	cmd := exec.CommandContext(t.Context(), vmBinary(t), runArgs("-t", vmImages(t)[Busybox], "echo", word, word)...)
-	cmd.Env = vmEnv(cacheDir)
+	full := fillPipe(t, stdout, unread)
+
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs("-t", vmImages(t)[Busybox], "echo", word, word)...)
 	cmd.Stdout = unread
 
 	err = cmd.Start()
-	_ = unread.Close()
-
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Output in the pipe means that the runner handles signals.
-	waitForFullPipe(t, stdout)
+	waitForStalledWriter(t, stdout, unread, full)
 
 	err = cmd.Process.Signal(syscall.SIGTERM)
 	if err != nil {
@@ -371,26 +360,110 @@ func TestVMSIGTERMWithAStalledTTYReader(t *testing.T) {
 	}
 }
 
-// waitForFullPipe waits until the read end r of a pipe holds unread output that stops growing.
-// The output of the workloads that use it is larger than the pipe, so then the writer blocks.
-func waitForFullPipe(t *testing.T, r *os.File) {
+// fillPipe fills the pipe with the ends r and w before a run writes to w, so that the first write of the run stalls.
+// It returns the number of bytes in the full pipe.
+func fillPipe(t *testing.T, r, w *os.File) int {
 	t.Helper()
 
-	last, same := 0, 0
+	raw, err := w.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	for deadline := time.Now().Add(10 * time.Second); same < 5; time.Sleep(50 * time.Millisecond) {
-		n, err := unix.IoctlGetInt(int(r.Fd()), unreadBytes)
-		if err != nil {
-			t.Fatal(err)
+	buf := make([]byte, 4096)
+
+	var writeErr error
+
+	err = raw.Control(func(fd uintptr) {
+		// The pipe is non-blocking, so EAGAIN means that it is full.
+		for writeErr == nil || errors.Is(writeErr, unix.EINTR) {
+			_, writeErr = unix.Write(int(fd), buf)
+		}
+	})
+	if !errors.Is(writeErr, unix.EAGAIN) {
+		err = errors.Join(err, writeErr)
+	}
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return unreadInPipe(t, r)
+}
+
+// waitForStalledWriter reads one page from the pipe that fillPipe filled and waits until a writer has refilled it.
+// Linux frees pipe space by pages. The pipe then has no room for a write of PIPE_BUF bytes,
+// and the workloads that use it write far more than that, so the writer blocks.
+func waitForStalledWriter(t *testing.T, r, w *os.File, full int) {
+	t.Helper()
+
+	page := os.Getpagesize()
+
+	_, err := io.ReadFull(r, make([]byte, page))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for deadline := time.Now().Add(readyTimeout); ; time.Sleep(10 * time.Millisecond) {
+		n := unreadInPipe(t, r)
+		if n > full-page && !writable(t, w) {
+			return
 		}
 
 		if time.Now().After(deadline) {
-			t.Fatalf("the pipe holds %d bytes that still change", n)
-		}
-
-		same++
-		if n == 0 || n != last {
-			last, same = n, 0
+			t.Fatalf("the pipe holds %d of %d bytes and is writable: %v; want a writer that refilled it", n, full, writable(t, w))
 		}
 	}
+}
+
+// unreadInPipe returns the number of unread bytes in the pipe with the read end r.
+func unreadInPipe(t *testing.T, r *os.File) int {
+	t.Helper()
+
+	raw, err := r.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		n       int
+		ioctErr error
+	)
+
+	err = raw.Control(func(fd uintptr) { n, ioctErr = unix.IoctlGetInt(int(fd), unreadBytes) })
+	if err = errors.Join(err, ioctErr); err != nil {
+		t.Fatal(err)
+	}
+
+	return n
+}
+
+// writable reports whether the pipe with the write end w has room for a write of PIPE_BUF bytes.
+func writable(t *testing.T, w *os.File) bool {
+	t.Helper()
+
+	raw, err := w.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fds := []unix.PollFd{{Fd: 0, Events: unix.POLLOUT, Revents: 0}}
+
+	var pollErr error
+
+	err = raw.Control(func(fd uintptr) {
+		fds[0].Fd = int32(fd)
+
+		for {
+			_, pollErr = unix.Poll(fds, 0)
+			if !errors.Is(pollErr, unix.EINTR) {
+				return
+			}
+		}
+	})
+	if err = errors.Join(err, pollErr); err != nil {
+		t.Fatal(err)
+	}
+
+	return fds[0].Revents&unix.POLLOUT != 0
 }

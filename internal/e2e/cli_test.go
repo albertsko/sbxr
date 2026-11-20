@@ -307,6 +307,7 @@ func sbxr(t *testing.T, bin string, environ []string, args ...string) result {
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Env = environ
+	cmd.WaitDelay = 5 * time.Second
 
 	var stdout, stderr bytes.Buffer
 

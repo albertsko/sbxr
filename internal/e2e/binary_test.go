@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 )
 
 // buildDir holds the binaries that the tests build. TestMain removes it.
@@ -27,7 +28,11 @@ func releaseBinary(t *testing.T) string {
 
 	releaseOnce.Do(func() {
 		releaseBin = filepath.Join(buildDir, "sbxr")
-		errRelease = build(context.Background(), releaseBin)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		errRelease = build(ctx, releaseBin)
 	})
 
 	if errRelease != nil {
@@ -40,6 +45,9 @@ func releaseBinary(t *testing.T) string {
 // build generates the guest mount helper, which the release embeds, and builds cmd/sbxr into out.
 func build(ctx context.Context, out string) error {
 	gen := exec.CommandContext(ctx, "go", "generate", "github.com/albertsko/sbxr/internal/guestmount")
+	// go generate starts go build, which inherits the output pipe and would outlive a killed go generate.
+	gen.WaitDelay = 5 * time.Second
+
 	if output, err := gen.CombinedOutput(); err != nil {
 		return fmt.Errorf("generate the mount helper: %w\n%s", err, output)
 	}
@@ -47,6 +55,7 @@ func build(ctx context.Context, out string) error {
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", out, "github.com/albertsko/sbxr/cmd/sbxr")
 
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	cmd.WaitDelay = 5 * time.Second
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

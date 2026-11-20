@@ -76,11 +76,10 @@ func TestVMStderrOnTerminalWithPipedStdout(t *testing.T) {
 	go func() { _, _ = io.Copy(term, ptmx) }() // The copy ends when the terminal closes.
 
 	// cat writes its error to stderr and exits with 1.
-	cmd := exec.CommandContext(t.Context(), bin, runArgs("-q", refs[Busybox], "sh", "-c", "echo OUT; echo ERR >&2; cat /missing")...)
+	cmd := vmCommand(t, bin, vmEnv(vmCacheDir(t)), runArgs("-q", refs[Busybox], "sh", "-c", "echo OUT; echo ERR >&2; cat /missing")...)
 
 	var stdout bytes.Buffer
 
-	cmd.Env = vmEnv(vmCacheDir(t))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, &stdout, tty
 
 	_ = cmd.Run() // The exit code below shows the outcome.
@@ -240,8 +239,7 @@ func TestVMTTYWithoutInteractiveNeverReadsStdin(t *testing.T) {
 	defer keepOpen.Close()
 	defer stdin.Close()
 
-	cmd := exec.CommandContext(t.Context(), vmBinary(t), runArgs("-t", vmImages(t)[Busybox], "cat")...)
-	cmd.Env = vmEnv(vmCacheDir(t))
+	cmd := vmCommand(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-t", vmImages(t)[Busybox], "cat")...)
 	cmd.Stdin = stdin
 
 	err = cmd.Start()
@@ -261,8 +259,7 @@ func TestVMTTYOutputReachesASlowReader(t *testing.T) {
 	word := strings.Repeat("x", 50000)
 	want := strings.Join([]string{word, word, word, word}, " ") + "\r\n"
 
-	cmd := exec.CommandContext(t.Context(), vmBinary(t), runArgs("-t", vmImages(t)[Busybox], "echo", word, word, word, word)...)
-	cmd.Env = vmEnv(vmCacheDir(t))
+	cmd := vmCommand(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-t", vmImages(t)[Busybox], "echo", word, word, word, word)...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

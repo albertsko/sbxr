@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"bytes"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -45,8 +44,7 @@ func TestVMGoneStdoutReaderStopsTheRun(t *testing.T) {
 
 	cacheDir := vmCacheDir(t)
 
-	cmd := exec.CommandContext(t.Context(), vmBinary(t), runArgs(vmImages(t)[Busybox], "yes")...)
-	cmd.Env = vmEnv(cacheDir)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs(vmImages(t)[Busybox], "yes")...)
 
 	var stderr bytes.Buffer
 
@@ -63,10 +61,7 @@ func TestVMGoneStdoutReaderStopsTheRun(t *testing.T) {
 	}
 
 	// Like head -1, the reader takes one line and goes away.
-	_, err = bufio.NewReader(stdout).ReadString('\n')
-	if err != nil {
-		t.Fatal(err)
-	}
+	readReady(t, cmd, stdout, readLines(bufio.NewReader(stdout), 1))
 
 	_ = stdout.Close()
 
@@ -95,14 +90,7 @@ func TestVMGoneStdoutReaderStopsATTYRun(t *testing.T) {
 	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), pw, nil, runArgs("-q", "-t", vmImages(t)[Busybox], "yes")...)
 	_ = pw.Close()
 
-	lines := bufio.NewReader(pr)
-
-	for range 5 {
-		_, err = lines.ReadString('\n')
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
+	readReady(t, tm.cmd, pr, readLines(bufio.NewReader(pr), 5))
 
 	_ = pr.Close()
 
@@ -130,8 +118,7 @@ func TestVMGoneReaderOfDebugOutputStopsTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.CommandContext(t.Context(), vmBinary(t), append([]string{"--debug"}, runArgs(vmImages(t)[Busybox], "yes")...)...)
-	cmd.Env = vmEnv(cacheDir)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), append([]string{"--debug"}, runArgs(vmImages(t)[Busybox], "yes")...)...)
 	cmd.Stdout, cmd.Stderr = pw, pw
 
 	err = cmd.Start()
@@ -141,14 +128,7 @@ func TestVMGoneReaderOfDebugOutputStopsTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lines := bufio.NewReader(pr)
-
-	for range 5 {
-		_, err = lines.ReadString('\n')
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
+	readReady(t, cmd, pr, readLines(bufio.NewReader(pr), 5))
 
 	_ = pr.Close()
 
