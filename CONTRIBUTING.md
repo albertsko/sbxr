@@ -65,18 +65,19 @@ The project tests only against real environments and uses no stubs or fakes. A t
 
 ## Tests
 
-| Command                | Runs                                                                | Needs                                 |
-| ---------------------- | ------------------------------------------------------------------- | ------------------------------------- |
-| `mise run test`        | Unit tests and the host-only CLI tests of the release binary        | Nothing: no hypervisor, no network    |
-| `mise run test:vm`     | The scenarios, the CLI tests, and the `libkrun` tests with real VMs | A hypervisor and a signed binary      |
-| `mise run test:kube`   | The scenarios and the Kubernetes tests in a kind cluster            | Linux with KVM, Docker, kind, kubectl |
-| `mise run fuzz [TIME]` | Fuzzing of the config writer against the guest init parser          | Nothing. Default duration `1m`        |
+| Command                | Runs                                                                | Needs                                                                 |
+| ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `mise run test`        | Unit tests and the host-only CLI tests of the release binary        | Nothing: no hypervisor, no network                                    |
+| `mise run test:vm`     | The scenarios, the CLI tests, and the `libkrun` tests with real VMs | A hypervisor, on macOS a signed binary, and access to `mirror.gcr.io` |
+| `mise run test:kube`   | The scenarios and the Kubernetes tests in a kind cluster            | Linux with KVM, Docker, kind, kubectl                                 |
+| `mise run fuzz [TIME]` | Fuzzing of the config writer against the guest init parser          | Nothing. Default duration `1m`                                        |
 
 - `test:vm` and `test:kube` skip with exit 0 when their environment is missing: no hypervisor, or for `test:kube` no Linux. With `SBXR_TEST_REQUIRE=1`, they fail instead. CI sets this variable.
 - `test:vm` and `test:kube` run with `-count=1`, because Go's test cache does not notice changes to the built binary or to `libkrun`.
 - `test:kube` runs [scripts/kind/up.sh](scripts/kind/up.sh), which creates the kind cluster `sbxr` from [scripts/kind/cluster.yaml](scripts/kind/cluster.yaml), or reuses the cluster named by `SBXR_KIND_CLUSTER`. It builds the installer image unless `SBXR_NODE_IMAGE` names one. The first image build compiles `libkrun` and takes several minutes.
 - kind resets the `/dev/kvm` permissions when it creates a cluster. Run `sudo chmod 666 /dev/kvm` after `kind create cluster`.
 - `mise run build` runs `go generate ./internal/guestmount`, which builds the guest mount helper that `-v` needs. A bare `go build` embeds whatever helper is on disk, and without one `-v` fails with exit code 125.
+- `internal/e2e` holds the end-to-end tests. They build the release binary themselves, and the `vm` tests build their images on `mirror.gcr.io/library/busybox`.
 - `mise run test:vm` passes extra arguments to `go test`, for example `mise run test:vm -v -shuffle=on`.
 - To run the `vm` tests on Linux, install `sbxr` and the AppArmor profile as in [Setup on Linux](#setup-on-linux), then run `SBXR_TEST_REQUIRE=1 SBXR_BIN=/usr/local/bin/sbxr mise run test:vm`.
 - Tests run in parallel, and the nightly workflow also shuffles them, including the `vm` tests on Linux KVM. Publish tests must bind port 0, and cleanup checks must look only at the test's own run directory and processes.

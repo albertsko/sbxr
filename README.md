@@ -62,4 +62,4 @@ mise run test:kube   # Kubernetes in kind (Linux with KVM and Docker)
 mise run ci          # format, lint, unit tests, and build checks, without the vm, kube, and install jobs of CI
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for signing on macOS, the Linux setup, and the test suites.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for signing on macOS, the Linux setup, and the test suites. The end-to-end tests are in `internal/e2e`.
