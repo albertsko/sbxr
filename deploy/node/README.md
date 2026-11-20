@@ -22,7 +22,7 @@ deploy/node/render.sh sbxr-node out                                             
 
 ## Release
 
-- The release workflow builds the image once per architecture from the tagged commit, pushes each by digest, and joins them in one index tagged with the release version. The CI job `Kubernetes tests (kind)` tests an image built from the same Dockerfile and pins, not the published bytes. The CI job `VM tests (Linux KVM)` tests the `libkrun` target of the same Dockerfile.
+- The release workflow builds the image once per architecture from the tagged commit, pushes each by digest, and joins them in one index tagged with the release version. The CI job `Kubernetes tests (kind)` tests an image built from the same Dockerfile and pins, not the published bytes. The CI check `VM tests / VM tests (Linux KVM)` tests the `libkrun` target of the same Dockerfile.
 - The index tag is pushed before goreleaser creates the GitHub release. If a later job fails, the tag exists without a release. Rerun the workflow; it pushes the index again and renders the manifests for its new digest.
 - The uninstall guard scans `/run/sbxr/pods` and keeps the bundle while an `sbxr` pod exists.
 - `SHA256SUMS` in the bundle protects the copy to the node, not the supply chain: it ships in the same image. The pins above protect the inputs.

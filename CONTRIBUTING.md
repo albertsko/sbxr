@@ -35,7 +35,7 @@ x86_64 or arm64 with KVM:
 - Add your user to the `kvm` group, then log in again. `newgidmap` maps only the primary group from `/etc/passwd`, so `sg kvm` or `newgrp` makes the `userns` check fail.
 - Install `uidmap`, and check that your user has a range in `/etc/subuid` and `/etc/subgid`.
 - On Ubuntu 23.10 and later, install the binary as `/usr/local/bin/sbxr` and the AppArmor profile (see `sbxr doctor`). Then run the real VM tests against that binary: `SBXR_BIN=/usr/local/bin/sbxr mise run test:vm`.
-- In a Linux VM that shares the checkout with a Mac (for example Lima), do not run `mise run build`, because it overwrites the Mac's `bin/sbxr`. Build to a private path instead: `CGO_ENABLED=0 go build -o /tmp/sbxr ./cmd/sbxr && sudo install -m 755 /tmp/sbxr /usr/local/bin/sbxr`.
+- In a Linux VM that shares the checkout with a Mac (for example Lima), do not run `mise run build`, because it overwrites the Mac's `bin/sbxr`. Build to a private path instead, after the guest mount helper that `-v` needs: `go generate ./internal/guestmount && CGO_ENABLED=0 go build -o /tmp/sbxr ./cmd/sbxr && sudo install -m 755 /tmp/sbxr /usr/local/bin/sbxr`.
 - Install `libkrun` and `libkrunfw` with Homebrew on Linux, or build `libkrun` from source with network support and use the `libkrunfw` release tarball:
 
   ```sh
