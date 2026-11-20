@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -271,19 +272,34 @@ func TestVMTTYOutputReachesASlowReader(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	pipe, ok := stdout.(*os.File)
+	if !ok {
+		t.Fatalf("%T has no read deadline", stdout)
+	}
+
+	err = pipe.SetReadDeadline(time.Now().Add(readyTimeout))
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	var got bytes.Buffer
 
 	buf := make([]byte, 4096)
 
-	for {
+	for err == nil {
 		time.Sleep(2 * time.Millisecond)
 
-		n, err := stdout.Read(buf)
-		got.Write(buf[:n])
+		var n int
 
-		if err != nil {
-			break
-		}
+		n, err = stdout.Read(buf)
+		got.Write(buf[:n])
+	}
+
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait() // The kill decides the outcome.
+
+		t.Fatalf("the output did not end within %v, read %d bytes", readyTimeout, got.Len())
 	}
 
 	err = cmd.Wait()
