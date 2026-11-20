@@ -29,9 +29,12 @@ type Pull string
 
 // Pull policies.
 const (
+	// PullMissing pulls only when the cache does not have the image.
 	PullMissing Pull = "missing"
-	PullAlways  Pull = "always"
-	PullNever   Pull = "never"
+	// PullAlways checks the registry and pulls when the image changed.
+	PullAlways Pull = "always"
+	// PullNever uses only the cache.
+	PullNever Pull = "never"
 )
 
 // Input is the raw run input, as the user typed it.

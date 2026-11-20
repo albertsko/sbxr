@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/albertsko/sbxr/internal/run"
 	"github.com/albertsko/sbxr/internal/runspec"
 )
 
@@ -19,40 +18,27 @@ type Store struct {
 	Progress func(Progress)
 }
 
-// Hold holds the cache, so that prune cannot remove images while the run lasts.
+// Hold keeps prune from removing images while the returned lock file is open.
+// The runner passes it to the VM process, so that the hold lasts while the VM runs, even when the runner dies.
 func (s Store) Hold(ctx context.Context) (*os.File, error) {
 	return s.Cache.Hold(ctx)
 }
 
-// Pull returns the image for ref. The image ID is its cached root directory.
-func (s Store) Pull(ctx context.Context, ref string, policy runspec.Pull) (run.Image, error) {
-	img, err := s.Cache.Pull(ctx, ref, PullPolicy(policy), s.Progress)
-	if err != nil {
-		return run.Image{}, err
-	}
-
-	return run.Image{ID: img.Root, Config: img.Config}, nil
+// Pull returns the image for ref, downloading it when policy allows.
+func (s Store) Pull(ctx context.Context, ref string, policy runspec.Pull) (*Image, error) {
+	return s.Cache.Pull(ctx, ref, policy, s.Progress)
 }
 
-// ResolveUser resolves user through the image /etc/passwd and /etc/group.
-func (s Store) ResolveUser(img run.Image, user string) (uint32, uint32, error) {
-	return cached(img).ResolveUser(user)
-}
-
-// NewRoot creates the run root dir/root.
-func (s Store) NewRoot(_ context.Context, img run.Image, dir string) (string, func() error, error) {
-	root := filepath.Join(dir, "root")
+// NewRoot creates the private run root dir/root and returns its path.
+// release undoes what a removal of dir cannot, such as a mount.
+func (s Store) NewRoot(img *Image, dir string) (root string, release func() error, err error) {
+	root = filepath.Join(dir, "root")
 
 	if s.Overlay {
-		release, err := cached(img).MountRoot(dir, root)
+		release, err := img.MountRoot(dir, root)
 
 		return root, release, err
 	}
 
-	return root, func() error { return nil }, cached(img).CloneRoot(root)
-}
-
-// cached returns the cached image of a run image, which needs only the root for these operations.
-func cached(img run.Image) *Image {
-	return &Image{Root: img.ID, Config: run.ImageConfig{}}
+	return root, func() error { return nil }, img.CloneRoot(root)
 }

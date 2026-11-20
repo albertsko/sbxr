@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/albertsko/sbxr/internal/image"
-	"github.com/albertsko/sbxr/internal/run"
+	"github.com/albertsko/sbxr/internal/runspec"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
@@ -33,12 +33,12 @@ func TestPullReturnsImageConfig(t *testing.T) {
 	ref := reg.push(t, "app", testImage(t, runtime.GOARCH, cfg, layer(t, file("srv/index", "ok"))))
 	c, _ := openCache(t)
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
+	img, err := c.Pull(t.Context(), ref, runspec.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	want := run.ImageConfig{Entrypoint: cfg.Entrypoint, Cmd: cfg.Cmd, Env: cfg.Env, WorkingDir: cfg.WorkingDir, User: cfg.User}
+	want := image.Config{Entrypoint: cfg.Entrypoint, Cmd: cfg.Cmd, Env: cfg.Env, WorkingDir: cfg.WorkingDir, User: cfg.User}
 	if !reflect.DeepEqual(img.Config, want) {
 		t.Errorf("Config = %+v, want %+v", img.Config, want)
 	}
@@ -57,7 +57,7 @@ func TestPullReportsProgress(t *testing.T) {
 
 	var got []image.Progress
 
-	_, err := c.Pull(t.Context(), ref, image.PullMissing, func(p image.Progress) { got = append(got, p) })
+	_, err := c.Pull(t.Context(), ref, runspec.PullMissing, func(p image.Progress) { got = append(got, p) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestPullReportsProgress(t *testing.T) {
 	// A cached image needs no download, so it reports no progress.
 	got = nil
 
-	_, err = c.Pull(t.Context(), ref, image.PullMissing, func(p image.Progress) { got = append(got, p) })
+	_, err = c.Pull(t.Context(), ref, runspec.PullMissing, func(p image.Progress) { got = append(got, p) })
 	if err != nil || len(got) != 0 {
 		t.Errorf("cached Pull = %v, progress %+v; want no error and no progress", err, got)
 	}
@@ -92,7 +92,7 @@ func TestPullMissingImage(t *testing.T) {
 	c, dir := openCache(t)
 	ref := reg.ref("missing:latest")
 
-	_, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
+	_, err := c.Pull(t.Context(), ref, runspec.PullMissing, nil)
 	if !errors.Is(err, image.ErrNotFound) {
 		t.Fatalf("Pull error = %v, want ErrNotFound", err)
 	}
@@ -107,7 +107,7 @@ func TestPullFailedUnpackLeavesNoCacheEntry(t *testing.T) {
 	ref := reg.push(t, "bad", hostImage(t, layer(t, file("ok", "x"), file("../escaped", "x"))))
 	c, dir := openCache(t)
 
-	if _, err := c.Pull(t.Context(), ref, image.PullMissing, nil); err == nil {
+	if _, err := c.Pull(t.Context(), ref, runspec.PullMissing, nil); err == nil {
 		t.Fatal("Pull succeeded, want an error")
 	}
 
@@ -126,7 +126,7 @@ func TestPullSelectsHostPlatform(t *testing.T) {
 	ref := reg.pushIndex(t, "multi", idx)
 	c, _ := openCache(t)
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
+	img, err := c.Pull(t.Context(), ref, runspec.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestPullRejectsALayerWithTheWrongDigest(t *testing.T) {
 
 	var last image.Progress
 
-	_, err := c.Pull(t.Context(), ref, image.PullMissing, func(p image.Progress) { last = p })
+	_, err := c.Pull(t.Context(), ref, runspec.PullMissing, func(p image.Progress) { last = p })
 	if err == nil || !strings.Contains(err.Error(), "checksum") {
 		t.Fatalf("Pull error = %v, want a digest mismatch", err)
 	}
@@ -178,7 +178,7 @@ func TestPullWithoutHostPlatform(t *testing.T) {
 
 			c, dir := openCache(t)
 
-			_, err := c.Pull(t.Context(), tt.ref, image.PullMissing, nil)
+			_, err := c.Pull(t.Context(), tt.ref, runspec.PullMissing, nil)
 			if !errors.Is(err, image.ErrNoPlatform) {
 				t.Fatalf("Pull error = %v, want ErrNoPlatform", err)
 			}
@@ -199,21 +199,21 @@ func TestPullPolicy(t *testing.T) {
 	ref := reg.push(t, "app", hostImage(t, layer(t, file("v", "1"))))
 	c, _ := openCache(t)
 
-	if _, err := c.Pull(t.Context(), ref, image.PullNever, nil); !errors.Is(err, image.ErrNotFound) {
+	if _, err := c.Pull(t.Context(), ref, runspec.PullNever, nil); !errors.Is(err, image.ErrNotFound) {
 		t.Fatalf("Pull never on an empty cache: error = %v, want ErrNotFound", err)
 	}
 
-	if _, err := c.Pull(t.Context(), ref, image.PullMissing, nil); err != nil {
+	if _, err := c.Pull(t.Context(), ref, runspec.PullMissing, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	downloads := reg.blobGets()
 
-	if _, err := c.Pull(t.Context(), ref, image.PullMissing, nil); err != nil {
+	if _, err := c.Pull(t.Context(), ref, runspec.PullMissing, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := c.Pull(t.Context(), ref, image.PullAlways, nil); err != nil {
+	if _, err := c.Pull(t.Context(), ref, runspec.PullAlways, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -223,7 +223,7 @@ func TestPullPolicy(t *testing.T) {
 
 	reg.push(t, "app", hostImage(t, layer(t, file("v", "2"))))
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
+	img, err := c.Pull(t.Context(), ref, runspec.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestPullPolicy(t *testing.T) {
 		t.Errorf("v after Pull missing = %q, want the cached 1", got)
 	}
 
-	img, err = c.Pull(t.Context(), ref, image.PullAlways, nil)
+	img, err = c.Pull(t.Context(), ref, runspec.PullAlways, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestPullPolicy(t *testing.T) {
 
 	reg.srv.Close()
 
-	if _, err := c.Pull(t.Context(), ref, image.PullNever, nil); err != nil {
+	if _, err := c.Pull(t.Context(), ref, runspec.PullNever, nil); err != nil {
 		t.Errorf("Pull never with the registry down: %v", err)
 	}
 }
@@ -268,7 +268,7 @@ func TestPullConcurrentDownloadsOnce(t *testing.T) {
 	errs := make(chan error, runs)
 	for range runs {
 		wg.Go(func() {
-			img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
+			img, err := c.Pull(t.Context(), ref, runspec.PullMissing, nil)
 			if err != nil {
 				errs <- err
 
@@ -312,7 +312,7 @@ func TestPruneRefusesWhileHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	img, err := c.Pull(t.Context(), ref, image.PullMissing, nil)
+	img, err := c.Pull(t.Context(), ref, runspec.PullMissing, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestPruneRefusesWhileHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := c.Pull(t.Context(), ref, image.PullNever, nil); !errors.Is(err, image.ErrNotFound) {
+	if _, err := c.Pull(t.Context(), ref, runspec.PullNever, nil); !errors.Is(err, image.ErrNotFound) {
 		t.Errorf("Pull never after Prune: error = %v, want ErrNotFound", err)
 	}
 }

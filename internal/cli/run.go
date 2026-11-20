@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/run"
 	"github.com/albertsko/sbxr/internal/runspec"
 )
@@ -127,7 +128,7 @@ func (a *app) run(cmd *cobra.Command, in runspec.Input, envFiles []string, quiet
 	defer a.stdout.hide()
 
 	r := &run.Runner{
-		Images:      nil,
+		Images:      image.Store{},
 		Checks:      a.backend.Checks(dir),
 		Network:     startNetwork,
 		MountHelper: a.backend.MountHelper,

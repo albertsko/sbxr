@@ -192,7 +192,7 @@ linters:
         - 'syscall\.(SysProcAttr|Credential)'
       # Types whose fields are optional by design.
       optional-patterns:
-        - '.+/internal/run\.ImageConfig'
+        - '.+/internal/image\.Config'
         - '.+/internal/vm/libkrun\.Config'
         - '.+/internal/runspec\.Error'
 

@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/krunconfig"
 	"github.com/albertsko/sbxr/internal/runspec"
 )
@@ -16,7 +17,7 @@ const DefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bi
 // Workload merges the run request with the image config into the guest init config.
 // The -u flag wins over the image User, which resolveUser resolves only when needed.
 // It returns warnings for image env entries that it drops.
-func Workload(s runspec.Spec, img ImageConfig, resolveUser UserResolver) (krunconfig.Config, []string, error) {
+func Workload(s runspec.Spec, img image.Config, resolveUser UserResolver) (krunconfig.Config, []string, error) {
 	var uid, gid uint32
 
 	if s.User != nil {
@@ -42,7 +43,7 @@ func Workload(s runspec.Spec, img ImageConfig, resolveUser UserResolver) (krunco
 }
 
 // args follows docker: --entrypoint replaces the image entrypoint and drops the image Cmd.
-func args(s runspec.Spec, img ImageConfig) []string {
+func args(s runspec.Spec, img image.Config) []string {
 	entrypoint, cmd := img.Entrypoint, img.Cmd
 
 	if s.Entrypoint != nil {
@@ -62,7 +63,7 @@ func args(s runspec.Spec, img ImageConfig) []string {
 
 // mergeEnv drops invalid and reserved image entries, applies user entries (a later entry wins),
 // and adds HOME, TERM, and PATH when they are missing.
-func mergeEnv(image, user []string) ([]string, []string) {
+func mergeEnv(imageEnv, user []string) ([]string, []string) {
 	var (
 		names    []string
 		values   = map[string]string{}
@@ -77,7 +78,7 @@ func mergeEnv(image, user []string) ([]string, []string) {
 		values[name] = value
 	}
 
-	for _, kv := range image {
+	for _, kv := range imageEnv {
 		name, value, _ := strings.Cut(kv, "=")
 
 		err := krunconfig.CheckEnvName(name)
