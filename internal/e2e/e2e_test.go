@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -240,7 +241,10 @@ func CheckClean(cacheDir string) error {
 		errs = append(errs, fmt.Errorf("run state remains: %s", r.Name()))
 	}
 
-	out, err := exec.CommandContext(context.Background(), "ps", "-A", "-ww", "-o", "pid=,args=").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "ps", "-A", "-ww", "-o", "pid=,args=").Output()
 	if err != nil {
 		return fmt.Errorf("list processes: %w", err)
 	}
@@ -252,6 +256,48 @@ func CheckClean(cacheDir string) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// TestCheckCleanReportsLeftovers checks that CheckClean finds run state and a process whose arguments name the cache directory.
+func TestCheckCleanReportsLeftovers(t *testing.T) {
+	t.Parallel()
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+
+	err := os.MkdirAll(filepath.Join(cacheDir, "runs", "r1"), 0o750)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+
+	// Like the VM process, the sleep process names the cache directory in its arguments.
+	sleep := exec.CommandContext(ctx, "sleep", "30")
+	sleep.Args[0] = filepath.Join(cacheDir, "sleep")
+
+	err = sleep.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = CheckClean(cacheDir)
+	if err == nil || !strings.Contains(err.Error(), "run state remains: r1") || !strings.Contains(err.Error(), "process remains: ") {
+		t.Errorf("CheckClean() = %v, want the run state and the sleep process", err)
+	}
+
+	_ = sleep.Process.Kill()
+	_ = sleep.Wait() // The kill ends the process.
+
+	err = os.Remove(filepath.Join(cacheDir, "runs", "r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = CheckClean(cacheDir)
+	if err != nil {
+		t.Errorf("CheckClean() after the cleanup = %v, want nil", err)
+	}
 }
 
 // RequireHypervisor skips t when the `hypervisor` doctor check fails, or fails t when SBXR_TEST_REQUIRE=1.
