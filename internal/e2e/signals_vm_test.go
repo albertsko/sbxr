@@ -72,7 +72,7 @@ func TestVMSignals(t *testing.T) {
 			waitForNoProcess(t, cacheDir)
 			waitForGone(t, runner)
 
-			err = CheckClean(cacheDir)
+			err = checkClean(cacheDir)
 			if err != nil {
 				t.Error(err)
 			}
@@ -185,7 +185,7 @@ func TestVMClosedTerminalStopsTheRun(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
@@ -245,7 +245,7 @@ func TestVMCtrlCEndsAStalledDrain(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
@@ -314,7 +314,7 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
@@ -361,7 +361,7 @@ func TestVMReaderGoneAfterCtrlCWithStalledOutput(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
@@ -404,7 +404,7 @@ func TestVMKilledVMProcessIsAnSbxrError(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
@@ -448,7 +448,7 @@ func TestVMSIGTERMWithAStalledTTYReader(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}

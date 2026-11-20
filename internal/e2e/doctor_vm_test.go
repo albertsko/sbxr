@@ -59,7 +59,7 @@ func TestVMFailedPreflightStartsNoVM(t *testing.T) {
 		t.Errorf("sbxr run = %d, stdout %q, stderr %q; want 125 and one line %q...%q", res.code, res.stdout, res.stderr, wantStart, wantEnd)
 	}
 
-	err := CheckClean(cacheDir)
+	err := checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}

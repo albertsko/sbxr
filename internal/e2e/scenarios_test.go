@@ -15,150 +15,150 @@ import (
 	"time"
 )
 
-// All returns every scenario.
-func All() []Scenario {
-	return []Scenario{
-		{Name: "echo", Check: expect(Workload{Image: Busybox, Args: []string{"echo", "hi"}}, 0, OK, stdout("hi\n"))},
-		{Name: "exit code", Check: expect(Workload{Image: Busybox, Args: []string{"sh", "-c", "exit 3"}}, 3, OK)},
-		{Name: "relative workdir", Needs: []Capability{SpecValidation}, Check: expect(Workload{Image: Busybox, Args: []string{"true"}, Workdir: "app"}, 125, InvalidSpec)},
-		{Name: "control character in argument", Needs: []Capability{SpecValidation}, Check: expect(Workload{Image: Busybox, Args: []string{"echo", "a\x1bb"}}, 125, InvalidSpec)},
-		{Name: "reserved env name", Needs: []Capability{SpecValidation}, Check: expect(Workload{Image: Busybox, Args: []string{"true"}, Env: []string{"KRUN_INIT=/bin/sh"}}, 125, InvalidSpec)},
-		{Name: "missing command", Check: expect(Workload{Image: Busybox, Args: []string{"nope"}}, 127, NotFound)},
-		{Name: "not executable", Check: expect(Workload{Image: Busybox, Args: []string{"/etc/passwd"}}, 126, NotExecutable)},
-		{Name: "missing image", Check: expect(Workload{Image: MissingImage, Args: []string{"true"}}, 125, Image)},
+// allScenarios returns every scenario.
+func allScenarios() []scenario {
+	return []scenario{
+		{Name: "echo", Check: expect(workload{Image: Busybox, Args: []string{"echo", "hi"}}, 0, OK, stdout("hi\n"))},
+		{Name: "exit code", Check: expect(workload{Image: Busybox, Args: []string{"sh", "-c", "exit 3"}}, 3, OK)},
+		{Name: "relative workdir", Needs: []capability{SpecValidation}, Check: expect(workload{Image: Busybox, Args: []string{"true"}, Workdir: "app"}, 125, InvalidSpec)},
+		{Name: "control character in argument", Needs: []capability{SpecValidation}, Check: expect(workload{Image: Busybox, Args: []string{"echo", "a\x1bb"}}, 125, InvalidSpec)},
+		{Name: "reserved env name", Needs: []capability{SpecValidation}, Check: expect(workload{Image: Busybox, Args: []string{"true"}, Env: []string{"KRUN_INIT=/bin/sh"}}, 125, InvalidSpec)},
+		{Name: "missing command", Check: expect(workload{Image: Busybox, Args: []string{"nope"}}, 127, NotFound)},
+		{Name: "not executable", Check: expect(workload{Image: Busybox, Args: []string{"/etc/passwd"}}, 126, NotExecutable)},
+		{Name: "missing image", Check: expect(workload{Image: MissingImage, Args: []string{"true"}}, 125, Image)},
 		{
 			Name: "arguments reach the workload unchanged",
-			Check: expect(Workload{Image: Busybox, Args: []string{"echo", `"q'`, "a\tb", "line\nnext", "é😀", "uid", "Env", "args"}}, 0, OK,
+			Check: expect(workload{Image: Busybox, Args: []string{"echo", `"q'`, "a\tb", "line\nnext", "é😀", "uid", "Env", "args"}}, 0, OK,
 				stdout("\"q' a\tb line\nnext é😀 uid Env args\n")),
 		},
 		{
 			Name:  "image config applies",
-			Needs: []Capability{ExactConfig},
-			Check: expect(Workload{Image: Configured}, 0, OK, stdout("image image\n1000\n1000\n/tmp\n")),
+			Needs: []capability{ExactConfig},
+			Check: expect(workload{Image: Configured}, 0, OK, stdout("image image\n1000\n1000\n/tmp\n")),
 		},
 		{
 			Name:  "arguments replace the image command",
-			Check: expect(Workload{Image: Configured, Args: []string{"echo x"}}, 0, OK, stdout("x\n")),
+			Check: expect(workload{Image: Configured, Args: []string{"echo x"}}, 0, OK, stdout("x\n")),
 		},
 		{
 			Name:  "env flags override the image env",
-			Check: expect(Workload{Image: Configured, Env: []string{"B=flag", "C=flag"}, Args: []string{"echo $A $B $C"}}, 0, OK, stdout("image flag flag\n")),
+			Check: expect(workload{Image: Configured, Env: []string{"B=flag", "C=flag"}, Args: []string{"echo $A $B $C"}}, 0, OK, stdout("image flag flag\n")),
 		},
 		{
 			Name:  "user and workdir flags override the image",
-			Check: expect(Workload{Image: Configured, User: "0", Workdir: "/root", Args: []string{"id -u; pwd"}}, 0, OK, stdout("0\n/root\n")),
+			Check: expect(workload{Image: Configured, User: "0", Workdir: "/root", Args: []string{"id -u; pwd"}}, 0, OK, stdout("0\n/root\n")),
 		},
 		{
 			Name:  "guest env holds only image env, flags, and defaults",
-			Needs: []Capability{ExactConfig},
-			Check: expect(Workload{Image: Busybox, Args: []string{"env"}, Env: []string{"A=1", "TERM=xterm"}}, 0, OK,
+			Needs: []capability{ExactConfig},
+			Check: expect(workload{Image: Busybox, Args: []string{"env"}, Env: []string{"A=1", "TERM=xterm"}}, 0, OK,
 				envExactly("PATH=/bin", "A=1", "TERM=xterm", "HOME=/")),
 		},
 		{
 			Name:  "user flag wins over arguments that look like config keys",
-			Check: expect(Workload{Image: Busybox, User: "1000", Args: []string{"sh", "-c", "id -u", "uid", "0"}}, 0, OK, stdout("1000\n")),
+			Check: expect(workload{Image: Busybox, User: "1000", Args: []string{"sh", "-c", "id -u", "uid", "0"}}, 0, OK, stdout("1000\n")),
 		},
 		{
 			Name:  "image user name resolves in the image",
-			Check: expect(Workload{Image: NamedUser, Args: []string{"sh", "-c", "id -u; id -g"}}, 0, OK, stdout("65534\n65534\n")),
+			Check: expect(workload{Image: NamedUser, Args: []string{"sh", "-c", "id -u; id -g"}}, 0, OK, stdout("65534\n65534\n")),
 		},
 		{
 			Name:  "files keep owner, mode, and hardlinks from the image",
-			Check: expect(Workload{Image: Busybox, Args: []string{"stat", "-c", "%u:%g %a %h", SetuidFile}}, 0, OK, stdout("0:42 4755 2\n")),
+			Check: expect(workload{Image: Busybox, Args: []string{"stat", "-c", "%u:%g %a %h", SetuidFile}}, 0, OK, stdout("0:42 4755 2\n")),
 		},
 		{
 			Name:  "image config file does not change what runs",
-			Check: expect(Workload{Image: Busybox, Args: []string{"echo", "ok"}}, 0, OK, stdout("ok\n")),
+			Check: expect(workload{Image: Busybox, Args: []string{"echo", "ok"}}, 0, OK, stdout("ok\n")),
 		},
 		{Name: "changes do not reach the next run", Check: changesDoNotPersist},
-		{Name: "workdir flag", Check: expect(Workload{Image: Busybox, Workdir: "/tmp", Args: []string{"pwd"}}, 0, OK, stdout("/tmp\n"))},
+		{Name: "workdir flag", Check: expect(workload{Image: Busybox, Workdir: "/tmp", Args: []string{"pwd"}}, 0, OK, stdout("/tmp\n"))},
 		{
 			Name:  "stdin with interactive",
-			Needs: []Capability{Stdin},
-			Check: expect(Workload{Image: Busybox, Args: []string{"cat"}, Interactive: true, Stdin: "data\n"}, 0, OK, stdout("data\n")),
+			Needs: []capability{Stdin},
+			Check: expect(workload{Image: Busybox, Args: []string{"cat"}, Interactive: true, Stdin: "data\n"}, 0, OK, stdout("data\n")),
 		},
 		{
 			Name:  "stdin is empty without interactive",
-			Needs: []Capability{Stdin},
-			Check: expect(Workload{Image: Busybox, Args: []string{"cat"}, Stdin: "data\n"}, 0, OK, stdout("")),
+			Needs: []capability{Stdin},
+			Check: expect(workload{Image: Busybox, Args: []string{"cat"}, Stdin: "data\n"}, 0, OK, stdout("")),
 		},
 		{
 			Name:  "tty",
-			Needs: []Capability{TTY},
-			Check: expect(Workload{Image: Busybox, Args: []string{"echo", "hi"}, TTY: true}, 0, OK, stdoutContains("hi")),
+			Needs: []capability{TTY},
+			Check: expect(workload{Image: Busybox, Args: []string{"echo", "hi"}, TTY: true}, 0, OK, stdoutContains("hi")),
 		},
 		{
 			Name:  "interrupt",
-			Needs: []Capability{SignalExit},
-			Check: expect(Workload{Image: Busybox, Args: []string{"sh", "-c", "echo ready; sleep 30"}, InterruptAfter: "ready"}, 130, Interrupted),
+			Needs: []capability{SignalExit},
+			Check: expect(workload{Image: Busybox, Args: []string{"sh", "-c", "echo ready; sleep 30"}, InterruptAfter: "ready"}, 130, Interrupted),
 		},
 		{
 			Name:  "terminate",
-			Needs: []Capability{SignalExit},
-			Check: expect(Workload{Image: Busybox, Args: []string{"sh", "-c", "echo ready; sleep 30"}, InterruptAfter: "ready", Terminate: true}, 143, Interrupted),
+			Needs: []capability{SignalExit},
+			Check: expect(workload{Image: Busybox, Args: []string{"sh", "-c", "echo ready; sleep 30"}, InterruptAfter: "ready", Terminate: true}, 143, Interrupted),
 		},
 		{
 			Name:  "memory limit kills the workload",
-			Needs: []Capability{MemoryLimit},
-			Check: expect(Workload{Image: Busybox, Memory: 128, Args: []string{"sh", "-c", "x=$(yes | head -c 400000000); echo survived"}}, 137, OK),
+			Needs: []capability{MemoryLimit},
+			Check: expect(workload{Image: Busybox, Memory: 128, Args: []string{"sh", "-c", "x=$(yes | head -c 400000000); echo survived"}}, 137, OK),
 		},
 		{
 			Name:  "no network without --net",
-			Needs: []Capability{NetOff},
-			Check: expect(Workload{Image: Busybox, Args: wget("http://1.1.1.1")}, 1, OK),
+			Needs: []capability{NetOff},
+			Check: expect(workload{Image: Busybox, Args: wget("http://1.1.1.1")}, 1, OK),
 		},
-		{Name: "allow-lan reaches a host address", Needs: []Capability{Net, EgressGuard}, Check: reachHost(true)},
-		{Name: "net blocks host addresses without allow-lan", Needs: []Capability{Net, EgressGuard}, Check: reachHost(false)},
+		{Name: "allow-lan reaches a host address", Needs: []capability{Net, EgressGuard}, Check: reachHost(true)},
+		{Name: "net blocks host addresses without allow-lan", Needs: []capability{Net, EgressGuard}, Check: reachHost(false)},
 		{
 			Name:  "allow-lan still blocks cloud metadata",
-			Needs: []Capability{Net, EgressGuard},
-			Check: expect(Workload{Image: Busybox, Net: true, AllowLAN: true, Args: wget("http://169.254.169.254/")}, 1, OK),
+			Needs: []capability{Net, EgressGuard},
+			Check: expect(workload{Image: Busybox, Net: true, AllowLAN: true, Args: wget("http://169.254.169.254/")}, 1, OK),
 		},
 		{
 			Name:  "dns resolves through the gateway",
-			Needs: []Capability{DNS, EgressGuard},
-			Check: expect(Workload{Image: Busybox, Net: true, Args: []string{"nslookup", "-type=a", "localhost"}}, 0, OK, stdoutContains("127.0.0.1")),
+			Needs: []capability{DNS, EgressGuard},
+			Check: expect(workload{Image: Busybox, Net: true, Args: []string{"nslookup", "-type=a", "localhost"}}, 0, OK, stdoutContains("127.0.0.1")),
 		},
-		{Name: "volume is readable and writable both ways", Needs: []Capability{Volumes}, Check: volumeReadWrite},
-		{Name: "read-only volume rejects writes", Needs: []Capability{Volumes}, Check: volumeReadOnly},
+		{Name: "volume is readable and writable both ways", Needs: []capability{Volumes}, Check: volumeReadWrite},
+		{Name: "read-only volume rejects writes", Needs: []capability{Volumes}, Check: volumeReadOnly},
 		{
 			Name:  "volume keeps the image config",
-			Needs: []Capability{Volumes, ExactConfig},
-			Check: withVolume(Workload{Image: Configured}, 0, OK, stdout("image image\n1000\n1000\n/tmp\n")),
+			Needs: []capability{Volumes, ExactConfig},
+			Check: withVolume(workload{Image: Configured}, 0, OK, stdout("image image\n1000\n1000\n/tmp\n")),
 		},
 		{
 			Name:  "volume adds nothing to the guest env",
-			Needs: []Capability{Volumes, ExactConfig},
-			Check: withVolume(Workload{Image: Busybox, Args: []string{"env"}, Env: []string{"A=1", "TERM=xterm"}}, 0, OK, envExactly("PATH=/bin", "A=1", "TERM=xterm", "HOME=/")),
+			Needs: []capability{Volumes, ExactConfig},
+			Check: withVolume(workload{Image: Busybox, Args: []string{"env"}, Env: []string{"A=1", "TERM=xterm"}}, 0, OK, envExactly("PATH=/bin", "A=1", "TERM=xterm", "HOME=/")),
 		},
 		{
 			Name:  "volume with a missing command",
-			Needs: []Capability{Volumes},
-			Check: withVolume(Workload{Image: Busybox, Args: []string{"nope"}}, 127, NotFound),
+			Needs: []capability{Volumes},
+			Check: withVolume(workload{Image: Busybox, Args: []string{"nope"}}, 127, NotFound),
 		},
 		{
 			Name:  "volume with a relative guest path",
-			Needs: []Capability{Volumes, SpecValidation},
-			Check: invalidVolume(Volume{Guest: "work"}),
+			Needs: []capability{Volumes, SpecValidation},
+			Check: invalidVolume(volume{Guest: "work"}),
 		},
 		{
 			Name:  "volume with a missing host directory",
-			Needs: []Capability{Volumes, SpecValidation},
-			Check: invalidVolume(Volume{Host: "/nonexistent/sbxr-volume", Guest: workDir}),
+			Needs: []capability{Volumes, SpecValidation},
+			Check: invalidVolume(volume{Host: "/nonexistent/sbxr-volume", Guest: workDir}),
 		},
-		{Name: "publish reaches a guest port on 127.0.0.1", Needs: []Capability{Publish, Stdin}, Check: publishReachesGuest},
-		{Name: "publish on a busy port", Needs: []Capability{Publish, SpecValidation}, Check: publishBusyPort},
+		{Name: "publish reaches a guest port on 127.0.0.1", Needs: []capability{Publish, Stdin}, Check: publishReachesGuest},
+		{Name: "publish on a busy port", Needs: []capability{Publish, SpecValidation}, Check: publishBusyPort},
 	}
 }
 
 // changesDoNotPersist removes a file in one run and expects it in the next run.
-func changesDoNotPersist(ctx context.Context, t Target) error {
-	err := expect(Workload{Image: Busybox, Args: []string{"rm", "/etc/passwd", HijackFile}}, 0, OK)(ctx, t)
+func changesDoNotPersist(ctx context.Context, t target) error {
+	err := expect(workload{Image: Busybox, Args: []string{"rm", "/etc/passwd", HijackFile}}, 0, OK)(ctx, t)
 	if err != nil {
 		return fmt.Errorf("first run: %w", err)
 	}
 
-	err = expect(Workload{Image: Busybox, Args: []string{"cat", "/etc/passwd", HijackFile}}, 0, OK, stdoutContains("root:"), stdoutContains("hijacked"))(ctx, t)
+	err = expect(workload{Image: Busybox, Args: []string{"cat", "/etc/passwd", HijackFile}}, 0, OK, stdoutContains("root:"), stdoutContains("hijacked"))(ctx, t)
 	if err != nil {
 		return fmt.Errorf("second run: %w", err)
 	}
@@ -166,11 +166,11 @@ func changesDoNotPersist(ctx context.Context, t Target) error {
 	return nil
 }
 
-type resultCheck func(Result) error
+type resultCheck func(runResult) error
 
 // expect runs w and checks the exit code, the error class, and any extra checks.
-func expect(w Workload, code int, class ErrorClass, checks ...resultCheck) func(context.Context, Target) error {
-	return func(ctx context.Context, t Target) error {
+func expect(w workload, code int, class errorClass, checks ...resultCheck) func(context.Context, target) error {
+	return func(ctx context.Context, t target) error {
 		res, err := t.Run(ctx, w)
 		if err != nil {
 			return fmt.Errorf("run: %w", err)
@@ -195,7 +195,7 @@ func expect(w Workload, code int, class ErrorClass, checks ...resultCheck) func(
 }
 
 func stdout(want string) resultCheck {
-	return func(r Result) error {
+	return func(r runResult) error {
 		if r.Stdout != want {
 			return fmt.Errorf("stdout %q, want %q", r.Stdout, want)
 		}
@@ -205,7 +205,7 @@ func stdout(want string) resultCheck {
 }
 
 func stdoutContains(want string) resultCheck {
-	return func(r Result) error {
+	return func(r runResult) error {
 		if !strings.Contains(r.Stdout, want) {
 			return fmt.Errorf("stdout %q, want it to contain %q", r.Stdout, want)
 		}
@@ -216,7 +216,7 @@ func stdoutContains(want string) resultCheck {
 
 // envExactly checks that stdout lists exactly these env entries, in any order.
 func envExactly(want ...string) resultCheck {
-	return func(r Result) error {
+	return func(r runResult) error {
 		got := strings.Fields(r.Stdout)
 		if len(got) != len(want) {
 			return fmt.Errorf("env %q, want exactly %q", got, want)
@@ -237,15 +237,15 @@ const hostBody = "from host\n"
 
 // reachHost runs wget in the guest against an HTTP server on a non-loopback host address.
 // With allowLAN, the guest must get the response. Without it, the request must fail and never reach the server.
-func reachHost(allowLAN bool) func(context.Context, Target) error {
-	return func(ctx context.Context, t Target) error {
+func reachHost(allowLAN bool) func(context.Context, target) error {
+	return func(ctx context.Context, t target) error {
 		addr, requests, stop, err := hostServer(ctx)
 		if err != nil {
 			return err
 		}
 		defer stop()
 
-		w := Workload{Image: Busybox, Net: true, AllowLAN: allowLAN, Args: wget("http://" + addr + "/")}
+		w := workload{Image: Busybox, Net: true, AllowLAN: allowLAN, Args: wget("http://" + addr + "/")}
 
 		if allowLAN {
 			return expect(w, 0, OK, stdout(hostBody))(ctx, t)
@@ -315,7 +315,7 @@ func hostIPv4() (netip.Addr, bool) {
 }
 
 // publishReachesGuest publishes a guest port on a free host port of 127.0.0.1 and reads what the guest sends.
-func publishReachesGuest(ctx context.Context, t Target) error {
+func publishReachesGuest(ctx context.Context, t target) error {
 	const msg = "published\n"
 
 	type result struct {
@@ -325,10 +325,10 @@ func publishReachesGuest(ctx context.Context, t Target) error {
 
 	results := make(chan result, 1)
 
-	w := Workload{
+	w := workload{
 		Image:       Busybox,
 		Net:         true,
-		Publish:     []Port{{Host: 0, Guest: 8080}},
+		Publish:     []publishPort{{Host: 0, Guest: 8080}},
 		Interactive: true,
 		Stdin:       msg,
 		Args:        []string{"nc", "-l", "-p", "8080"},
@@ -381,7 +381,7 @@ func readUntil(ctx context.Context, addr, want string) string {
 }
 
 // publishBusyPort publishes on a host port that is in use. The run must fail before it starts anything.
-func publishBusyPort(ctx context.Context, t Target) error {
+func publishBusyPort(ctx context.Context, t target) error {
 	var lc net.ListenConfig
 
 	ln, err := lc.Listen(ctx, "tcp4", "127.0.0.1:0")
@@ -391,7 +391,7 @@ func publishBusyPort(ctx context.Context, t Target) error {
 	defer ln.Close()
 
 	port := netip.MustParseAddrPort(ln.Addr().String()).Port()
-	w := Workload{Image: Busybox, Net: true, Publish: []Port{{Host: port, Guest: 80}}, Args: []string{"false"}}
+	w := workload{Image: Busybox, Net: true, Publish: []publishPort{{Host: port, Guest: 80}}, Args: []string{"false"}}
 
 	return expect(w, 125, InvalidSpec)(ctx, t)
 }
@@ -424,16 +424,16 @@ func volumeDir() (string, func(), error) {
 
 // volumeReadWrite reads a host file in the volume and creates a file that must appear on the host.
 // The working directory is the mount point, which exists only after the mount.
-func volumeReadWrite(ctx context.Context, t Target) error {
+func volumeReadWrite(ctx context.Context, t target) error {
 	dir, remove, err := volumeDir()
 	if err != nil {
 		return err
 	}
 	defer remove()
 
-	w := Workload{
+	w := workload{
 		Image:   Busybox,
-		Volumes: []Volume{{Host: dir, Guest: workDir}},
+		Volumes: []volume{{Host: dir, Guest: workDir}},
 		Workdir: workDir,
 		Args:    []string{"sh", "-c", "cat " + hostFile + "; touch from-guest; pwd"},
 	}
@@ -452,16 +452,16 @@ func volumeReadWrite(ctx context.Context, t Target) error {
 }
 
 // volumeReadOnly reads a host file in a read-only volume and fails to create a file.
-func volumeReadOnly(ctx context.Context, t Target) error {
+func volumeReadOnly(ctx context.Context, t target) error {
 	dir, remove, err := volumeDir()
 	if err != nil {
 		return err
 	}
 	defer remove()
 
-	w := Workload{
+	w := workload{
 		Image:   Busybox,
-		Volumes: []Volume{{Host: dir, Guest: "/data", ReadOnly: true}},
+		Volumes: []volume{{Host: dir, Guest: "/data", ReadOnly: true}},
 		Args:    []string{"sh", "-c", "cat /data/" + hostFile + "; touch /data/from-guest"},
 	}
 
@@ -479,23 +479,23 @@ func volumeReadOnly(ctx context.Context, t Target) error {
 }
 
 // withVolume runs check with a read-only volume added to the workload of check, so that scenarios run once with the mount helper.
-func withVolume(w Workload, code int, class ErrorClass, checks ...resultCheck) func(context.Context, Target) error {
-	return func(ctx context.Context, t Target) error {
+func withVolume(w workload, code int, class errorClass, checks ...resultCheck) func(context.Context, target) error {
+	return func(ctx context.Context, t target) error {
 		dir, remove, err := volumeDir()
 		if err != nil {
 			return err
 		}
 		defer remove()
 
-		w.Volumes = []Volume{{Host: dir, Guest: "/mnt/volume", ReadOnly: true}}
+		w.Volumes = []volume{{Host: dir, Guest: "/mnt/volume", ReadOnly: true}}
 
 		return expect(w, code, class, checks...)(ctx, t)
 	}
 }
 
 // invalidVolume expects that the run input with flag is rejected before anything starts.
-func invalidVolume(v Volume) func(context.Context, Target) error {
-	return func(ctx context.Context, t Target) error {
+func invalidVolume(v volume) func(context.Context, target) error {
+	return func(ctx context.Context, t target) error {
 		dir, remove, err := volumeDir()
 		if err != nil {
 			return err
@@ -506,6 +506,6 @@ func invalidVolume(v Volume) func(context.Context, Target) error {
 			v.Host = dir
 		}
 
-		return expect(Workload{Image: Busybox, Volumes: []Volume{v}, Args: []string{"pwd"}}, 125, InvalidSpec)(ctx, t)
+		return expect(workload{Image: Busybox, Volumes: []volume{v}, Args: []string{"pwd"}}, 125, InvalidSpec)(ctx, t)
 	}
 }

@@ -140,7 +140,7 @@ func testGracefulStop(t *testing.T, k *kind) {
 			t.Errorf("%s: deletion took %s, want %s to %s", c.name, took, c.min, c.max)
 		}
 
-		if err := NoPodProcesses(t.Context(), k.Node, uid); err != nil {
+		if err := noPodProcesses(t.Context(), k.Node, uid); err != nil {
 			t.Error(err)
 		}
 	}
@@ -197,7 +197,7 @@ func testBootFailure(t *testing.T, k *kind) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	if err := NoPodProcesses(ctx, k.Node, uid); err != nil {
+	if err := noPodProcesses(ctx, k.Node, uid); err != nil {
 		t.Error(err)
 	}
 }
@@ -207,7 +207,7 @@ func waitLog(k *kind, name, c, want string) {
 	k.t.Helper()
 
 	for range 60 {
-		if out, _ := k.Kubectl(k.t.Context(), nil, "-n", k.Namespace, "logs", name, "-c", c); strings.Contains(out, want) {
+		if out, _ := k.kubectl(k.t.Context(), nil, "-n", k.Namespace, "logs", name, "-c", c); strings.Contains(out, want) {
 			return
 		}
 
@@ -261,7 +261,7 @@ func testUpgradeKeepsPods(t *testing.T, k *kind) {
 		t.Errorf("deletion took %s; the workload did not get SIGTERM", took)
 	}
 
-	if err := NoPodProcesses(t.Context(), k.Node, uid); err != nil {
+	if err := noPodProcesses(t.Context(), k.Node, uid); err != nil {
 		t.Error(err)
 	}
 

@@ -44,7 +44,7 @@ func TestKubeCriteria(t *testing.T) {
 		testenv.SkipOrFailf(t, "kind with KVM needs Linux")
 	}
 
-	RequireHypervisor(t)
+	requireHypervisor(t)
 
 	cluster := os.Getenv("SBXR_KIND_CLUSTER")
 	if cluster == "" {
@@ -60,7 +60,7 @@ func TestKubeCriteria(t *testing.T) {
 	}
 
 	images := kindImages(t, cluster)
-	k := &kind{t: t, Kube: &Kube{Context: "kind-" + cluster, Node: cluster + "-control-plane", Namespace: "sbxr-test", Images: images}}
+	k := &kind{t: t, kubeTarget: &kubeTarget{Context: "kind-" + cluster, Node: cluster + "-control-plane", Namespace: "sbxr-test", Images: images}}
 	k.image = k.run("", "-n", "sbxr-system", "get", "ds", "sbxr-node", "-o", "jsonpath={.spec.template.spec.containers[0].image}")
 
 	tests := map[string]func(*testing.T, *kind){
@@ -80,8 +80,8 @@ func TestKubeCriteria(t *testing.T) {
 		t.Run("scenarios", func(t *testing.T) {
 			t.Parallel()
 
-			RunAll(t, func(*testing.T) Target {
-				return &Kube{Context: k.Context, Node: k.Node, Namespace: k.Namespace, Images: images}
+			runAll(t, func(*testing.T) target {
+				return &kubeTarget{Context: k.Context, Node: k.Node, Namespace: k.Namespace, Images: images}
 			})
 		})
 
@@ -102,7 +102,7 @@ func TestKubeCriteria(t *testing.T) {
 
 // kind wraps the target with test helpers that fail t.
 type kind struct {
-	*Kube
+	*kubeTarget
 
 	t     *testing.T
 	image string // The installer image.
@@ -111,14 +111,14 @@ type kind struct {
 func (k *kind) with(t *testing.T) *kind {
 	t.Helper()
 
-	return &kind{Kube: k.Kube, t: t, image: k.image}
+	return &kind{kubeTarget: k.kubeTarget, t: t, image: k.image}
 }
 
 // run runs kubectl and returns its trimmed output.
 func (k *kind) run(stdin string, args ...string) string {
 	k.t.Helper()
 
-	out, err := k.Kubectl(k.t.Context(), []byte(stdin), args...)
+	out, err := k.kubectl(k.t.Context(), []byte(stdin), args...)
 	if err != nil {
 		k.t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func testAdmission(t *testing.T, k *kind) {
 	t.Helper()
 
 	create := func(spec, container string) (string, error) {
-		return k.Kubectl(t.Context(), []byte(pod("adm", spec, "      image: sbxr-test/busybox:1\n"+container)),
+		return k.kubectl(t.Context(), []byte(pod("adm", spec, "      image: sbxr-test/busybox:1\n"+container)),
 			"-n", k.Namespace, "create", "--dry-run=server", "-f", "-", "-o", "jsonpath={.spec.dnsConfig}")
 	}
 
@@ -290,7 +290,7 @@ func testAdmission(t *testing.T, k *kind) {
 
 	k.apply(pod("adm-debug", "", "      image: sbxr-test/busybox:1\n      command: [sleep, \"600\"]\n"))
 
-	_, err := k.Kubectl(t.Context(), nil, "-n", k.Namespace, "debug", "adm-debug", "--image=sbxr-test/busybox:1", "--profile=sysadmin", "--", "true")
+	_, err := k.kubectl(t.Context(), nil, "-n", k.Namespace, "debug", "adm-debug", "--image=sbxr-test/busybox:1", "--profile=sysadmin", "--", "true")
 	if err == nil || !strings.Contains(err.Error(), "denied request") {
 		t.Errorf("privileged kubectl debug: error %v, want a denial", err)
 	}
@@ -320,7 +320,7 @@ func testDeletion(t *testing.T, k *kind) {
 		t.Errorf("deletion took %s with a grace period of 3s", took)
 	}
 
-	err := NoPodProcesses(t.Context(), k.Node, uid)
+	err := noPodProcesses(t.Context(), k.Node, uid)
 	if err != nil {
 		t.Error(err)
 	}
@@ -560,7 +560,7 @@ func kindImages(t *testing.T, cluster string) map[string]string {
 		t.Fatal(err)
 	}
 
-	served, stop, err := ServeImages(t.Context(), base)
+	served, stop, err := serveImages(t.Context(), base)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,10 +28,10 @@ const (
 	HijackFile = "/data/hijack.json"
 )
 
-// ServeImages serves the scenario images, built on base, from a registry on 127.0.0.1 until stop.
+// serveImages serves the scenario images, built on base, from a registry on 127.0.0.1 until stop.
 // It returns the reference of each scenario image name. MissingImage maps to a reference that the registry lacks.
 // base needs busybox applets in /bin and an /etc/passwd with nobody (65534:65534).
-func ServeImages(ctx context.Context, base v1.Image) (refs map[string]string, stop func(), err error) {
+func serveImages(ctx context.Context, base v1.Image) (refs map[string]string, stop func(), err error) {
 	layer, err := testLayer()
 	if err != nil {
 		return nil, nil, err

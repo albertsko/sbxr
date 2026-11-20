@@ -35,7 +35,7 @@ func TestVMNextRunRemovesStaleRunState(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	if CheckClean(cacheDir) == nil {
+	if checkClean(cacheDir) == nil {
 		t.Fatal("no run state remains after SIGKILL, so the test checks nothing")
 	}
 
@@ -43,7 +43,7 @@ func TestVMNextRunRemovesStaleRunState(t *testing.T) {
 		t.Fatalf("next run = %d, stderr %q", res.code, res.stderr)
 	}
 
-	err := CheckClean(cacheDir)
+	err := checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
@@ -92,7 +92,7 @@ func TestVMLiveVMKeepsItsRunState(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}

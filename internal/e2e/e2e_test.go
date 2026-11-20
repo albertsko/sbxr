@@ -40,47 +40,47 @@ func runInBuildDir(m *testing.M) int {
 	return m.Run()
 }
 
-// Capability is a feature that a target may support.
-type Capability string
+// capability is a feature that a target may support.
+type capability string
 
 // Capabilities that scenarios can require.
 const (
-	Stdin        Capability = "stdin"
-	TTY          Capability = "tty"
-	SplitStderr  Capability = "split-stderr"
-	SignalExit   Capability = "signal-exit"
-	GracefulStop Capability = "graceful-stop"
-	Exec         Capability = "exec"
-	Net          Capability = "net"
-	NetOff       Capability = "net-off"
-	Publish      Capability = "publish"
-	DNS          Capability = "dns"
-	Volumes      Capability = "volumes"
-	MemoryLimit  Capability = "memory-limit"
-	Probes       Capability = "probes"
+	Stdin        capability = "stdin"
+	TTY          capability = "tty"
+	SplitStderr  capability = "split-stderr"
+	SignalExit   capability = "signal-exit"
+	GracefulStop capability = "graceful-stop"
+	Exec         capability = "exec"
+	Net          capability = "net"
+	NetOff       capability = "net-off"
+	Publish      capability = "publish"
+	DNS          capability = "dns"
+	Volumes      capability = "volumes"
+	MemoryLimit  capability = "memory-limit"
+	Probes       capability = "probes"
 	// SpecValidation means that the target rejects invalid run input with class invalid-spec before anything starts.
-	SpecValidation Capability = "spec-validation"
+	SpecValidation capability = "spec-validation"
 	// ExactConfig means that the workload sees the image config and the run flags and nothing that the platform adds.
-	ExactConfig Capability = "exact-config"
+	ExactConfig capability = "exact-config"
 	// EgressGuard means that Net and AllowLAN select the CLI egress policy (docs/cli.md, section "Egress policy"), and that the host resolver answers DNS.
-	EgressGuard Capability = "egress-guard"
+	EgressGuard capability = "egress-guard"
 )
 
-// ErrorClass is the target-neutral outcome of a run.
-type ErrorClass string
+// errorClass is the target-neutral outcome of a run.
+type errorClass string
 
 // Error classes that every target maps its own failures to.
 const (
-	OK            ErrorClass = "ok"
-	InvalidSpec   ErrorClass = "invalid-spec"
-	Image         ErrorClass = "image"
-	Preflight     ErrorClass = "preflight"
-	NotFound      ErrorClass = "not-found"
-	NotExecutable ErrorClass = "not-executable"
-	Interrupted   ErrorClass = "interrupted"
+	OK            errorClass = "ok"
+	InvalidSpec   errorClass = "invalid-spec"
+	Image         errorClass = "image"
+	Preflight     errorClass = "preflight"
+	NotFound      errorClass = "not-found"
+	NotExecutable errorClass = "not-executable"
+	Interrupted   errorClass = "interrupted"
 )
 
-// Images that every target provides. Each one also has the files of the test layer (see ServeImages).
+// Images that every target provides. Each one also has the files of the test layer (see serveImages).
 const (
 	// Busybox has busybox applets in /bin, PATH=/bin, no entrypoint, and Cmd sh.
 	// /etc/passwd is a file without execute permission.
@@ -94,8 +94,8 @@ const (
 	MissingImage = "missing"
 )
 
-// Workload is one run request.
-type Workload struct {
+// workload is one run request.
+type workload struct {
 	Image       string
 	Args        []string
 	Env         []string
@@ -114,59 +114,59 @@ type Workload struct {
 	Net      bool
 	AllowLAN bool
 	// Publish lists guest TCP ports that the target publishes on 127.0.0.1.
-	Publish []Port
+	Publish []publishPort
 	// Published is called once per published port with its host address, while the workload runs.
 	Published func(ctx context.Context, guestPort uint16, hostAddr string)
 	// Volumes share host directories with the workload.
-	Volumes []Volume
+	Volumes []volume
 }
 
-// Port publishes the guest TCP port Guest on the host port Host of 127.0.0.1. Host 0 picks a free port.
-type Port struct {
+// publishPort publishes the guest TCP port Guest on the host port Host of 127.0.0.1. Host 0 picks a free port.
+type publishPort struct {
 	Host, Guest uint16
 }
 
-// Volume is one -v flag.
-type Volume struct {
+// volume is one -v flag.
+type volume struct {
 	Host, Guest string
 	ReadOnly    bool
 }
 
-// Result is the outcome of one run.
-type Result struct {
+// runResult is the outcome of one run.
+type runResult struct {
 	Stdout string
 	// Stderr helps to explain a failure. Scenarios do not assert on it.
 	Stderr   string
 	ExitCode int
-	Class    ErrorClass
+	Class    errorClass
 }
 
-// Target runs workloads on one backend.
-type Target interface {
-	Capabilities() []Capability
+// target runs workloads on one backend.
+type target interface {
+	Capabilities() []capability
 	// Run runs w. An error means that the target itself failed, not the workload.
-	Run(ctx context.Context, w Workload) (Result, error)
+	Run(ctx context.Context, w workload) (runResult, error)
 	// CheckClean reports any VM process, network listener, pod, or run state that remains from this target.
 	CheckClean() error
 }
 
-// Scenario is one behavior check.
-type Scenario struct {
+// scenario is one behavior check.
+type scenario struct {
 	Name  string
-	Needs []Capability
+	Needs []capability
 	// Pending skips the scenario with this reason until the build step that it needs exists.
 	Pending string
-	Check   func(ctx context.Context, t Target) error
+	Check   func(ctx context.Context, t target) error
 }
 
 // timeout is the hard limit for one scenario.
 const timeout = 30 * time.Second
 
-// RunAll runs every scenario as a parallel subtest. newTarget returns a fresh target for one subtest.
-func RunAll(t *testing.T, newTarget func(t *testing.T) Target) {
+// runAll runs every scenario as a parallel subtest. newTarget returns a fresh target for one subtest.
+func runAll(t *testing.T, newTarget func(t *testing.T) target) {
 	t.Helper()
 
-	for _, s := range All() {
+	for _, s := range allScenarios() {
 		t.Run(s.Name, func(t *testing.T) {
 			t.Parallel()
 
@@ -175,11 +175,11 @@ func RunAll(t *testing.T, newTarget func(t *testing.T) Target) {
 			}
 
 			target := newTarget(t)
-			if missing := Lacking(target, s); len(missing) > 0 {
+			if missing := lacking(target, s); len(missing) > 0 {
 				t.Skipf("target lacks %v", missing)
 			}
 
-			err := Verify(t.Context(), s, target)
+			err := verify(t.Context(), s, target)
 			if skip, ok := errors.AsType[skipError](err); ok {
 				t.Skip(string(skip))
 			}
@@ -191,9 +191,9 @@ func RunAll(t *testing.T, newTarget func(t *testing.T) Target) {
 	}
 }
 
-// Lacking returns the capabilities that s needs and t lacks.
-func Lacking(t Target, s Scenario) []Capability {
-	var missing []Capability
+// lacking returns the capabilities that s needs and t lacks.
+func lacking(t target, s scenario) []capability {
+	var missing []capability
 
 	for _, c := range s.Needs {
 		if !slices.Contains(t.Capabilities(), c) {
@@ -204,8 +204,8 @@ func Lacking(t Target, s Scenario) []Capability {
 	return missing
 }
 
-// Verify runs s against t and then checks that t left nothing behind.
-func Verify(ctx context.Context, s Scenario, t Target) error {
+// verify runs s against t and then checks that t left nothing behind.
+func verify(ctx context.Context, s scenario, t target) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -227,9 +227,9 @@ type skipError string
 
 func (e skipError) Error() string { return "skip: " + string(e) }
 
-// CheckClean reports run state under cacheDir/runs and any process whose command line mentions cacheDir.
+// checkClean reports run state under cacheDir/runs and any process whose command line mentions cacheDir.
 // It looks only at this one directory, so parallel tests do not see each other.
-func CheckClean(cacheDir string) error {
+func checkClean(cacheDir string) error {
 	runs, err := os.ReadDir(cacheDir + "/runs")
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("read runs directory: %w", err)
@@ -258,7 +258,7 @@ func CheckClean(cacheDir string) error {
 	return errors.Join(errs...)
 }
 
-// TestCheckCleanReportsLeftovers checks that CheckClean finds run state and a process whose arguments name the cache directory.
+// TestCheckCleanReportsLeftovers checks that checkClean finds run state and a process whose arguments name the cache directory.
 func TestCheckCleanReportsLeftovers(t *testing.T) {
 	t.Parallel()
 
@@ -281,9 +281,9 @@ func TestCheckCleanReportsLeftovers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err == nil || !strings.Contains(err.Error(), "run state remains: r1") || !strings.Contains(err.Error(), "process remains: ") {
-		t.Errorf("CheckClean() = %v, want the run state and the sleep process", err)
+		t.Errorf("checkClean() = %v, want the run state and the sleep process", err)
 	}
 
 	_ = sleep.Process.Kill()
@@ -294,14 +294,14 @@ func TestCheckCleanReportsLeftovers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
-		t.Errorf("CheckClean() after the cleanup = %v, want nil", err)
+		t.Errorf("checkClean() after the cleanup = %v, want nil", err)
 	}
 }
 
-// RequireHypervisor skips t when the `hypervisor` doctor check fails, or fails t when SBXR_TEST_REQUIRE=1.
-func RequireHypervisor(t *testing.T) {
+// requireHypervisor skips t when the `hypervisor` doctor check fails, or fails t when SBXR_TEST_REQUIRE=1.
+func requireHypervisor(t *testing.T) {
 	t.Helper()
 
 	res := preflight.Hypervisor(t.Context())
@@ -314,7 +314,7 @@ func RequireHypervisor(t *testing.T) {
 
 // classify maps the CLI exit code and stderr to an error class.
 // sbxr failures exit 125 and print a line that starts with "sbxr: <source>".
-func classify(code int, stderr string) ErrorClass {
+func classify(code int, stderr string) errorClass {
 	sbxrErr, failed := "", false
 
 	for line := range strings.Lines(stderr) {

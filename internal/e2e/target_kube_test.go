@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// Kube is the kube target. It runs each workload as a pod with runtimeClassName sbxr in a kind cluster.
-type Kube struct {
+// kubeTarget is the kube target. It runs each workload as a pod with runtimeClassName sbxr in a kind cluster.
+type kubeTarget struct {
 	// Context is the kubectl context of the cluster.
 	Context string
 	// Node is the kind node container, where the cleanup check looks for VM processes.
@@ -31,36 +31,36 @@ type Kube struct {
 }
 
 // Capabilities returns the capabilities of the kube target.
-func (k *Kube) Capabilities() []Capability {
-	return []Capability{Net, Publish, DNS, MemoryLimit, Probes, Exec, GracefulStop}
+func (k *kubeTarget) Capabilities() []capability {
+	return []capability{Net, Publish, DNS, MemoryLimit, Probes, Exec, GracefulStop}
 }
 
 // Run creates a pod for w, waits until it ends or cannot start, and deletes it.
-func (k *Kube) Run(ctx context.Context, w Workload) (Result, error) {
+func (k *kubeTarget) Run(ctx context.Context, w workload) (runResult, error) {
 	if w.Interactive || w.TTY || w.InterruptAfter != "" {
-		return Result{}, errors.New("the kube target has no stdin, tty, or signals")
+		return runResult{}, errors.New("the kube target has no stdin, tty, or signals")
 	}
 
 	name := "s-" + strings.ToLower(rand.Text()[:10])
 
 	pod, err := podFor(name, k.Images[w.Image], w)
 	if err != nil {
-		return Result{}, err
+		return runResult{}, err
 	}
 
 	spec, err := json.Marshal(pod)
 	if err != nil {
-		return Result{}, fmt.Errorf("encode pod: %w", err)
+		return runResult{}, fmt.Errorf("encode pod: %w", err)
 	}
 
-	uid, err := k.Kubectl(ctx, spec, "-n", k.Namespace, "create", "-f", "-", "-o", "jsonpath={.metadata.uid}")
+	uid, err := k.kubectl(ctx, spec, "-n", k.Namespace, "create", "-f", "-", "-o", "jsonpath={.metadata.uid}")
 	if err != nil && (strings.Contains(err.Error(), "(Invalid)") || strings.Contains(err.Error(), "(Forbidden)")) {
 		// The API server rejects the pod before anything runs.
-		return Result{Stdout: "", Stderr: "", ExitCode: 125, Class: InvalidSpec}, nil
+		return runResult{Stdout: "", Stderr: "", ExitCode: 125, Class: InvalidSpec}, nil
 	}
 
 	if err != nil {
-		return Result{}, err
+		return runResult{}, err
 	}
 
 	k.mu.Lock()
@@ -75,18 +75,18 @@ func (k *Kube) Run(ctx context.Context, w Workload) (Result, error) {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer cancel()
 
-		_, _ = k.Kubectl(ctx, nil, "-n", k.Namespace, "delete", "pod", name, "--wait", "--grace-period=1") // CheckClean reports leftovers.
+		_, _ = k.kubectl(ctx, nil, "-n", k.Namespace, "delete", "pod", name, "--wait", "--grace-period=1") // CheckClean reports leftovers.
 	}()
 
 	return k.wait(ctx, name)
 }
 
 // wait polls the pod until its container terminates or fails to start.
-func (k *Kube) wait(ctx context.Context, name string) (Result, error) {
+func (k *kubeTarget) wait(ctx context.Context, name string) (runResult, error) {
 	for {
-		out, err := k.Kubectl(ctx, nil, "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.status.containerStatuses[0].state}")
+		out, err := k.kubectl(ctx, nil, "-n", k.Namespace, "get", "pod", name, "-o", "jsonpath={.status.containerStatuses[0].state}")
 		if err != nil {
-			return Result{}, err
+			return runResult{}, err
 		}
 
 		var state struct {
@@ -104,7 +104,7 @@ func (k *Kube) wait(ctx context.Context, name string) (Result, error) {
 		if out != "" {
 			err = json.Unmarshal([]byte(out), &state)
 			if err != nil {
-				return Result{}, fmt.Errorf("decode container state %q: %w", out, err)
+				return runResult{}, fmt.Errorf("decode container state %q: %w", out, err)
 			}
 		}
 
@@ -113,41 +113,41 @@ func (k *Kube) wait(ctx context.Context, name string) (Result, error) {
 			// A command that cannot run is a start error, as with runc.
 			return startError(state.Terminated.Message), nil
 		case state.Terminated != nil:
-			logs, err := k.Kubectl(ctx, nil, "-n", k.Namespace, "logs", name)
+			logs, err := k.kubectl(ctx, nil, "-n", k.Namespace, "logs", name)
 			if err != nil {
-				return Result{}, err
+				return runResult{}, err
 			}
 
-			return Result{Stdout: logs, Stderr: "", ExitCode: state.Terminated.ExitCode, Class: classify(state.Terminated.ExitCode, "")}, nil
+			return runResult{Stdout: logs, Stderr: "", ExitCode: state.Terminated.ExitCode, Class: classify(state.Terminated.ExitCode, "")}, nil
 		case state.Waiting == nil:
 		case state.Waiting.Reason == "ErrImagePull" || state.Waiting.Reason == "ImagePullBackOff" || state.Waiting.Reason == "InvalidImageName":
-			return Result{Stdout: "", Stderr: "", ExitCode: 125, Class: Image}, nil
+			return runResult{Stdout: "", Stderr: "", ExitCode: 125, Class: Image}, nil
 		case strings.HasSuffix(state.Waiting.Reason, "Error"):
-			return Result{Stdout: state.Waiting.Message, Stderr: "", ExitCode: 125, Class: InvalidSpec}, nil
+			return runResult{Stdout: state.Waiting.Message, Stderr: "", ExitCode: 125, Class: InvalidSpec}, nil
 		}
 
 		select {
 		case <-ctx.Done():
-			return Result{}, fmt.Errorf("pod %s: %w (state %s)", name, ctx.Err(), out)
+			return runResult{}, fmt.Errorf("pod %s: %w (state %s)", name, ctx.Err(), out)
 		case <-time.After(300 * time.Millisecond):
 		}
 	}
 }
 
 // startError maps a start error to the error class of a command that does not exist or cannot run.
-func startError(msg string) Result {
+func startError(msg string) runResult {
 	switch {
 	case strings.Contains(msg, "not found") || strings.Contains(msg, "No such file"):
-		return Result{Stdout: "", Stderr: msg, ExitCode: 127, Class: NotFound}
+		return runResult{Stdout: "", Stderr: msg, ExitCode: 127, Class: NotFound}
 	case strings.Contains(msg, "ermission denied") || strings.Contains(msg, "not executable"):
-		return Result{Stdout: "", Stderr: msg, ExitCode: 126, Class: NotExecutable}
+		return runResult{Stdout: "", Stderr: msg, ExitCode: 126, Class: NotExecutable}
 	}
 
-	return Result{Stdout: "", Stderr: msg, ExitCode: 125, Class: InvalidSpec}
+	return runResult{Stdout: "", Stderr: msg, ExitCode: 125, Class: InvalidSpec}
 }
 
 // CheckClean reports pods of this target that still exist and processes that remain in their cgroups on the node.
-func (k *Kube) CheckClean() error {
+func (k *kubeTarget) CheckClean() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -157,14 +157,14 @@ func (k *Kube) CheckClean() error {
 	var errs []error
 
 	for name, uid := range k.pods {
-		out, err := k.Kubectl(ctx, nil, "-n", k.Namespace, "get", "pod", name, "--ignore-not-found", "-o", "name")
+		out, err := k.kubectl(ctx, nil, "-n", k.Namespace, "get", "pod", name, "--ignore-not-found", "-o", "name")
 		if err != nil {
 			errs = append(errs, err)
 		} else if out != "" {
 			errs = append(errs, fmt.Errorf("pod remains: %s", name))
 		}
 
-		err = NoPodProcesses(ctx, k.Node, uid)
+		err = noPodProcesses(ctx, k.Node, uid)
 		if err != nil {
 			errs = append(errs, err)
 		}
@@ -173,8 +173,8 @@ func (k *Kube) CheckClean() error {
 	return errors.Join(errs...)
 }
 
-// NoPodProcesses waits until no process on the kind node runs in a cgroup of the pod with uid.
-func NoPodProcesses(ctx context.Context, node, uid string) error {
+// noPodProcesses waits until no process on the kind node runs in a cgroup of the pod with uid.
+func noPodProcesses(ctx context.Context, node, uid string) error {
 	// Pod cgroups contain the UID with dashes (cgroupfs) or underscores (systemd).
 	script := `grep -lsE "pod(` + uid + `|` + strings.ReplaceAll(uid, "-", "_") + `)" /proc/[0-9]*/cgroup || true`
 
@@ -192,8 +192,8 @@ func NoPodProcesses(ctx context.Context, node, uid string) error {
 	}
 }
 
-// Kubectl runs kubectl with the target's context and stdin, and returns stdout.
-func (k *Kube) Kubectl(ctx context.Context, stdin []byte, args ...string) (string, error) {
+// kubectl runs kubectl with the target's context and stdin, and returns stdout.
+func (k *kubeTarget) kubectl(ctx context.Context, stdin []byte, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "kubectl", append([]string{"--context", k.Context}, args...)...)
 	cmd.Stdin = bytes.NewReader(stdin)
 
@@ -215,7 +215,7 @@ type envVar struct {
 }
 
 // podFor returns the pod for w. Kubernetes expands $(NAME) and turns $$ into $, so every $ is doubled.
-func podFor(name, image string, w Workload) (map[string]any, error) {
+func podFor(name, image string, w workload) (map[string]any, error) {
 	escape := func(s string) string { return strings.ReplaceAll(s, "$", "$$") }
 
 	container := map[string]any{

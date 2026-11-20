@@ -71,7 +71,7 @@ func TestVMGoneStdoutReaderStopsTheRun(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
@@ -100,7 +100,7 @@ func TestVMGoneStdoutReaderStopsATTYRun(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}
@@ -138,7 +138,7 @@ func TestVMGoneReaderOfDebugOutputStopsTheRun(t *testing.T) {
 
 	waitForNoProcess(t, cacheDir)
 
-	err = CheckClean(cacheDir)
+	err = checkClean(cacheDir)
 	if err != nil {
 		t.Error(err)
 	}

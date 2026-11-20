@@ -36,7 +36,7 @@ func TestVMVolumeSymlinksCannotEscape(t *testing.T) {
 		}
 	}
 
-	if err := CheckClean(cacheDir); err != nil {
+	if err := checkClean(cacheDir); err != nil {
 		t.Error(err)
 	}
 }

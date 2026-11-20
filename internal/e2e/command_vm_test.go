@@ -36,7 +36,7 @@ func TestVMCommandPaths(t *testing.T) {
 				t.Errorf("sbxr run %q = %d, stdout %q, stderr %q; want %d and %q", tt.args, res.code, res.stdout, res.stderr, tt.wantCode, tt.wantStdout)
 			}
 
-			err := CheckClean(cacheDir)
+			err := checkClean(cacheDir)
 			if err != nil {
 				t.Error(err)
 			}
