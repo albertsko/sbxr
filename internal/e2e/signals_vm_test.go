@@ -51,6 +51,8 @@ func TestVMSignals(t *testing.T) {
 
 			readReady(t, cmd, stdout, readText(stdout, "ready\n"))
 
+			runner := runnerOf(t, cmd, vmProcess(t, cacheDir))
+
 			err = cmd.Process.Signal(tt.signal)
 			if err != nil {
 				t.Fatal(err)
@@ -62,10 +64,11 @@ func TestVMSignals(t *testing.T) {
 				t.Errorf("exit code = %d, want %d", code, tt.wantCode)
 			}
 
-			waitForNoProcess(t, cacheDir)
-
 			// After a SIGKILL, the VM process removes the run state when it sees the parent is gone.
-			// On Linux, the signal kills the user namespace wrapper, and the runner gets SIGTERM and cleans up.
+			// On Linux, the signal kills only the user namespace wrapper, and the runner gets SIGTERM and cleans up after the wrapper exits.
+			waitForNoProcess(t, cacheDir)
+			waitForGone(t, runner)
+
 			err = CheckClean(cacheDir)
 			if err != nil {
 				t.Error(err)

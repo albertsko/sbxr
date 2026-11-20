@@ -453,6 +453,17 @@ func waitForNoProcess(t *testing.T, dir string) {
 	}
 }
 
+// waitForGone waits until the process pid has exited and its parent has reaped it.
+func waitForGone(t *testing.T, pid int) {
+	t.Helper()
+
+	for deadline := time.Now().Add(5 * time.Second); syscall.Kill(pid, 0) == nil; time.Sleep(50 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("process %d remains", pid)
+		}
+	}
+}
+
 // vmCacheDir returns a cache directory for one test.
 // On Linux, cache files belong to subordinate ids, so a cleanup prunes the cache before the temporary directory goes.
 func vmCacheDir(t *testing.T) string {
