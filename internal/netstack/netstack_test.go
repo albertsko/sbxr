@@ -70,7 +70,7 @@ func (d *testDialer) dialed(addr netip.Addr) bool {
 func newTestDialer(t *testing.T, addrs ...netip.Addr) *testDialer {
 	t.Helper()
 
-	return &testDialer{tcp: tcpEcho(t, "127.0.0.1:0"), udp: udpEcho(t), routed: append(addrs, publicAddr)}
+	return &testDialer{tcp: tcpEcho(t, "127.0.0.1:0"), udp: udpEcho(t, "127.0.0.1:0"), routed: append(addrs, publicAddr)}
 }
 
 func startNetwork(t *testing.T, cfg Config) (*Network, *Guest) {
@@ -138,13 +138,13 @@ func serve(ln net.Listener, handle func(net.Conn)) {
 	}
 }
 
-// udpEcho starts a UDP echo server on 127.0.0.1 and returns its address.
-func udpEcho(t *testing.T) string {
+// udpEcho starts a UDP echo server on addr and returns its address.
+func udpEcho(t *testing.T, addr string) string {
 	t.Helper()
 
 	var lc net.ListenConfig
 
-	pc, err := lc.ListenPacket(t.Context(), "udp4", "127.0.0.1:0")
+	pc, err := lc.ListenPacket(t.Context(), "udp4", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,11 +216,18 @@ func dialUDP(t *testing.T, g *Guest, addr string) net.Conn {
 	return c
 }
 
-func TestGuestGetsLeaseAndReachesPublicAddresses(t *testing.T) {
+func TestGuestGetsLeaseAndReachesTheHost(t *testing.T) {
 	t.Parallel()
 
-	d := newTestDialer(t)
-	n, g := startNetwork(t, Config{Dial: d.dial, Hosts: map[string]netip.Addr{testHost: publicAddr}})
+	// AllowLAN opens the host's own address, so the network dials real servers there with the real dialer.
+	host := hostIPv4(t)
+	tcpAddr := tcpEcho(t, netip.AddrPortFrom(host, 0).String())
+	udpAddr := udpEcho(t, netip.AddrPortFrom(host, 0).String())
+	cfg := Config{AllowLAN: true, Hosts: map[string]netip.Addr{testHost: host}}
+
+	// The Go resolver reads the real hosts file. The macOS system resolver would keep a socket open, which the leak check reports.
+	cfg.resolver = &net.Resolver{PreferGo: true}
+	n, g := startNetwork(t, cfg)
 
 	if g.Addr() != n.GuestIP() {
 		t.Errorf("guest address = %v, want %v", g.Addr(), n.GuestIP())
@@ -232,9 +239,15 @@ func TestGuestGetsLeaseAndReachesPublicAddresses(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 		defer cancel()
 
-		got, err := g.LookupHost(ctx, "Example.Test")
-		if err != nil || len(got) != 1 || got[0] != publicAddr {
-			t.Errorf("LookupHost = %v, %v, want [%v]", got, err, publicAddr)
+		// The resolver answers localhost from the hosts file, so no external DNS is needed.
+		got, err := g.LookupHost(ctx, "localhost")
+		if err != nil || !slices.Contains(got, netip.MustParseAddr("127.0.0.1")) {
+			t.Errorf("LookupHost(localhost) = %v, %v, want 127.0.0.1", got, err)
+		}
+
+		got, err = g.LookupHost(ctx, "Example.Test")
+		if err != nil || len(got) != 1 || got[0] != host {
+			t.Errorf("LookupHost = %v, %v, want [%v]", got, err, host)
 		}
 
 		// Other types for a name in Hosts get an empty answer without the host resolver.
@@ -259,7 +272,12 @@ func TestGuestGetsLeaseAndReachesPublicAddresses(t *testing.T) {
 	t.Run("tcp by name", func(t *testing.T) {
 		t.Parallel()
 
-		c, err := dialTCP(t, g, "example.test:80", 5*time.Second)
+		_, port, err := net.SplitHostPort(tcpAddr)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		c, err := dialTCP(t, g, net.JoinHostPort(testHost, port), 5*time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -272,7 +290,7 @@ func TestGuestGetsLeaseAndReachesPublicAddresses(t *testing.T) {
 	t.Run("udp", func(t *testing.T) {
 		t.Parallel()
 
-		c := dialUDP(t, g, netip.AddrPortFrom(publicAddr, 53).String())
+		c := dialUDP(t, g, udpAddr)
 		if err := roundTrip(c, "hello udp", 5*time.Second); err != nil {
 			t.Error(err)
 		}
