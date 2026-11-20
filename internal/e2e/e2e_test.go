@@ -265,3 +265,32 @@ func RequireHypervisor(t *testing.T) {
 
 	testenv.SkipOrFailf(t, "no hypervisor: %s", res.Detail)
 }
+
+// classify maps the CLI exit code and stderr to an error class.
+// sbxr failures exit 125 and print a line that starts with "sbxr: <source>".
+func classify(code int, stderr string) ErrorClass {
+	sbxrErr, failed := "", false
+
+	for line := range strings.Lines(stderr) {
+		if after, ok := strings.CutPrefix(line, "sbxr: "); ok && code == 125 {
+			sbxrErr, failed = after, true
+		}
+	}
+
+	switch {
+	case failed && strings.HasPrefix(sbxrErr, "preflight "):
+		return Preflight
+	case failed && strings.HasPrefix(sbxrErr, "image "):
+		return Image
+	case failed:
+		return InvalidSpec
+	case code == 126:
+		return NotExecutable
+	case code == 127:
+		return NotFound
+	case code == 130 || code == 143:
+		return Interrupted
+	default:
+		return OK
+	}
+}

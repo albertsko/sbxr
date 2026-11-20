@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -289,4 +290,34 @@ func TestDoctorJSONMatchesSchema(t *testing.T) {
 			}
 		})
 	}
+}
+
+// result is the outcome of one sbxr process.
+type result struct {
+	stdout, stderr string
+	code           int
+}
+
+// sbxr runs bin with stdout and stderr on pipes, for at most a minute.
+func sbxr(t *testing.T, bin string, environ []string, args ...string) result {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = environ
+
+	var stdout, stderr bytes.Buffer
+
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+
+	err := cmd.Run()
+
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatal(err)
+	}
+
+	return result{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
 }
