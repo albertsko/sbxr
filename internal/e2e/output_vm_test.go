@@ -14,7 +14,7 @@ func TestVMPipedOutput(t *testing.T) {
 	t.Parallel()
 
 	bin := vmBinary(t)
-	busybox := vmImages(t)[Busybox]
+	busybox := vmImages(t)[imageBusybox]
 
 	tests := []struct {
 		name       string
@@ -44,7 +44,7 @@ func TestVMGoneStdoutReaderStopsTheRun(t *testing.T) {
 
 	cacheDir := vmCacheDir(t)
 
-	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs(vmImages(t)[Busybox], "yes")...)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs(vmImages(t)[imageBusybox], "yes")...)
 
 	var stderr bytes.Buffer
 
@@ -87,7 +87,7 @@ func TestVMGoneStdoutReaderStopsATTYRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), pw, nil, runArgs("-q", "-t", vmImages(t)[Busybox], "yes")...)
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), pw, nil, runArgs("-q", "-t", vmImages(t)[imageBusybox], "yes")...)
 	_ = pw.Close()
 
 	readReady(t, tm.cmd, pr, readLines(bufio.NewReader(pr), 5))
@@ -118,7 +118,7 @@ func TestVMGoneReaderOfDebugOutputStopsTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), append([]string{"--debug"}, runArgs(vmImages(t)[Busybox], "yes")...)...)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), append([]string{"--debug"}, runArgs(vmImages(t)[imageBusybox], "yes")...)...)
 	cmd.Stdout, cmd.Stderr = pw, pw
 
 	err = cmd.Start()

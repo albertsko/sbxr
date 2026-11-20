@@ -567,11 +567,11 @@ func kindImages(t *testing.T, cluster string) map[string]string {
 	defer stop()
 
 	// Nothing listens on port 1, so the pull fails at once.
-	images := map[string]string{MissingImage: "localhost:1/sbxr/missing:1"}
+	images := map[string]string{imageMissing: "localhost:1/sbxr/missing:1"}
 	dir := t.TempDir()
 
 	for image, ref := range served {
-		if image == MissingImage {
+		if image == imageMissing {
 			continue
 		}
 

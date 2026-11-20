@@ -48,18 +48,18 @@ func serveImages(ctx context.Context, base v1.Image) (refs map[string]string, st
 	const path = "PATH=/bin"
 
 	configs := map[string]v1.Config{
-		Busybox: {Cmd: []string{"sh"}, Env: []string{path}},
-		Configured: {
+		imageBusybox: {Cmd: []string{"sh"}, Env: []string{path}},
+		imageConfigured: {
 			Entrypoint: []string{"sh", "-c"},
 			Cmd:        []string{"echo $A $B; id -u; id -g; pwd"},
 			Env:        []string{path, "A=image", "B=image"},
 			WorkingDir: "/tmp",
 			User:       "1000:1000",
 		},
-		NamedUser: {Cmd: []string{"sh"}, Env: []string{path}, User: "nobody"},
+		imageNamedUser: {Cmd: []string{"sh"}, Env: []string{path}, User: "nobody"},
 	}
 
-	refs = map[string]string{MissingImage: host + "/" + MissingImage}
+	refs = map[string]string{imageMissing: host + "/" + imageMissing}
 
 	for name, cfg := range configs {
 		refs[name] = host + "/" + name

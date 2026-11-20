@@ -33,8 +33,8 @@ func TestVMTarget(t *testing.T) {
 			Flags:    vmFlags,
 			Env:      vmEnv(),
 			Caps: []capability{
-				Stdin, TTY, SplitStderr, SignalExit, SpecValidation, ExactConfig,
-				Net, NetOff, Publish, DNS, EgressGuard, Volumes,
+				capStdin, capTTY, capSplitStderr, capSignalExit, capSpecValidation, capExactConfig,
+				capNet, capNetOff, capPublish, capDNS, capEgressGuard, capVolumes,
 			},
 		}
 	})

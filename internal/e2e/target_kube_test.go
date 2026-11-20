@@ -32,7 +32,7 @@ type kubeTarget struct {
 
 // Capabilities returns the capabilities of the kube target.
 func (k *kubeTarget) Capabilities() []capability {
-	return []capability{Net, Publish, DNS, MemoryLimit, Probes, Exec, GracefulStop}
+	return []capability{capNet, capPublish, capDNS, capMemoryLimit, capProbes, capExec, capGracefulStop}
 }
 
 // Run creates a pod for w, waits until it ends or cannot start, and deletes it.
@@ -56,7 +56,7 @@ func (k *kubeTarget) Run(ctx context.Context, w workload) (runResult, error) {
 	uid, err := k.kubectl(ctx, spec, "-n", k.Namespace, "create", "-f", "-", "-o", "jsonpath={.metadata.uid}")
 	if err != nil && (strings.Contains(err.Error(), "(Invalid)") || strings.Contains(err.Error(), "(Forbidden)")) {
 		// The API server rejects the pod before anything runs.
-		return runResult{Stdout: "", Stderr: "", ExitCode: 125, Class: InvalidSpec}, nil
+		return runResult{Stdout: "", Stderr: "", ExitCode: 125, Class: classInvalidSpec}, nil
 	}
 
 	if err != nil {
@@ -121,9 +121,9 @@ func (k *kubeTarget) wait(ctx context.Context, name string) (runResult, error) {
 			return runResult{Stdout: logs, Stderr: "", ExitCode: state.Terminated.ExitCode, Class: classify(state.Terminated.ExitCode, "")}, nil
 		case state.Waiting == nil:
 		case state.Waiting.Reason == "ErrImagePull" || state.Waiting.Reason == "ImagePullBackOff" || state.Waiting.Reason == "InvalidImageName":
-			return runResult{Stdout: "", Stderr: "", ExitCode: 125, Class: Image}, nil
+			return runResult{Stdout: "", Stderr: "", ExitCode: 125, Class: classImage}, nil
 		case strings.HasSuffix(state.Waiting.Reason, "Error"):
-			return runResult{Stdout: state.Waiting.Message, Stderr: "", ExitCode: 125, Class: InvalidSpec}, nil
+			return runResult{Stdout: state.Waiting.Message, Stderr: "", ExitCode: 125, Class: classInvalidSpec}, nil
 		}
 
 		select {
@@ -138,12 +138,12 @@ func (k *kubeTarget) wait(ctx context.Context, name string) (runResult, error) {
 func startError(msg string) runResult {
 	switch {
 	case strings.Contains(msg, "not found") || strings.Contains(msg, "No such file"):
-		return runResult{Stdout: "", Stderr: msg, ExitCode: 127, Class: NotFound}
+		return runResult{Stdout: "", Stderr: msg, ExitCode: 127, Class: classNotFound}
 	case strings.Contains(msg, "ermission denied") || strings.Contains(msg, "not executable"):
-		return runResult{Stdout: "", Stderr: msg, ExitCode: 126, Class: NotExecutable}
+		return runResult{Stdout: "", Stderr: msg, ExitCode: 126, Class: classNotExecutable}
 	}
 
-	return runResult{Stdout: "", Stderr: msg, ExitCode: 125, Class: InvalidSpec}
+	return runResult{Stdout: "", Stderr: msg, ExitCode: 125, Class: classInvalidSpec}
 }
 
 // CheckClean reports pods of this target that still exist and processes that remain in their cgroups on the node.

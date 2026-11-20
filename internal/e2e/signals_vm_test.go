@@ -22,7 +22,7 @@ func TestVMSignals(t *testing.T) {
 	t.Parallel()
 
 	bin := vmBinary(t)
-	busybox := vmImages(t)[Busybox]
+	busybox := vmImages(t)[imageBusybox]
 
 	tests := []struct {
 		name     string
@@ -83,7 +83,7 @@ func TestVMSignals(t *testing.T) {
 func TestVMCtrlCWithInteractiveTTYStopsTheWorkload(t *testing.T) {
 	t.Parallel()
 
-	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[Busybox], "sh", "-c", "echo ready; sleep 30")...)
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[imageBusybox], "sh", "-c", "echo ready; sleep 30")...)
 	tm.waitForOutput("ready")
 	tm.write("\x03")
 
@@ -96,7 +96,7 @@ func TestVMCtrlCWithInteractiveTTYStopsTheWorkload(t *testing.T) {
 func TestVMCtrlCRightAfterRawModeStopsTheWorkload(t *testing.T) {
 	t.Parallel()
 
-	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[Busybox], "sleep", "30")...)
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[imageBusybox], "sleep", "30")...)
 
 	// The runner sets the user's terminal raw just before it starts the VM process.
 	for deadline := time.Now().Add(10 * time.Second); !tm.raw(); time.Sleep(time.Millisecond) {
@@ -115,7 +115,7 @@ func TestVMCtrlCRightAfterRawModeStopsTheWorkload(t *testing.T) {
 func TestVMCtrlCReachesAWorkloadThatDoesNotReadStdin(t *testing.T) {
 	t.Parallel()
 
-	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[Busybox], "sh", "-c", "echo ready; sleep 30")...)
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[imageBusybox], "sh", "-c", "echo ready; sleep 30")...)
 	tm.waitForOutput("ready")
 	tm.write(strings.Repeat("x", 100))
 	tm.write("\x03")
@@ -130,7 +130,7 @@ func TestVMCtrlCReachesAWorkloadThatReadsIt(t *testing.T) {
 
 	// Without ISIG, the guest terminal passes Ctrl-C to the workload as a byte, as a shell or an editor wants it.
 	script := "stty raw -echo; echo raw; head -c 1 | od -An -tx1"
-	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[Busybox], "sh", "-c", script)...)
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[imageBusybox], "sh", "-c", script)...)
 	tm.waitForOutput("raw")
 	tm.write("\x03")
 
@@ -146,7 +146,7 @@ func TestVMCtrlCReachesAWorkloadThatKeepsWriting(t *testing.T) {
 	// The output is steady but slow, so it never fills the terminal of the test when its reader pauses on a loaded runner.
 	// A full terminal stalls the output, and the run then counts the Ctrl-C as an interrupt.
 	script := "stty raw -echo; echo raw; while :; do echo y; usleep 1000; done & head -c 1 | od -An -tx1; kill $!"
-	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[Busybox], "sh", "-c", script)...)
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[imageBusybox], "sh", "-c", script)...)
 	tm.waitForOutput("raw")
 	tm.waitForOutput("y\ny\n")
 	tm.write("\x03")
@@ -162,7 +162,7 @@ func TestVMClosedTerminalStopsTheRun(t *testing.T) {
 
 	cacheDir := vmCacheDir(t)
 
-	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), nil, nil, runArgs(vmImages(t)[Busybox], "sh", "-c", "echo ready; sleep 30")...)
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), nil, nil, runArgs(vmImages(t)[imageBusybox], "sh", "-c", "echo ready; sleep 30")...)
 	tm.waitForOutput("ready")
 
 	// A closed terminal sends SIGHUP to its foreground process group, which holds the runner and the VM process.
@@ -208,7 +208,7 @@ func TestVMCtrlCEndsAStalledDrain(t *testing.T) {
 
 	full := fillPipe(t, stdout, unread)
 
-	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), unread, nil, runArgs("-it", vmImages(t)[Busybox], "echo", word, word)...)
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), unread, nil, runArgs("-it", vmImages(t)[imageBusybox], "echo", word, word)...)
 
 	for deadline := time.Now().Add(10 * time.Second); !tm.raw(); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
@@ -268,7 +268,7 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 
 	full := fillPipe(t, stdout, unread)
 
-	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), unread, nil, runArgs("-it", vmImages(t)[Busybox], "echo", word, word)...)
+	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), unread, nil, runArgs("-it", vmImages(t)[imageBusybox], "echo", word, word)...)
 
 	for deadline := time.Now().Add(10 * time.Second); !tm.raw(); time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
@@ -335,7 +335,7 @@ func TestVMReaderGoneAfterCtrlCWithStalledOutput(t *testing.T) {
 
 	full := fillPipe(t, pr, pw)
 
-	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs(vmImages(t)[Busybox], "yes")...)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs(vmImages(t)[imageBusybox], "yes")...)
 	cmd.Stdout = pw
 
 	err = cmd.Start()
@@ -373,7 +373,7 @@ func TestVMKilledVMProcessIsAnSbxrError(t *testing.T) {
 
 	cacheDir := vmCacheDir(t)
 
-	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs(vmImages(t)[Busybox], "sh", "-c", "echo ready; sleep 30")...)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs(vmImages(t)[imageBusybox], "sh", "-c", "echo ready; sleep 30")...)
 
 	var stderr bytes.Buffer
 
@@ -427,7 +427,7 @@ func TestVMSIGTERMWithAStalledTTYReader(t *testing.T) {
 
 	full := fillPipe(t, stdout, unread)
 
-	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs("-t", vmImages(t)[Busybox], "echo", word, word)...)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(cacheDir), runArgs("-t", vmImages(t)[imageBusybox], "echo", word, word)...)
 	cmd.Stdout = unread
 
 	err = cmd.Start()

@@ -23,7 +23,7 @@ func TestVMWorkloadOutputReachesTerminalStdout(t *testing.T) {
 	t.Parallel()
 
 	// The CLI hides stdout from fang, so this also checks that run restores it.
-	out, code, _ := onTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-q", vmImages(t)[Busybox], "echo", "hi")...)
+	out, code, _ := onTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-q", vmImages(t)[imageBusybox], "echo", "hi")...)
 	if code != 0 || out != "hi\r\n" {
 		t.Errorf("sbxr run = %d, %q; want 0, %q", code, out, "hi\r\n")
 	}
@@ -33,7 +33,7 @@ func TestVMPullProgressOnlyOnTerminalWithoutQuiet(t *testing.T) {
 	t.Parallel()
 
 	bin := vmBinary(t)
-	busybox := vmImages(t)[Busybox]
+	busybox := vmImages(t)[imageBusybox]
 
 	out, code, _ := onTerminal(t, bin, vmEnv(vmCacheDir(t)), runArgs(busybox, "true")...)
 	if code != 0 || !strings.Contains(out, "Pulling "+busybox+": layer ") {
@@ -51,7 +51,7 @@ func TestVMTTYGetsTerminalSize(t *testing.T) {
 
 	// Without -i, stdin is empty, so stty reads the guest terminal through /dev/tty.
 	// Both the guest terminal and the test terminal turn a newline into CR LF.
-	out, code, _ := onTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-q", "-t", vmImages(t)[Busybox], "sh", "-c", "stty size </dev/tty")...)
+	out, code, _ := onTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-q", "-t", vmImages(t)[imageBusybox], "sh", "-c", "stty size </dev/tty")...)
 	if code != 0 || out != "30 100\r\r\n" {
 		t.Errorf("sbxr run -t stty size = %d, %q; want 0, %q", code, out, "30 100\r\r\n")
 	}
@@ -77,7 +77,7 @@ func TestVMStderrOnTerminalWithPipedStdout(t *testing.T) {
 	go func() { _, _ = io.Copy(term, ptmx) }() // The copy ends when the terminal closes.
 
 	// cat writes its error to stderr and exits with 1.
-	cmd := vmCommand(t, bin, vmEnv(vmCacheDir(t)), runArgs("-q", refs[Busybox], "sh", "-c", "echo OUT; echo ERR >&2; cat /missing")...)
+	cmd := vmCommand(t, bin, vmEnv(vmCacheDir(t)), runArgs("-q", refs[imageBusybox], "sh", "-c", "echo OUT; echo ERR >&2; cat /missing")...)
 
 	var stdout bytes.Buffer
 
@@ -118,7 +118,7 @@ func TestVMInteractiveShell(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cmd := exec.CommandContext(ctx, bin, runArgs("-it", refs[Busybox], "sh")...)
+	cmd := exec.CommandContext(ctx, bin, runArgs("-it", refs[imageBusybox], "sh")...)
 
 	cmd.Env = append(vmEnv(vmCacheDir(t)), "TERM=xterm")
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, tty, tty
@@ -204,7 +204,7 @@ func TestVMRunWithTOSTOP(t *testing.T) {
 	t.Parallel()
 
 	bin := vmBinary(t)
-	busybox := vmImages(t)[Busybox]
+	busybox := vmImages(t)[imageBusybox]
 
 	// With TOSTOP, a background process group that writes to the terminal is stopped.
 	tostop := func(tty *os.File) {
@@ -240,7 +240,7 @@ func TestVMTTYWithoutInteractiveNeverReadsStdin(t *testing.T) {
 	defer keepOpen.Close()
 	defer stdin.Close()
 
-	cmd := vmCommand(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-t", vmImages(t)[Busybox], "cat")...)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-t", vmImages(t)[imageBusybox], "cat")...)
 	cmd.Stdin = stdin
 
 	err = cmd.Start()
@@ -260,7 +260,7 @@ func TestVMTTYOutputReachesASlowReader(t *testing.T) {
 	word := strings.Repeat("x", 50000)
 	want := strings.Join([]string{word, word, word, word}, " ") + "\r\n"
 
-	cmd := vmCommand(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-t", vmImages(t)[Busybox], "echo", word, word, word, word)...)
+	cmd := vmCommand(t, vmBinary(t), vmEnv(vmCacheDir(t)), runArgs("-t", vmImages(t)[imageBusybox], "echo", word, word, word, word)...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

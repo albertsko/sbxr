@@ -45,25 +45,25 @@ type capability string
 
 // Capabilities that scenarios can require.
 const (
-	Stdin        capability = "stdin"
-	TTY          capability = "tty"
-	SplitStderr  capability = "split-stderr"
-	SignalExit   capability = "signal-exit"
-	GracefulStop capability = "graceful-stop"
-	Exec         capability = "exec"
-	Net          capability = "net"
-	NetOff       capability = "net-off"
-	Publish      capability = "publish"
-	DNS          capability = "dns"
-	Volumes      capability = "volumes"
-	MemoryLimit  capability = "memory-limit"
-	Probes       capability = "probes"
-	// SpecValidation means that the target rejects invalid run input with class invalid-spec before anything starts.
-	SpecValidation capability = "spec-validation"
-	// ExactConfig means that the workload sees the image config and the run flags and nothing that the platform adds.
-	ExactConfig capability = "exact-config"
-	// EgressGuard means that Net and AllowLAN select the CLI egress policy (docs/cli.md, section "Egress policy"), and that the host resolver answers DNS.
-	EgressGuard capability = "egress-guard"
+	capStdin        capability = "stdin"
+	capTTY          capability = "tty"
+	capSplitStderr  capability = "split-stderr"
+	capSignalExit   capability = "signal-exit"
+	capGracefulStop capability = "graceful-stop"
+	capExec         capability = "exec"
+	capNet          capability = "net"
+	capNetOff       capability = "net-off"
+	capPublish      capability = "publish"
+	capDNS          capability = "dns"
+	capVolumes      capability = "volumes"
+	capMemoryLimit  capability = "memory-limit"
+	capProbes       capability = "probes"
+	// capSpecValidation means that the target rejects invalid run input with class invalid-spec before anything starts.
+	capSpecValidation capability = "spec-validation"
+	// capExactConfig means that the workload sees the image config and the run flags and nothing that the platform adds.
+	capExactConfig capability = "exact-config"
+	// capEgressGuard means that Net and AllowLAN select the CLI egress policy (docs/cli.md, section "Egress policy"), and that the host resolver answers DNS.
+	capEgressGuard capability = "egress-guard"
 )
 
 // errorClass is the target-neutral outcome of a run.
@@ -71,27 +71,27 @@ type errorClass string
 
 // Error classes that every target maps its own failures to.
 const (
-	OK            errorClass = "ok"
-	InvalidSpec   errorClass = "invalid-spec"
-	Image         errorClass = "image"
-	Preflight     errorClass = "preflight"
-	NotFound      errorClass = "not-found"
-	NotExecutable errorClass = "not-executable"
-	Interrupted   errorClass = "interrupted"
+	classOK            errorClass = "ok"
+	classInvalidSpec   errorClass = "invalid-spec"
+	classImage         errorClass = "image"
+	classPreflight     errorClass = "preflight"
+	classNotFound      errorClass = "not-found"
+	classNotExecutable errorClass = "not-executable"
+	classInterrupted   errorClass = "interrupted"
 )
 
 // Images that every target provides. Each one also has the files of the test layer (see serveImages).
 const (
-	// Busybox has busybox applets in /bin, PATH=/bin, no entrypoint, and Cmd sh.
+	// imageBusybox has busybox applets in /bin, PATH=/bin, no entrypoint, and Cmd sh.
 	// /etc/passwd is a file without execute permission.
-	Busybox = "busybox"
-	// Configured is Busybox with Entrypoint [sh -c], Cmd ["echo $A $B; id -u; id -g; pwd"],
+	imageBusybox = "busybox"
+	// imageConfigured is Busybox with Entrypoint [sh -c], Cmd ["echo $A $B; id -u; id -g; pwd"],
 	// Env A=image and B=image, WorkingDir /tmp, and User 1000:1000.
-	Configured = "configured"
-	// NamedUser is Busybox with User nobody.
-	NamedUser = "named-user"
-	// MissingImage never exists.
-	MissingImage = "missing"
+	imageConfigured = "configured"
+	// imageNamedUser is Busybox with User nobody.
+	imageNamedUser = "named-user"
+	// imageMissing never exists.
+	imageMissing = "missing"
 )
 
 // workload is one run request.
@@ -325,18 +325,18 @@ func classify(code int, stderr string) errorClass {
 
 	switch {
 	case failed && strings.HasPrefix(sbxrErr, "preflight "):
-		return Preflight
+		return classPreflight
 	case failed && strings.HasPrefix(sbxrErr, "image "):
-		return Image
+		return classImage
 	case failed:
-		return InvalidSpec
+		return classInvalidSpec
 	case code == 126:
-		return NotExecutable
+		return classNotExecutable
 	case code == 127:
-		return NotFound
+		return classNotFound
 	case code == 130 || code == 143:
-		return Interrupted
+		return classInterrupted
 	default:
-		return OK
+		return classOK
 	}
 }

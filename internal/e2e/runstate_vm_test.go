@@ -18,7 +18,7 @@ func TestVMNextRunRemovesStaleRunState(t *testing.T) {
 	t.Parallel()
 
 	bin := vmBinary(t)
-	busybox := vmImages(t)[Busybox]
+	busybox := vmImages(t)[imageBusybox]
 	cacheDir := vmCacheDir(t)
 	cmd, runner, vmPID := startStoppedVM(t, bin, cacheDir, busybox)
 
@@ -54,7 +54,7 @@ func TestVMLiveVMKeepsItsRunState(t *testing.T) {
 	t.Parallel()
 
 	bin := vmBinary(t)
-	busybox := vmImages(t)[Busybox]
+	busybox := vmImages(t)[imageBusybox]
 	cacheDir := vmCacheDir(t)
 	cmd, runner, vmPID := startStoppedVM(t, bin, cacheDir, busybox)
 

@@ -12,7 +12,7 @@ func TestVMCommandPaths(t *testing.T) {
 	t.Parallel()
 
 	bin := vmBinary(t)
-	busybox := vmImages(t)[Busybox]
+	busybox := vmImages(t)[imageBusybox]
 
 	tests := []struct {
 		name     string

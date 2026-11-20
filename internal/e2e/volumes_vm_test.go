@@ -30,7 +30,7 @@ func TestVMVolumeSymlinksCannotEscape(t *testing.T) {
 	}
 
 	for name, want := range map[string]string{"escape": "reserved path /proc", "root": "resolves to the guest root", "edge": "not a directory"} {
-		res := sbxr(t, bin, vmEnv(cacheDir), runArgs("-q", "-v", links+":/a", "-v", target+":/a/"+name, refs[Busybox], "true")...)
+		res := sbxr(t, bin, vmEnv(cacheDir), runArgs("-q", "-v", links+":/a", "-v", target+":/a/"+name, refs[imageBusybox], "true")...)
 		if res.code != 125 || !strings.Contains(res.stderr, want) {
 			t.Errorf("volume at /a/%s: sbxr run = %d, stderr %q; want 125 and %q", name, res.code, res.stderr, want)
 		}

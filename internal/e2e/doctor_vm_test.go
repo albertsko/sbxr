@@ -52,7 +52,7 @@ func TestVMFailedPreflightStartsNoVM(t *testing.T) {
 	environ := append(vmEnv(cacheDir), "SBXR_LIB_DIR="+noLib)
 
 	// The library file names depend on the host, so the check skips the middle of the line.
-	res := sbxr(t, bin, environ, "run", refs[Busybox], "echo", "hi")
+	res := sbxr(t, bin, environ, "run", refs[imageBusybox], "echo", "hi")
 
 	wantStart, wantEnd := `sbxr: preflight "libkrun": `, " not found in "+noLib+"; set SBXR_LIB_DIR to the directory that holds libkrun and libkrunfw\n"
 	if res.code != 125 || res.stdout != "" || !strings.HasPrefix(res.stderr, wantStart) || !strings.HasSuffix(res.stderr, wantEnd) || strings.Count(res.stderr, "\n") != 1 {
