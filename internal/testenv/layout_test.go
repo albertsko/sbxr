@@ -82,21 +82,24 @@ func TestCheckFile(t *testing.T) {
 		{name: "unit file", file: "a_test.go", src: "package a\n\nfunc TestUnit(t *testing.T) {}\n", want: 0},
 		{name: "unit file with a target prefix", file: "a_test.go", src: "package a\n\nfunc TestKubeletRange(t *testing.T) {}\n", want: 1},
 		{name: "vm file without constraint", file: "a_vm_test.go", src: "package a\n\nfunc TestVMBoot(t *testing.T) {}\n", want: 1},
-		{name: "vm file with kube tag", file: "a_vm_test.go", src: "//go:build kube\n\npackage a\n", want: 1},
+		{name: "vm file with kube tag", file: "a_vm_test.go", src: "//go:build kube\n\npackage a\n", want: 2},
 		{name: "vm file built without vm", file: "a_vm_test.go", src: "//go:build vm || linux\n\npackage a\n", want: 1},
 		{name: "vm file built without vm on linux only", file: "a_vm_test.go", src: "//go:build vm || (linux && !darwin)\n\npackage a\n", want: 1},
 		{name: "vm file built without vm on darwin only", file: "a_vm_test.go", src: "//go:build vm || (darwin && !linux)\n\npackage a\n", want: 1},
 		{name: "vm file built without vm on unix", file: "a_vm_test.go", src: "//go:build vm || unix\n\npackage a\n", want: 1},
-		{name: "kube file built without kube with another tag", file: "a_kube_test.go", src: "//go:build kube || vm\n\npackage a\n", want: 1},
+		{name: "kube file built without kube with another tag", file: "a_kube_test.go", src: "//go:build kube || vm\n\npackage a\n", want: 2},
 		{name: "kube file on linux only", file: "a_kube_test.go", src: "//go:build kube && linux\n\npackage a\n", want: 0},
 		{name: "vm file built without vm on amd64", file: "a_vm_test.go", src: "//go:build vm || (amd64 && !arm64)\n\npackage a\n", want: 1},
-		{name: "vm file that needs the kube tag too", file: "a_vm_test.go", src: "//go:build vm && kube\n\npackage a\n", want: 1},
-		{name: "vm file built without vm for one other tag", file: "a_vm_test.go", src: "//go:build vm || (kube && !foo)\n\npackage a\n", want: 1},
+		{name: "vm file that needs the kube tag too", file: "a_vm_test.go", src: "//go:build vm && kube\n\npackage a\n", want: 2},
+		{name: "vm file built without vm for one other tag", file: "a_vm_test.go", src: "//go:build vm || (kube && !foo)\n\npackage a\n", want: 2},
 		{name: "vm file that never builds with the gc compiler", file: "a_vm_test.go", src: "//go:build vm && !gc\n\npackage a\n", want: 1},
 		{name: "vm file for the current Go release", file: "a_vm_test.go", src: "//go:build vm && gc && go1.21 && cgo\n\npackage a\n", want: 0},
 		{name: "vm file on no supported platform", file: "a_vm_test.go", src: "//go:build vm && windows\n\npackage a\n", want: 1},
 		{name: "vm file with an unselected test", file: "a_vm_test.go", src: "//go:build vm\n\npackage a\n\nfunc TestBoot(t *testing.T) {}\nfunc FuzzBoot(f *testing.F) {}\n", want: 2},
 		{name: "kube file with a vm test", file: "a_kube_test.go", src: "//go:build kube\n\npackage a\n\nfunc TestVMBoot(t *testing.T) {}\n", want: 2},
+		{name: "test file with the vm tag", file: "a_test.go", src: "//go:build vm\n\npackage a\n\nfunc TestVMBoot(t *testing.T) {}\n", want: 2},
+		{name: "test file without the vm tag", file: "a_test.go", src: "//go:build !vm\n\npackage a\n", want: 1},
+		{name: "source file with the kube tag", file: "a.go", src: "//go:build kube && linux\n\npackage a\n", want: 1},
 	}
 
 	for _, tt := range tests {
@@ -125,6 +128,10 @@ func checkFile(name string, src []byte) []string {
 
 	for suffix, target := range targets {
 		if !strings.HasSuffix(name, suffix) {
+			if slices.Contains(tags(expr), target.tag) {
+				problems = append(problems, fmt.Sprintf("%s: the tag %q is only for %s files, because the %s task runs no other file", name, target.tag, suffix, target.tag))
+			}
+
 			for _, fn := range testFuncs(f) {
 				if strings.HasPrefix(fn, target.prefix) {
 					problems = append(problems, fmt.Sprintf("%s: %s must be in a %s file, because only %s tests start with %s", name, fn, suffix, target.tag, target.prefix))
