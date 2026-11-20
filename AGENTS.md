@@ -50,6 +50,7 @@
 - CI installs the tools configured in `mise.toml`. Pin every tool to an exact version, so that all jobs use the same one. `mise run upgrade` bumps them.
 - `.github/workflows/ci.yml` runs on pull requests and on main. Its job `CI result` fails when any other job fails, so it is the one check to require.
 - `.github/workflows/nightly.yml` runs the shuffled tests without the test cache, the shuffled `vm` tests on Linux KVM, and the long fuzz run.
+- `.github/workflows/vm.yml` holds the `vm` job on Linux KVM. `ci.yml` calls it, and `nightly.yml` calls it with `shuffle: true`.
 - `.github/workflows/release.yml` calls `ci.yml` on the tagged commit before it publishes.
 - Every job sets up with `.github/actions/setup`, which installs mise and restores the Go cache. Only a push to main saves caches, with `.github/actions/save-go-cache`.
 - Give every job and step a readable `name`. Put a `run:` that needs more than one line into a script in `scripts/ci/` with `set -euo pipefail`.

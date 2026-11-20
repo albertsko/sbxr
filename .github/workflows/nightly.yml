@@ -36,48 +36,11 @@ jobs:
       - name: Run the tests in random order
         run: mise run test:shuffle
 
-  # The setup follows the vm job of ci.yml.
   vm-shuffle:
-    name: Shuffled VM tests (Linux KVM)
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - name: Check out
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Set up
-        uses: ./.github/actions/setup
-      - name: Enable KVM
-        run: scripts/ci/enable-kvm.sh
-      - name: Enable subordinate ids
-        run: scripts/ci/enable-subids.sh
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build libkrun and libkrunfw
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: deploy/node/Dockerfile
-          target: libkrun
-          outputs: type=local,dest=krun
-          provenance: false
-          sbom: false
-          cache-from: type=gha,scope=node-${{ runner.arch }}
-      - name: Vendor the Go modules
-        run: mise run deps
-      - name: Build bin/sbxr
-        run: mise run build
-      - name: Install sbxr and the AppArmor profile
-        run: scripts/ci/install-sbxr.sh bin/sbxr
-      - name: Run the VM tests in random order
-        timeout-minutes: 20
-        env:
-          CGO_ENABLED: "0"
-          SBXR_TEST_REQUIRE: "1"
-          SBXR_BIN: /usr/local/bin/sbxr
-          SBXR_LIB_DIR: ${{ github.workspace }}/krun/lib
-        run: mise run test:vm -v -shuffle=on
+    name: Shuffled VM tests
+    uses: ./.github/workflows/vm.yml
+    with:
+      shuffle: true
 
   fuzz:
     name: Fuzz
