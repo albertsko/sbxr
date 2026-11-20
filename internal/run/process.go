@@ -60,7 +60,7 @@ func (r *Runner) start(ctx context.Context, s runspec.Spec, dir string, extra []
 
 	release, err := vm.AttachLifeline(cmd)
 	if err != nil {
-		return ExitSetup, fmt.Errorf("start vm process: %w", err)
+		return vm.ExitSetup, fmt.Errorf("start vm process: %w", err)
 	}
 	defer release()
 
@@ -78,20 +78,20 @@ func (r *Runner) start(ctx context.Context, s runspec.Spec, dir string, extra []
 	case errors.Is(err, errBrokenPipe):
 		return 128 + int(syscall.SIGPIPE), nil
 	case ctx.Err() != nil:
-		return ExitSetup, fmt.Errorf("vm process: %w", context.Cause(ctx))
+		return vm.ExitSetup, fmt.Errorf("vm process: %w", context.Cause(ctx))
 	case isExit && exit.Exited():
 		return exit.ExitCode(), nil
 	case isExit:
 		// The VM process ignores terminal signals, so a signal death means that something else killed it or the VMM crashed.
 		status, _ := exit.Sys().(syscall.WaitStatus)
 
-		return ExitSetup, &runspec.Error{
+		return vm.ExitSetup, &runspec.Error{
 			Source:  "vm",
 			Problem: fmt.Sprintf("the VM process was killed by signal %d", int(status.Signal())),
 			Fix:     "run again with --debug and report a bug",
 		}
 	default:
-		return ExitSetup, &runspec.Error{Source: "vm", Problem: err.Error()}
+		return vm.ExitSetup, &runspec.Error{Source: "vm", Problem: err.Error()}
 	}
 }
 

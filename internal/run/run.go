@@ -23,9 +23,6 @@ import (
 	"github.com/albertsko/sbxr/internal/vm"
 )
 
-// ExitSetup is the exit code when sbxr fails before or around the workload.
-const ExitSetup = vm.ExitSetup
-
 // Network is the network of one run.
 type Network interface {
 	// VMFile is the socket that the VM process attaches its network device to.
@@ -69,7 +66,7 @@ type Runner struct {
 }
 
 // Run runs the workload and returns its exit code.
-// An error means that sbxr failed, and the exit code is then ExitSetup.
+// An error means that sbxr failed, and the exit code is then vm.ExitSetup.
 // A SIGINT, SIGTERM, or SIGHUP stops the run at once with exit code 130, 143, or 129 and no error.
 func (r *Runner) Run(ctx context.Context, s runspec.Spec) (int, error) {
 	ctx, stop := withSignals(ctx)
@@ -91,7 +88,7 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 
 	err := r.validate(ctx, s)
 	if err != nil {
-		return ExitSetup, err
+		return vm.ExitSetup, err
 	}
 
 	if r.Isolate != nil {
@@ -100,7 +97,7 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 
 	hold, err := r.Images.Hold(ctx)
 	if err != nil {
-		return ExitSetup, fmt.Errorf("hold image cache: %w", err)
+		return vm.ExitSetup, fmt.Errorf("hold image cache: %w", err)
 	}
 	defer hold.Close() //nolint:errcheck // Closing a lock file releases the lock even on error.
 
@@ -108,14 +105,14 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 
 	img, err := r.Images.Pull(ctx, s.Image, s.Pull)
 	if err != nil {
-		return ExitSetup, imageError(s, err)
+		return vm.ExitSetup, imageError(s, err)
 	}
 
 	r.Log.Debug("run state", "state", "preparing")
 
 	cfg, err := r.workload(s, img)
 	if err != nil {
-		return ExitSetup, err
+		return vm.ExitSetup, err
 	}
 
 	// The network starts before any run state, so that a busy publish port fails early.
@@ -124,7 +121,7 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 	if s.Net {
 		network, err = r.Network(ctx, NetworkConfig{AllowLAN: s.AllowLAN, Publish: s.Publish, Log: r.Log})
 		if err != nil {
-			return ExitSetup, fmt.Errorf("network: %w", err)
+			return vm.ExitSetup, fmt.Errorf("network: %w", err)
 		}
 
 		defer func() {
@@ -136,7 +133,7 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 
 	dir, lock, unlock, err := newRunDir(r.RunsDir, r.Log)
 	if err != nil {
-		return ExitSetup, err
+		return vm.ExitSetup, err
 	}
 	defer unlock()
 
@@ -145,7 +142,7 @@ func (r *Runner) run(ctx context.Context, s runspec.Spec) (int, error) {
 
 	release, err = r.prepare(s, img, cfg, dir, network)
 	if err != nil {
-		return ExitSetup, err
+		return vm.ExitSetup, err
 	}
 
 	r.Log.Debug("run state", "state", "running")

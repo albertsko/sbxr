@@ -20,8 +20,8 @@ import (
 
 	"github.com/albertsko/sbxr/internal/image"
 	"github.com/albertsko/sbxr/internal/preflight"
-	"github.com/albertsko/sbxr/internal/run"
 	"github.com/albertsko/sbxr/internal/runspec"
+	"github.com/albertsko/sbxr/internal/vm"
 )
 
 // Exit codes of commands other than run.
@@ -150,7 +150,7 @@ func (a *app) root() *cobra.Command {
 	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
 		code := exitUsage
 		if cmd.Name() == "run" {
-			code = run.ExitSetup
+			code = vm.ExitSetup
 		}
 
 		return usageError(cmd, code, err)
@@ -185,10 +185,10 @@ func (a *app) setup(cmd *cobra.Command) error {
 	return nil
 }
 
-// failure ends cmd with an error. The run command fails with ExitSetup, the others with exit code 1.
+// failure ends cmd with an error. The run command fails with vm.ExitSetup, the others with exit code 1.
 func failure(cmd *cobra.Command, err error) error {
 	if cmd.Name() == "run" {
-		return &exitError{code: run.ExitSetup, err: err}
+		return &exitError{code: vm.ExitSetup, err: err}
 	}
 
 	return &exitError{code: exitFailure, err: err}
