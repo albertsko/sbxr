@@ -314,3 +314,20 @@ func (tm *terminal) raw() bool {
 
 	return err == nil && termios.Lflag&unix.ICANON == 0
 }
+
+// waitExit waits at most 10 seconds for the exit and returns the exit code.
+func (tm *terminal) waitExit() int {
+	tm.t.Helper()
+
+	select {
+	case <-tm.exited:
+	case <-time.After(10 * time.Second):
+		_ = tm.cmd.Process.Kill()
+
+		<-tm.exited
+
+		tm.t.Fatal("sbxr did not exit")
+	}
+
+	return tm.cmd.ProcessState.ExitCode()
+}

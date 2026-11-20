@@ -143,8 +143,9 @@ func TestVMCtrlCReachesAWorkloadThatReadsIt(t *testing.T) {
 func TestVMCtrlCReachesAWorkloadThatKeepsWriting(t *testing.T) {
 	t.Parallel()
 
-	// The terminal of the test drains the output at once, so the output never stalls and the guest still reads input.
-	script := "stty raw -echo; echo raw; yes & head -c 1 | od -An -tx1; kill $!"
+	// The output is steady but slow, so it never fills the terminal of the test when its reader pauses on a loaded runner.
+	// A full terminal stalls the output, and the run then counts the Ctrl-C as an interrupt.
+	script := "stty raw -echo; echo raw; while :; do echo y; usleep 1000; done & head -c 1 | od -An -tx1; kill $!"
 	tm := startOnTerminal(t, vmBinary(t), vmEnv(vmCacheDir(t)), nil, nil, runArgs("-it", vmImages(t)[Busybox], "sh", "-c", script)...)
 	tm.waitForOutput("raw")
 	tm.waitForOutput("y\ny\n")
@@ -217,7 +218,7 @@ func TestVMCtrlCEndsAStalledDrain(t *testing.T) {
 
 	// The workload blocks on the full output, so the guest reads no input and the runner must stop the run itself.
 	// The runner counts a write as stalled only after 50 ms, and an earlier Ctrl-C may still reach the guest.
-	waitForStalledWriter(t, cacheDir, stdout, unread, full)
+	waitForStalledWriter(t, cacheDir, tm.exited, stdout, unread, full)
 	time.Sleep(200 * time.Millisecond)
 	tm.write("\x03")
 
@@ -277,7 +278,7 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 
 	// The VM exits while the drain stalls. A Ctrl-C to the workload would not end it reliably,
 	// because libkrun can stop reading input while its output is blocked, and the VM exits only after its output.
-	waitForStalledWriter(t, cacheDir, stdout, unread, full)
+	waitForStalledWriter(t, cacheDir, tm.exited, stdout, unread, full)
 
 	err = syscall.Kill(vmProcess(t, cacheDir), syscall.SIGKILL)
 	if err != nil {
@@ -343,7 +344,7 @@ func TestVMReaderGoneAfterCtrlCWithStalledOutput(t *testing.T) {
 	}
 
 	// Output in the pipe proves that the runner handles signals. Nobody reads, so the output copy then blocks on the full pipe.
-	waitForStalledWriter(t, cacheDir, pr, pw, full)
+	waitForStalledWriter(t, cacheDir, nil, pr, pw, full)
 
 	err = cmd.Process.Signal(syscall.SIGINT)
 	if err != nil {
@@ -435,7 +436,7 @@ func TestVMSIGTERMWithAStalledTTYReader(t *testing.T) {
 	}
 
 	// Output in the pipe means that the runner handles signals.
-	waitForStalledWriter(t, cacheDir, stdout, unread, full)
+	waitForStalledWriter(t, cacheDir, nil, stdout, unread, full)
 
 	err = cmd.Process.Signal(syscall.SIGTERM)
 	if err != nil {
@@ -487,9 +488,10 @@ func fillPipe(t *testing.T, r, w *os.File) int {
 
 // waitForStalledWriter reads one page from the pipe that fillPipe filled, waits for the first output of the run in cacheDir,
 // and then waits until a writer has refilled the pipe.
+// It fails at once when exited closes, and a nil exited means that the caller does not watch the exit.
 // Linux frees pipe space by pages. The pipe then has no room for a write of PIPE_BUF bytes,
 // and the workloads that use it write far more than that, so the writer blocks.
-func waitForStalledWriter(t *testing.T, cacheDir string, r, w *os.File, full int) {
+func waitForStalledWriter(t *testing.T, cacheDir string, exited <-chan struct{}, r, w *os.File, full int) {
 	t.Helper()
 
 	page := os.Getpagesize()
@@ -501,12 +503,24 @@ func waitForStalledWriter(t *testing.T, cacheDir string, r, w *os.File, full int
 
 	// A VM boots slowly on a loaded host, so the boot gets its own wait before the stall check.
 	for deadline := time.Now().Add(readyTimeout); unreadInPipe(t, r) <= full-page; time.Sleep(10 * time.Millisecond) {
+		select {
+		case <-exited:
+			t.Fatalf("the run exited before it wrote output, the pipe holds %d of %d bytes", unreadInPipe(t, r), full)
+		default:
+		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("the run wrote no output in %v: %s", readyTimeout, bootState(t, cacheDir))
 		}
 	}
 
 	for deadline := time.Now().Add(readyTimeout); writable(t, w); time.Sleep(10 * time.Millisecond) {
+		select {
+		case <-exited:
+			t.Fatalf("the run exited before a writer refilled the pipe, the pipe holds %d of %d bytes", unreadInPipe(t, r), full)
+		default:
+		}
+
 		if time.Now().After(deadline) {
 			t.Fatalf("the pipe holds %d of %d bytes and is writable: %s; want a writer that refilled it", unreadInPipe(t, r), full, bootState(t, cacheDir))
 		}

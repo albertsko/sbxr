@@ -19,13 +19,18 @@ import (
 
 // terminal is a run of sbxr on a pseudo-terminal of 30 rows and 100 columns that never answers terminal queries.
 type terminal struct {
-	t     *testing.T
-	ptmx  *os.File
-	tty   *os.File
-	cmd   *exec.Cmd
-	start time.Time
-	out   syncBuffer
+	t       *testing.T
+	ptmx    *os.File
+	tty     *os.File
+	cmd     *exec.Cmd
+	out     syncBuffer
+	exited  chan struct{}
+	err     error
+	elapsed time.Duration
 }
+
+// terminalTimeout bounds a run on a terminal, so that it covers a slow VM boot, the test, and the shutdown.
+const terminalTimeout = 60 * time.Second
 
 // onTerminal runs bin on a new terminal and returns the terminal output, the exit code, and the run time.
 func onTerminal(t *testing.T, bin string, environ []string, args ...string) (string, int, time.Duration) {
@@ -59,7 +64,7 @@ func startOnTerminal(t *testing.T, bin string, environ []string, stdout io.Write
 		setup(tty)
 	}
 
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), terminalTimeout)
 	t.Cleanup(cancel)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -72,14 +77,24 @@ func startOnTerminal(t *testing.T, bin string, environ []string, stdout io.Write
 		cmd.Stdout = stdout
 	}
 
-	tm := &terminal{t: t, ptmx: ptmx, tty: tty, cmd: cmd, start: time.Now()}
+	tm := &terminal{t: t, ptmx: ptmx, tty: tty, cmd: cmd, exited: make(chan struct{})}
 
 	go func() { _, _ = io.Copy(&tm.out, ptmx) }() // The copy ends when the terminal closes.
+
+	start := time.Now()
 
 	err = cmd.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// The wait runs on its own, so that readiness waits can stop when the run exits.
+	go func() {
+		defer close(tm.exited)
+
+		tm.err = cmd.Wait()
+		tm.elapsed = time.Since(start)
+	}()
 
 	return tm
 }
@@ -93,7 +108,7 @@ func (tm *terminal) waitForOutput(text string) {
 	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(tm.output(), text); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			_ = tm.cmd.Process.Kill()
-			_ = tm.cmd.Wait() // The kill decides the outcome.
+			<-tm.exited // The kill decides the outcome.
 
 			tm.t.Fatalf("output %q, want it to contain %q", tm.output(), text)
 		}
@@ -113,19 +128,18 @@ func (tm *terminal) write(s string) {
 func (tm *terminal) wait() (string, int, time.Duration) {
 	tm.t.Helper()
 
-	err := tm.cmd.Wait()
-	elapsed := time.Since(tm.start)
+	<-tm.exited
 
 	var exit *exec.ExitError
-	if err != nil && !errors.As(err, &exit) {
-		tm.t.Fatal(err)
+	if tm.err != nil && !errors.As(tm.err, &exit) {
+		tm.t.Fatal(tm.err)
 	}
 
 	for last := tm.output(); ; last = tm.output() {
 		time.Sleep(100 * time.Millisecond)
 
 		if out := tm.output(); out == last {
-			return out, tm.cmd.ProcessState.ExitCode(), elapsed
+			return out, tm.cmd.ProcessState.ExitCode(), tm.elapsed
 		}
 	}
 }

@@ -94,7 +94,7 @@ func TestVMGoneStdoutReaderStopsATTYRun(t *testing.T) {
 
 	_ = pr.Close()
 
-	if code := waitExit(t, tm.cmd); code != 141 || strings.Contains(tm.output(), "sbxr:") {
+	if code := tm.waitExit(); code != 141 || strings.Contains(tm.output(), "sbxr:") {
 		t.Errorf("sbxr run -t yes = %d, terminal %q; want 141 and no sbxr error", code, tm.output())
 	}
 

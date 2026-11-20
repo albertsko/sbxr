@@ -143,7 +143,7 @@ func vmCommand(t *testing.T, bin string, environ []string, args ...string) *exec
 }
 
 // readReady runs read, which reads a sign of readiness from the pipe r of the started cmd, with a deadline of readyTimeout.
-// When read fails, readReady kills and reaps cmd and fails t.
+// When read fails, readReady kills cmd and fails t, and the owner of cmd reaps it.
 func readReady(t *testing.T, cmd *exec.Cmd, r io.Reader, read func() error) {
 	t.Helper()
 
@@ -163,7 +163,6 @@ func readReady(t *testing.T, cmd *exec.Cmd, r io.Reader, read func() error) {
 
 	if err != nil {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait() // The kill decides the outcome.
 
 		t.Fatalf("wait for the run to get ready: %v", err)
 	}
