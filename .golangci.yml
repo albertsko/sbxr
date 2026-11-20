@@ -88,14 +88,13 @@ linters:
           files:
             - $all
             - "!**/internal/cli/**"
-            - "!**/internal/e2e/**"
           deny:
             - pkg: github.com/spf13/cobra
-              desc: only internal/cli parses flags and prints, and internal/e2e may strip ANSI codes
+              desc: only internal/cli parses flags and prints
             - pkg: charm.land
-              desc: only internal/cli parses flags and prints, and internal/e2e may strip ANSI codes
+              desc: only internal/cli parses flags and prints
             - pkg: github.com/charmbracelet
-              desc: only internal/cli parses flags and prints, and internal/e2e may strip ANSI codes
+              desc: only internal/cli parses flags and prints
         netstack-libs:
           files:
             - $all
@@ -105,6 +104,12 @@ linters:
               desc: only internal/netstack may use the network stack
             - pkg: github.com/containers/gvisor-tap-vsock
               desc: only internal/netstack may use the network stack
+            - pkg: github.com/miekg/dns
+              desc: only internal/netstack may use the network stack
+            - pkg: github.com/insomniacslk/dhcp
+              desc: only internal/netstack may use the network stack
+            - pkg: github.com/sirupsen/logrus
+              desc: only internal/netstack may use the network stack, which logs through logrus
         containerd:
           files:
             - $all
@@ -151,13 +156,27 @@ linters:
         kube-layer:
           files:
             - "**/internal/kube/**"
+          list-mode: lax
+          allow:
+            - github.com/albertsko/sbxr/internal/kube/
+            - github.com/albertsko/sbxr/internal/libkrun$
           deny:
-            - pkg: github.com/albertsko/sbxr/internal/cli
-              desc: internal/kube is a separate product and never imports internal/cli, internal/run, or internal/image
-            - pkg: github.com/albertsko/sbxr/internal/run$
-              desc: internal/kube is a separate product and never imports internal/cli, internal/run, or internal/image
-            - pkg: github.com/albertsko/sbxr/internal/image
-              desc: internal/kube is a separate product and never imports internal/cli, internal/run, or internal/image
+            - pkg: github.com/albertsko/sbxr/
+              desc: internal/kube is a separate product and imports only internal/kube and internal/libkrun from this module
+        libkrun-leaf:
+          files:
+            - "**/internal/libkrun/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/albertsko/sbxr/internal/
+              desc: internal/libkrun is a leaf, so its non-test files import no other package of this module
+        purego:
+          files:
+            - $all
+            - "!**/internal/libkrun/**"
+          deny:
+            - pkg: github.com/ebitengine/purego
+              desc: only internal/libkrun loads libraries with purego
         lower-layer:
           files:
             - "**/internal/{runspec,image,netstack,preflight,vm,guestmount,krunconfig,hv,userns,libkrun}/**"

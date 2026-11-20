@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/albertsko/sbxr/internal/preflight"
@@ -49,17 +48,18 @@ func TestHelpAndErrorsDoNotWaitForTerminalQueries(t *testing.T) {
 		args     []string
 		extraEnv []string
 		wantCode int
-		want     string
+		// want is a text of the help, or the message after the styled "sbxr:" prefix of an error.
+		want string
 		// wantAny lists texts of which the output must contain at least one.
 		wantAny []string
 	}{
 		{name: "help", args: []string{"--help"}, wantCode: 0, want: "doctor"},
 		{name: "run help", args: []string{"run", "--help"}, wantCode: 0, want: "--allow-lan"},
-		{name: "unknown command", args: []string{"nope"}, wantCode: 2, want: `sbxr: unknown command "nope"`},
-		{name: "bad flag", args: []string{"run", "--nope"}, wantCode: 125, want: "sbxr: unknown flag: --nope"},
-		{name: "bad doctor flag", args: []string{"doctor", "--nope"}, wantCode: 2, want: "sbxr: unknown flag: --nope"},
+		{name: "unknown command", args: []string{"nope"}, wantCode: 2, want: ` unknown command "nope"`},
+		{name: "bad flag", args: []string{"run", "--nope"}, wantCode: 125, want: " unknown flag: --nope"},
+		{name: "bad doctor flag", args: []string{"doctor", "--nope"}, wantCode: 2, want: " unknown flag: --nope"},
 		// The first failed check depends on the host: hypervisor where there is none, else libkrun.
-		{name: "failed preflight", args: []string{"run", noPullImage}, extraEnv: []string{noLibraries(t)}, wantCode: 125, want: `sbxr: preflight "`, wantAny: []string{`"hypervisor": `, `"libkrun": `}},
+		{name: "failed preflight", args: []string{"run", noPullImage}, extraEnv: []string{noLibraries(t)}, wantCode: 125, want: ` preflight "`, wantAny: []string{`"hypervisor": `, `"libkrun": `}},
 	}
 
 	for _, tt := range tests {
@@ -71,10 +71,15 @@ func TestHelpAndErrorsDoNotWaitForTerminalQueries(t *testing.T) {
 				t.Errorf("sbxr %q took %v, want under 1s", tt.args, elapsed)
 			}
 
-			plain := ansi.Strip(out)
-			anyFound := len(tt.wantAny) == 0 || slices.ContainsFunc(tt.wantAny, func(s string) bool { return strings.Contains(plain, s) })
+			// An error starts with the styled prefix, and the message follows as plain text.
+			text := out
+			if tt.wantCode != 0 {
+				_, text, _ = strings.Cut(out, "sbxr:")
+			}
 
-			if code != tt.wantCode || !strings.Contains(plain, tt.want) || !anyFound {
+			anyFound := len(tt.wantAny) == 0 || slices.ContainsFunc(tt.wantAny, func(s string) bool { return strings.Contains(text, s) })
+
+			if code != tt.wantCode || !strings.Contains(text, tt.want) || !anyFound {
 				t.Errorf("sbxr %q = %d, %q; want %d and output with %q and one of %q", tt.args, code, out, tt.wantCode, tt.want, tt.wantAny)
 			}
 		})

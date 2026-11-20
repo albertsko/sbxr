@@ -20,7 +20,7 @@
 - `cmd/` has one directory per binary. `cmd/sbxr/entitlements.plist` holds the macOS hypervisor entitlement, and the release archive carries it at its root.
 - `internal/` holds all Go packages.
 - `internal/kube/` holds all Kubernetes code: `installer`, `shim`, `agent`, `podnet`, `podvm`, and `subid`. Only `internal/kube/` and the Kubernetes commands `cmd/sbxr-node`, `cmd/sbxr-agent`, and `cmd/containerd-shim-sbxr-v1` may import it.
-- `internal/libkrun/` loads and starts `libkrun`. It imports no other package of this module, so the CLI and the shim share it.
+- `internal/libkrun/` loads and starts `libkrun`. Its non-test files import no other package of this module, so the CLI and the shim share it.
 - `internal/e2e/` holds only `_test.go` files: the end-to-end tests of the release binary, which they build themselves. These are the host-only CLI tests, the behavior scenarios, and the `vm` and `kube` tests.
 - `internal/testenv/` holds the test helper `SkipOrFailf` and the layout test that checks the target file names, build tags, and test names.
 - Tests run against real environments, with no fake targets or simulated VMs. A unit test may replace an outside system only to inject failures that a real environment cannot produce.
@@ -36,11 +36,12 @@
 
 ### Dependency rules
 
-- `cmd/sbxr` and the Kubernetes commands only wire packages together. `internal/cli` alone parses the `sbxr` flags, prints command output, and uses `cobra` and the charm libraries. The `internal/e2e` tests may also use the charm ANSI helper.
-- `internal/run` runs one workload with `runspec`, `image`, `preflight`, and `vm`. `internal/cli` passes it the network from `internal/netstack`.
+- `cmd/sbxr` and the Kubernetes commands only wire packages together. `internal/cli` alone parses the `sbxr` flags, prints command output, and uses `cobra` and the charm libraries.
+- `internal/run` runs one workload with lower packages such as `runspec`, `image`, `preflight`, `vm`, `krunconfig`, and `guestmount`. `internal/cli` passes it the network from `internal/netstack`.
+- Only `internal/netstack` uses the network stack libraries: `gvisor`, `gvisor-tap-vsock`, `miekg/dns`, `insomniacslk/dhcp`, and `logrus`.
 - Lower packages, such as `runspec`, `image`, `netstack`, `preflight`, `vm`, and `libkrun`, never import `internal/cli` or `internal/run`.
-- Only `internal/libkrun` loads `libkrun`. `internal/vm`, `internal/preflight`, and `internal/kube/shim` use it.
-- `internal/kube` is a separate product. Outside `internal/kube`, only the Kubernetes commands import it, and it never imports `internal/cli`, `internal/run`, or `internal/image`.
+- Only `internal/libkrun` loads `libkrun` and imports `purego`. Its non-test files import no other package of this module. `internal/vm`, `internal/preflight`, and `internal/kube/shim` use it.
+- `internal/kube` is a separate product. Outside `internal/kube`, only the Kubernetes commands import it, and from this module it imports only `internal/kube` and `internal/libkrun`.
 - `depguard` in `.golangci.yml` enforces these import boundaries. Add a new lower package to its `lower-layer` rule.
 
 ### CI
