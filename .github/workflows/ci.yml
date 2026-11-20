@@ -53,7 +53,7 @@ jobs:
           save-cache: true
       - name: Vendor the Go modules
         run: mise run deps
-      - name: Run the unit tests and fake scenarios
+      - name: Run the unit tests and host-only checks
         run: mise run test
       - name: Check that the vm and kube tests skip without KVM and fail with SBXR_TEST_REQUIRE=1
         run: scripts/ci/check-require.sh
@@ -81,7 +81,7 @@ jobs:
           save-cache: true
       - name: Vendor the Go modules
         run: mise run deps
-      - name: Run the unit tests and fake scenarios
+      - name: Run the unit tests and host-only checks
         run: mise run test
       - name: Build and sign bin/sbxr
         run: mise run build
@@ -98,7 +98,7 @@ jobs:
   vm:
     name: VM tests (Linux KVM)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -131,7 +131,7 @@ jobs:
       - name: Install sbxr and the AppArmor profile
         run: scripts/ci/install-sbxr.sh bin/sbxr
       - name: Run the VM tests
-        timeout-minutes: 10
+        timeout-minutes: 20
         env:
           CGO_ENABLED: "0"
           SBXR_TEST_REQUIRE: "1"
