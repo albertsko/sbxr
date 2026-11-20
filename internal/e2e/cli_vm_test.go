@@ -95,11 +95,15 @@ func TestVMFailedPreflightStartsNoVM(t *testing.T) {
 	bin := vmBinary(t)
 	refs := vmImages(t)
 	cacheDir := vmCacheDir(t)
-	environ := append(vmEnv(cacheDir), "SBXR_LIB_DIR="+filepath.Join(t.TempDir(), "nolib"))
+	noLib := filepath.Join(t.TempDir(), "nolib")
+	environ := append(vmEnv(cacheDir), "SBXR_LIB_DIR="+noLib)
 
+	// The library file names depend on the host, so the check skips the middle of the line.
 	res := sbxr(t, bin, environ, "run", refs[Busybox], "echo", "hi")
-	if res.code != 125 || res.stdout != "" || !strings.HasPrefix(res.stderr, `sbxr: preflight "libkrun": `) {
-		t.Errorf("sbxr run = %d, stdout %q, stderr %q; want 125 and a libkrun preflight error", res.code, res.stdout, res.stderr)
+
+	wantStart, wantEnd := `sbxr: preflight "libkrun": `, " not found in "+noLib+"; set SBXR_LIB_DIR to the directory that holds libkrun and libkrunfw\n"
+	if res.code != 125 || res.stdout != "" || !strings.HasPrefix(res.stderr, wantStart) || !strings.HasSuffix(res.stderr, wantEnd) || strings.Count(res.stderr, "\n") != 1 {
+		t.Errorf("sbxr run = %d, stdout %q, stderr %q; want 125 and one line %q...%q", res.code, res.stdout, res.stderr, wantStart, wantEnd)
 	}
 
 	err := CheckClean(cacheDir)
@@ -222,24 +226,23 @@ func TestVMStderrOnTerminalWithPipedStdout(t *testing.T) {
 
 	go func() { _, _ = io.Copy(term, ptmx) }() // The copy ends when the terminal closes.
 
-	cmd := exec.CommandContext(t.Context(), bin, runArgs("-q", refs[Busybox], "sh", "-c", "echo OUT; echo ERR >&2")...)
+	// cat writes its error to stderr and exits with 1.
+	cmd := exec.CommandContext(t.Context(), bin, runArgs("-q", refs[Busybox], "sh", "-c", "echo OUT; echo ERR >&2; cat /missing")...)
 
 	var stdout bytes.Buffer
 
 	cmd.Env = vmEnv(vmCacheDir(t))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = tty, &stdout, tty
 
-	err = cmd.Run()
-	if err != nil {
-		t.Fatalf("sbxr run: %v (terminal %q)", err, term.String())
-	}
+	_ = cmd.Run() // The exit code below shows the outcome.
 
-	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(term.String(), "ERR") && time.Now().Before(deadline); {
+	for deadline := time.Now().Add(5 * time.Second); !strings.Contains(term.String(), "/missing") && time.Now().Before(deadline); {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	if stdout.String() != "OUT\n" || !strings.Contains(term.String(), "ERR") || strings.Contains(term.String(), "OUT") {
-		t.Errorf("stdout %q, terminal %q; want OUT on stdout and ERR on the terminal", stdout.String(), term.String())
+	code := cmd.ProcessState.ExitCode()
+	if code != 1 || stdout.String() != "OUT\n" || !strings.Contains(term.String(), "ERR") || !strings.Contains(term.String(), "/missing") || strings.Contains(term.String(), "OUT") {
+		t.Errorf("sbxr run = %d, stdout %q, terminal %q; want 1, OUT on stdout, and ERR and the cat error on the terminal", code, stdout.String(), term.String())
 	}
 }
 
@@ -508,6 +511,12 @@ func TestVMCtrlCEndsAStalledDrainAfterTheVMExits(t *testing.T) {
 	defer unread.Close()
 
 	tm := startOnTerminal(t, vmBinary(t), vmEnv(cacheDir), unread, nil, runArgs("-it", vmImages(t)[Busybox], "echo", word, word)...)
+
+	for deadline := time.Now().Add(10 * time.Second); !tm.raw(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the terminal never became raw")
+		}
+	}
 
 	// The VM exits while the drain stalls. A Ctrl-C to the workload would not end it reliably,
 	// because libkrun can stop reading input while its output is blocked, and the VM exits only after its output.
@@ -788,13 +797,15 @@ func TestVMReaderGoneAfterCtrlCWithStalledOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	waitForFullPipe(t, pr)
+
 	err = cmd.Process.Signal(syscall.SIGINT)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The reader goes away after the runner handled the signal. The wait is best effort, an earlier close ends with 141.
-	time.Sleep(100 * time.Millisecond)
+	// The runner stops the VM process when it handles the signal. Only then does the reader go away, or the run ends with 141.
+	waitForNoProcess(t, cacheDir)
 
 	_ = pr.Close()
 

@@ -50,6 +50,8 @@ func TestHelpAndErrorsDoNotWaitForTerminalQueries(t *testing.T) {
 		extraEnv []string
 		wantCode int
 		want     string
+		// wantAny lists texts of which the output must contain at least one.
+		wantAny []string
 	}{
 		{name: "help", args: []string{"--help"}, wantCode: 0, want: "doctor"},
 		{name: "run help", args: []string{"run", "--help"}, wantCode: 0, want: "--allow-lan"},
@@ -57,7 +59,7 @@ func TestHelpAndErrorsDoNotWaitForTerminalQueries(t *testing.T) {
 		{name: "bad flag", args: []string{"run", "--nope"}, wantCode: 125, want: "sbxr: unknown flag: --nope"},
 		{name: "bad doctor flag", args: []string{"doctor", "--nope"}, wantCode: 2, want: "sbxr: unknown flag: --nope"},
 		// The first failed check depends on the host: hypervisor where there is none, else libkrun.
-		{name: "failed preflight", args: []string{"run", noPullImage}, extraEnv: []string{noLibraries(t)}, wantCode: 125, want: `sbxr: preflight "`},
+		{name: "failed preflight", args: []string{"run", noPullImage}, extraEnv: []string{noLibraries(t)}, wantCode: 125, want: `sbxr: preflight "`, wantAny: []string{`"hypervisor": `, `"libkrun": `}},
 	}
 
 	for _, tt := range tests {
@@ -69,8 +71,11 @@ func TestHelpAndErrorsDoNotWaitForTerminalQueries(t *testing.T) {
 				t.Errorf("sbxr %q took %v, want under 1s", tt.args, elapsed)
 			}
 
-			if code != tt.wantCode || !strings.Contains(ansi.Strip(out), tt.want) {
-				t.Errorf("sbxr %q = %d, %q; want %d and output with %q", tt.args, code, out, tt.wantCode, tt.want)
+			plain := ansi.Strip(out)
+			anyFound := len(tt.wantAny) == 0 || slices.ContainsFunc(tt.wantAny, func(s string) bool { return strings.Contains(plain, s) })
+
+			if code != tt.wantCode || !strings.Contains(plain, tt.want) || !anyFound {
+				t.Errorf("sbxr %q = %d, %q; want %d and output with %q and one of %q", tt.args, code, out, tt.wantCode, tt.want, tt.wantAny)
 			}
 		})
 	}
