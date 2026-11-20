@@ -55,7 +55,7 @@ x86_64 or arm64 with KVM:
 
 ## Targets and hosts
 
-Tests run against real environments, with no fake targets or simulated VMs. A unit test may replace an outside system only to inject failures that a real environment cannot produce. A test is a unit test, or it runs against one target: `vm` (a real libkrun VM) or `kube` (Kubernetes in a kind cluster). The host is `darwin` or `linux`.
+Tests run against real environments, with no fake targets or simulated VMs. A unit test may replace an outside system only to check a failure path that is hard to reproduce in a real environment, and the healthy case that those failure tests start from. A test is a unit test, or it runs against one target: `vm` (a real libkrun VM) or `kube` (Kubernetes in a kind cluster). The host is `darwin` or `linux`.
 
 1. Put host-specific code in `_darwin.go` or `_linux.go` files, or behind a `GOOS` build constraint. Do not invent build tags for hosts.
 2. Write a unit test as a plain `_test.go` file without a build tag. It needs no hypervisor and no network. `mise run test` runs it everywhere.
@@ -65,12 +65,12 @@ Tests run against real environments, with no fake targets or simulated VMs. A un
 
 ## Tests
 
-| Command                | Runs                                                                | Needs                                                                 |
-| ---------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `mise run test`        | Unit tests and the host-only CLI tests of the release binary        | Nothing: no hypervisor, no network                                    |
-| `mise run test:vm`     | The scenarios, the CLI tests, and the `libkrun` tests with real VMs | A hypervisor, on macOS a signed binary, and access to `mirror.gcr.io` |
-| `mise run test:kube`   | The scenarios and the Kubernetes tests in a kind cluster            | Linux with KVM, Docker, kind, kubectl                                 |
-| `mise run fuzz [TIME]` | Fuzzing of the config writer against the guest init parser          | Nothing. Default duration `1m`                                        |
+| Command                | Runs                                                                | Needs                                                                                       |
+| ---------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `mise run test`        | Unit tests and the host-only CLI tests of the release binary        | Nothing: no hypervisor, no network                                                          |
+| `mise run test:vm`     | The scenarios, the CLI tests, and the `libkrun` tests with real VMs | A hypervisor, on macOS `codesign` (Xcode command line tools), and access to `mirror.gcr.io` |
+| `mise run test:kube`   | The scenarios and the Kubernetes tests in a kind cluster            | Linux with KVM, Docker, kind, kubectl                                                       |
+| `mise run fuzz [TIME]` | Fuzzing of the config writer against the guest init parser          | Nothing. Default duration `1m`                                                              |
 
 - `test:vm` and `test:kube` skip with exit 0 when their environment is missing: no hypervisor, or for `test:kube` no Linux. With `SBXR_TEST_REQUIRE=1`, they fail instead. CI sets this variable.
 - `test:vm` and `test:kube` run with `-count=1`, because Go's test cache does not notice changes to the built binary or to `libkrun`.

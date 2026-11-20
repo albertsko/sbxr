@@ -220,6 +220,8 @@ func newBundle(t *testing.T, shim string) string {
 	return bundle
 }
 
+// TestInstall is the baseline of the failure tests below: on the test node, an install restarts containerd once, and an unchanged reinstall does not.
+// The kind suite checks a real install and reinstall (internal/e2e/criteria_kube_test.go and podvm_kube_test.go).
 func TestInstall(t *testing.T) {
 	t.Parallel()
 

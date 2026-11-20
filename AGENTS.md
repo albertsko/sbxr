@@ -23,8 +23,8 @@
 - `internal/libkrun/` loads and starts `libkrun`. Its non-test files import no other package of this module, so the CLI and the shim share it.
 - `internal/e2e/` holds only `_test.go` files: the end-to-end tests of the release binary, which they build themselves. These are the host-only CLI tests, the behavior scenarios, and the `vm` and `kube` tests.
 - `internal/testenv/` holds the test helper `SkipOrFailf` and the layout test that checks the target file names, build tags, and test names.
-- Tests run against real environments, with no fake targets or simulated VMs. A unit test may replace an outside system only to inject failures that a real environment cannot produce.
-- Tests come in three kinds: unit tests (no build tag, `mise run test`), `vm` (build tag `vm`, `mise run test:vm`, test names start with `TestVM`), and `kube` (build tag `kube`, `mise run test:kube`, test names start with `TestKube`).
+- Tests run against real environments, with no fake targets or simulated VMs. A unit test may replace an outside system only to check a failure path that is hard to reproduce in a real environment, and the healthy case that those failure tests start from.
+- Tests come in three kinds: unit tests and host-only e2e tests (no build tag, `mise run test`), `vm` (build tag `vm`, `mise run test:vm`, test names start with `TestVM`), and `kube` (build tag `kube`, `mise run test:kube`, test names start with `TestKube`).
 - The hosts are `darwin` and `linux`. Lint covers both GOOS values.
 - `SBXR_TEST_REQUIRE=1` makes a `vm` or `kube` test fail instead of skip when its environment is missing. CI sets it.
 - `deploy/node/` holds the node installer image: the Dockerfile with `Dockerfile.dockerignore`, its build scripts, the manifest template, and `render.sh`, which renders the manifests.
