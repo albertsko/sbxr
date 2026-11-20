@@ -22,8 +22,8 @@ import (
 
 const dropInPath = "/etc/containerd/conf.d/sbxr.toml"
 
-// fakeNode is the API server and the host of one node.
-type fakeNode struct {
+// testNode replaces the API server and the host of one node, so that a test can inject faults that a real node cannot produce.
+type testNode struct {
 	// onBundleCheck runs when the installer checks the installed bundle, after preflight.
 	onBundleCheck func()
 
@@ -54,7 +54,7 @@ type fakeNode struct {
 	bundleCheckFails bool
 }
 
-func (f *fakeNode) Node(context.Context) (Node, error) {
+func (f *testNode) Node(context.Context) (Node, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -67,7 +67,7 @@ func (f *fakeNode) Node(context.Context) (Node, error) {
 }
 
 // cri answers the CRI status call with the handlers of the running containerd.
-func (f *fakeNode) cri(_ context.Context, socket string) ([]string, error) {
+func (f *testNode) cri(_ context.Context, socket string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -80,7 +80,7 @@ func (f *fakeNode) cri(_ context.Context, socket string) ([]string, error) {
 	return slices.Clone(f.handlers), nil
 }
 
-func (f *fakeNode) Patch(_ context.Context, labels, annotations map[string]*string) error {
+func (f *testNode) Patch(_ context.Context, labels, annotations map[string]*string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -103,7 +103,7 @@ func (f *fakeNode) Patch(_ context.Context, labels, annotations map[string]*stri
 	return nil
 }
 
-func (f *fakeNode) host(_ context.Context, args ...string) (string, error) {
+func (f *testNode) host(_ context.Context, args ...string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -172,10 +172,11 @@ func (f *fakeNode) host(_ context.Context, args ...string) (string, error) {
 	return "", errors.New("exit status 1")
 }
 
-func newFakeNode(t *testing.T) (*fakeNode, *Installer) {
+// newTestNode returns a healthy testNode and an installer that uses it.
+func newTestNode(t *testing.T) (*testNode, *Installer) {
 	t.Helper()
 
-	f := &fakeNode{
+	f := &testNode{
 		root:        t.TempDir(),
 		labels:      map[string]string{},
 		annotations: map[string]string{},
@@ -222,7 +223,7 @@ func newBundle(t *testing.T, shim string) string {
 func TestInstall(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 
 	err := in.Install(t.Context())
 	if err != nil {
@@ -255,7 +256,7 @@ func TestInstall(t *testing.T) {
 func TestInstallRestartsForAnUnloadedDropIn(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 
 	err := in.Install(t.Context())
 	if err != nil {
@@ -277,22 +278,22 @@ func TestInstallRejectsNodeWithoutChanges(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		change func(*testing.T, *fakeNode)
+		change func(*testing.T, *testNode)
 		reason string
 	}{
-		{"no kvm", func(_ *testing.T, f *fakeNode) { f.kvm = false }, "preflight: /dev/kvm is missing"},
-		{"no import", func(t *testing.T, f *fakeNode) {
+		{"no kvm", func(_ *testing.T, f *testNode) { f.kvm = false }, "preflight: /dev/kvm is missing"},
+		{"no import", func(t *testing.T, f *testNode) {
 			t.Helper()
 			write(t, f.root+"/etc/containerd/config.toml", "version = 2\n")
 		}, "preflight: /etc/containerd/config.toml does not import"},
-		{"no containerd unit", func(_ *testing.T, f *fakeNode) { f.units = "crio.service loaded active running\n" }, "preflight: no supported containerd unit"},
+		{"no containerd unit", func(_ *testing.T, f *testNode) { f.units = "crio.service loaded active running\n" }, "preflight: no supported containerd unit"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f, in := newFakeNode(t)
+			f, in := newTestNode(t)
 			f.labels[ReadyLabel] = "true"
 			tt.change(t, f)
 			config := read(t, f.root+"/etc/containerd/config.toml")
@@ -321,21 +322,21 @@ func TestInstallRollsBack(t *testing.T) {
 	tests := []struct {
 		name     string
 		previous string // Drop-in before the install, or empty for none.
-		fault    func(*fakeNode)
+		fault    func(*testNode)
 		reason   string
 	}{
-		{"restart fails", "", func(f *fakeNode) { f.failRestarts = 1 }, "verify: restart containerd.service"},
-		{"unit inactive", "", func(f *fakeNode) { f.inactive = true }, "verify: containerd.service is not active after the restart"},
-		{"handler missing", "", func(f *fakeNode) { f.serveSbxr = false }, "verify: after 50ms: containerd does not serve runtime handler sbxr"},
-		{"CRI unreachable", "# older sbxr drop-in\n", func(f *fakeNode) { f.criDown = true }, "verify: after 50ms: CRI unreachable"},
-		{"upgrade loses handler", "# older sbxr drop-in\n", func(f *fakeNode) { f.serveSbxr = false }, "verify: after 50ms: containerd does not serve"},
+		{"restart fails", "", func(f *testNode) { f.failRestarts = 1 }, "verify: restart containerd.service"},
+		{"unit inactive", "", func(f *testNode) { f.inactive = true }, "verify: containerd.service is not active after the restart"},
+		{"handler missing", "", func(f *testNode) { f.serveSbxr = false }, "verify: after 50ms: containerd does not serve runtime handler sbxr"},
+		{"CRI unreachable", "# older sbxr drop-in\n", func(f *testNode) { f.criDown = true }, "verify: after 50ms: CRI unreachable"},
+		{"upgrade loses handler", "# older sbxr drop-in\n", func(f *testNode) { f.serveSbxr = false }, "verify: after 50ms: containerd does not serve"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f, in := newFakeNode(t)
+			f, in := newTestNode(t)
 			if tt.previous != "" {
 				write(t, f.root+dropInPath, tt.previous)
 			}
@@ -361,7 +362,7 @@ func TestInstallRollsBack(t *testing.T) {
 func TestInstallKeepsDropInWhenFinalPatchFails(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 	f.failReady = true
 
 	err := in.Install(t.Context())
@@ -388,12 +389,12 @@ func TestInstallAsksContainerd(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		setup    func(*testing.T, *fakeNode, *Installer)
+		setup    func(*testing.T, *testNode, *Installer)
 		restarts int
 	}{
 		{
 			name: "upgrade",
-			setup: func(t *testing.T, f *fakeNode, _ *Installer) {
+			setup: func(t *testing.T, f *testNode, _ *Installer) {
 				t.Helper()
 				write(t, f.root+dropInPath, "# older sbxr drop-in\n")
 				f.handlers = []string{"runc", "sbxr"} // The containerd before the restart served it.
@@ -403,7 +404,7 @@ func TestInstallAsksContainerd(t *testing.T) {
 		{
 			// removeDropIns writes an empty unit when it cannot detect one.
 			name: "pending restart without unit",
-			setup: func(t *testing.T, f *fakeNode, _ *Installer) {
+			setup: func(t *testing.T, f *testNode, _ *Installer) {
 				t.Helper()
 				write(t, f.root+restartPending, "\n")
 			},
@@ -411,7 +412,7 @@ func TestInstallAsksContainerd(t *testing.T) {
 		},
 		{
 			name: "reinstall after uninstall",
-			setup: func(t *testing.T, _ *fakeNode, in *Installer) {
+			setup: func(t *testing.T, _ *testNode, in *Installer) {
 				t.Helper()
 
 				err := errors.Join(in.Install(t.Context()), in.Uninstall(t.Context()))
@@ -427,7 +428,7 @@ func TestInstallAsksContainerd(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f, in := newFakeNode(t)
+			f, in := newTestNode(t)
 			tt.setup(t, f, in)
 			f.serveSbxr = false
 
@@ -446,7 +447,7 @@ func TestInstallAsksContainerd(t *testing.T) {
 func TestInstallVerifiesInSeconds(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 	in.Timeout = time.Hour
 
 	start := time.Now()
@@ -464,7 +465,7 @@ func TestInstallVerifiesInSeconds(t *testing.T) {
 func TestInstallFinishesPendingRestartWithoutAPI(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 	write(t, f.root+restartPending, "containerd.service\n")
 	f.units = ""
 	f.failReadsAfter = -1
@@ -478,7 +479,7 @@ func TestInstallFinishesPendingRestartWithoutAPI(t *testing.T) {
 func TestInstallFinishesRestartAfterFailedRollback(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 
 	err := in.Install(t.Context())
 	if err != nil {
@@ -505,7 +506,7 @@ func TestInstallFinishesRestartAfterFailedRollback(t *testing.T) {
 func TestInstallFailsWhenRollbackFails(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 
 	err := in.Install(t.Context())
 	if err != nil {
@@ -528,7 +529,7 @@ func TestInstallFailsWhenRollbackFails(t *testing.T) {
 func TestInstallBundle(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 	dst := f.root + Prefix
 	bundles := []string{in.Bundle, newBundle(t, "shim v2")}
 
@@ -600,7 +601,7 @@ func TestInstallBundle(t *testing.T) {
 func TestUninstall(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 
 	err := in.Install(t.Context())
 	if err != nil {
@@ -643,29 +644,29 @@ func TestUninstallKeepsBundleUntilSafe(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		fault  func(*testing.T, *fakeNode)
-		fix    func(*testing.T, *fakeNode)
+		fault  func(*testing.T, *testNode)
+		fix    func(*testing.T, *testNode)
 		reason string
 	}{
 		{
 			name:   "no unit to restart",
-			fault:  func(_ *testing.T, f *fakeNode) { f.units = "" },
-			fix:    func(_ *testing.T, f *fakeNode) { f.units = "containerd.service loaded active running\n" },
+			fault:  func(_ *testing.T, f *testNode) { f.units = "" },
+			fix:    func(_ *testing.T, f *testNode) { f.units = "containerd.service loaded active running\n" },
 			reason: "uninstall: drop-in removed, but containerd cannot restart",
 		},
 		{
 			name:   "restart fails",
-			fault:  func(_ *testing.T, f *fakeNode) { f.failRestarts = 1 },
-			fix:    func(*testing.T, *fakeNode) {},
+			fault:  func(_ *testing.T, f *testNode) { f.failRestarts = 1 },
+			fix:    func(*testing.T, *testNode) {},
 			reason: "uninstall: restart containerd.service",
 		},
 		{
 			name: "pod still exists",
-			fault: func(t *testing.T, f *fakeNode) {
+			fault: func(t *testing.T, f *testNode) {
 				t.Helper()
 				write(t, f.root+PodsRoot+"/0123abcd/vm.pid", "42")
 			},
-			fix: func(t *testing.T, f *fakeNode) {
+			fix: func(t *testing.T, f *testNode) {
 				t.Helper()
 
 				err := os.RemoveAll(f.root + PodsRoot + "/0123abcd")
@@ -681,7 +682,7 @@ func TestUninstallKeepsBundleUntilSafe(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f, in := newFakeNode(t)
+			f, in := newTestNode(t)
 
 			err := in.Install(t.Context())
 			if err != nil {
@@ -726,7 +727,7 @@ func TestUninstallRestartsAfterFailedReinstall(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f, in := newFakeNode(t)
+			f, in := newTestNode(t)
 
 			err := in.Install(t.Context())
 			if err != nil {
@@ -834,7 +835,7 @@ func sum(s string) string {
 func TestInstallReservesIDs(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 	write(t, f.root+"/etc/subuid", "")
 	write(t, f.root+"/etc/subgid", "")
 
@@ -902,11 +903,11 @@ func TestInstallReservesIDs(t *testing.T) {
 
 // unknownRuntimeAPI reports the runtime version as unknown for the first reads, as the kubelet does after a containerd restart.
 type unknownRuntimeAPI struct {
-	*fakeNode
+	*testNode
 }
 
 func (a unknownRuntimeAPI) Node(ctx context.Context) (Node, error) {
-	n, err := a.fakeNode.Node(ctx)
+	n, err := a.testNode.Node(ctx)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -921,7 +922,7 @@ func (a unknownRuntimeAPI) Node(ctx context.Context) (Node, error) {
 func TestInstallWaitsForTheRuntimeVersion(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 	in.API = unknownRuntimeAPI{f}
 
 	err := in.Install(t.Context())
@@ -935,7 +936,7 @@ func TestInstallWaitsForTheRuntimeVersion(t *testing.T) {
 func TestReserveIDsChoosesUnderTheLock(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 
 	// After preflight chose 7274496, a user takes the ids right there.
 	f.onBundleCheck = func() {
@@ -1037,14 +1038,14 @@ func TestRemoveRetired(t *testing.T) {
 func TestUpgradeKeepsTheGuestRoot(t *testing.T) {
 	t.Parallel()
 
-	f, in := newFakeNode(t)
+	f, in := newTestNode(t)
 
 	if err := in.Install(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 
 	// The VM holds the guest root of the installed bundle. After the rename its fd shows the retired path,
-	// which the fake /proc names with the retired directory's real name below.
+	// which the test /proc names with the retired directory's real name below.
 	in.Bundle = newBundle(t, "shim v2")
 
 	if err := in.Install(t.Context()); err != nil {

@@ -284,7 +284,7 @@ func TestPodVMConfigFailsOnTAP(t *testing.T) {
 func TestExecRollback(t *testing.T) {
 	t.Parallel()
 
-	agent := &fakeAgent{}
+	agent := &testAgent{}
 	s := &service{log: slog.New(slog.DiscardHandler), tasks: map[string]*task{"c1": {id: "c1", init: newProc("c1", "", &procIO{}), execs: map[string]*proc{}}}}
 	s.sandbox = &sandbox{id: "pod", agent: agent, usernsFD: -1}
 
@@ -318,18 +318,19 @@ func TestIsVMCommand(t *testing.T) {
 	}
 }
 
-type fakeAgent struct {
+// testAgent replaces the guest agent and records the deletes, so that the test can check the rollback without a VM.
+type testAgent struct {
 	taskAPI.TTRPCTaskService
 
 	mu      sync.Mutex
 	deletes []string
 }
 
-func (a *fakeAgent) Exec(context.Context, *taskAPI.ExecProcessRequest) (*emptypb.Empty, error) {
+func (a *testAgent) Exec(context.Context, *taskAPI.ExecProcessRequest) (*emptypb.Empty, error) {
 	return &emptypb.Empty{}, nil
 }
 
-func (a *fakeAgent) Delete(_ context.Context, req *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
+func (a *testAgent) Delete(_ context.Context, req *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -338,7 +339,7 @@ func (a *fakeAgent) Delete(_ context.Context, req *taskAPI.DeleteRequest) (*task
 	return &taskAPI.DeleteResponse{}, nil
 }
 
-func (a *fakeAgent) deleted() []string {
+func (a *testAgent) deleted() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
