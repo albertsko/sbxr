@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-#MISE description="Run unit tests and the fake target scenarios"
+#MISE description="Run unit tests and host-only checks"
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
-uncached=(./cmd/sbxr ./internal/scenario)
+e2e="$(go list -m)/internal/e2e"
 cached=()
 while IFS= read -r pkg; do
 	cached+=("$pkg")
-done < <(go list ./... | grep -v -x -e "$(go list -m)/cmd/sbxr" -e "$(go list -m)/internal/scenario")
+done < <(go list ./... | grep -v -x -e "$e2e")
 
 go test -race "${cached[@]}" "$@"
-# These tests build the CLI in a go build subprocess, which the test cache does not track, so a cached PASS can be false.
-go test -race -count=1 "${uncached[@]}" "$@"
+# The e2e tests build the CLI in a go build subprocess, which the test cache does not track, so a cached PASS can be false.
+go test -race -count=1 "$e2e" "$@"

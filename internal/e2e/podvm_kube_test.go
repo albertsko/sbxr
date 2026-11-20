@@ -1,6 +1,6 @@
 //go:build kube
 
-package scenario_test
+package e2e
 
 import (
 	"context"
@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/albertsko/sbxr/internal/scenario"
 )
 
 // podVMTests check the pod VM behavior: one VM per pod, exec, graceful stop, and start and boot errors.
@@ -142,7 +140,7 @@ func testGracefulStop(t *testing.T, k *kind) {
 			t.Errorf("%s: deletion took %s, want %s to %s", c.name, took, c.min, c.max)
 		}
 
-		if err := scenario.NoPodProcesses(t.Context(), k.Node, uid); err != nil {
+		if err := NoPodProcesses(t.Context(), k.Node, uid); err != nil {
 			t.Error(err)
 		}
 	}
@@ -199,7 +197,7 @@ func testBootFailure(t *testing.T, k *kind) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	if err := scenario.NoPodProcesses(ctx, k.Node, uid); err != nil {
+	if err := NoPodProcesses(ctx, k.Node, uid); err != nil {
 		t.Error(err)
 	}
 }
@@ -263,7 +261,7 @@ func testUpgradeKeepsPods(t *testing.T, k *kind) {
 		t.Errorf("deletion took %s; the workload did not get SIGTERM", took)
 	}
 
-	if err := scenario.NoPodProcesses(t.Context(), k.Node, uid); err != nil {
+	if err := NoPodProcesses(t.Context(), k.Node, uid); err != nil {
 		t.Error(err)
 	}
 

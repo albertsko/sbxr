@@ -1,4 +1,4 @@
-package scenario
+package e2e
 
 import (
 	"archive/tar"
@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http/httptest"
 	"strings"
-	"testing"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -18,8 +17,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
-
-	"github.com/albertsko/sbxr/internal/vm/fake"
 )
 
 // Files that the test layer adds to every scenario image.
@@ -80,25 +77,6 @@ func ServeImages(ctx context.Context, base v1.Image) (refs map[string]string, st
 	}
 
 	return refs, srv.Close, nil
-}
-
-// FakeImages serves the scenario images built on the fake busybox image until t ends.
-func FakeImages(t *testing.T) map[string]string {
-	t.Helper()
-
-	base, err := fake.Image()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	refs, stop, err := ServeImages(t.Context(), base)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	t.Cleanup(stop)
-
-	return refs
 }
 
 func push(ctx context.Context, ref string, img v1.Image) error {

@@ -89,8 +89,7 @@ linters:
             - "**/internal/**"
             - "!**/internal/cli/**"
             - "!**/internal/netstack/**"
-            - "!**/internal/scenario/**"
-            - "!**/internal/vm/fake/**"
+            - "!**/internal/e2e/**"
             - "!**/internal/kube/shim/**"
             - "!**/internal/kube/agent/**"
             - "!**/internal/kube/podnet/**"
@@ -102,9 +101,9 @@ linters:
             - pkg: github.com/charmbracelet
               desc: only internal/cli may use charm libraries
             - pkg: github.com/containers/gvisor-tap-vsock
-              desc: only internal/netstack and internal/vm/fake may use the network stack
+              desc: only internal/netstack may use the network stack
             - pkg: gvisor.dev
-              desc: only internal/netstack and internal/vm/fake may use the network stack
+              desc: only internal/netstack may use the network stack
             - pkg: k8s.io
               desc: no package uses the Kubernetes libraries
             - pkg: github.com/containerd
@@ -123,9 +122,9 @@ linters:
             - pkg: github.com/charmbracelet
               desc: only internal/cli may use charm libraries
             - pkg: github.com/containers/gvisor-tap-vsock
-              desc: only internal/netstack and internal/vm/fake may use the network stack
+              desc: only internal/netstack may use the network stack
             - pkg: gvisor.dev
-              desc: only internal/netstack and internal/vm/fake may use the network stack
+              desc: only internal/netstack may use the network stack
             - pkg: k8s.io
               desc: no package uses the Kubernetes libraries
         kube-netlink:
@@ -139,9 +138,9 @@ linters:
             - pkg: github.com/charmbracelet
               desc: only internal/cli may use charm libraries
             - pkg: github.com/containers/gvisor-tap-vsock
-              desc: only internal/netstack and internal/vm/fake may use the network stack
+              desc: only internal/netstack may use the network stack
             - pkg: gvisor.dev
-              desc: only internal/netstack and internal/vm/fake may use the network stack
+              desc: only internal/netstack may use the network stack
             - pkg: k8s.io
               desc: no package uses the Kubernetes libraries
             - pkg: github.com/containerd
@@ -161,14 +160,6 @@ linters:
             - "**/cmd/**"
             - "!$test"
           deny:
-            - pkg: github.com/albertsko/sbxr/internal/vm/fake
-              desc: shipped binaries do not contain the fake hypervisor, see internal/testbin/sbxr-fake
-            - pkg: github.com/albertsko/sbxr/internal/netstack/guestsim
-              desc: shipped binaries do not contain the simulated guest network
-            - pkg: github.com/albertsko/sbxr/internal/scenario
-              desc: shipped binaries do not contain test targets
-            - pkg: github.com/albertsko/sbxr/internal/testbin
-              desc: shipped binaries do not import test-only binaries
             - pkg: github.com/albertsko/sbxr/internal/testenv
               desc: shipped binaries do not contain test helpers
 
@@ -202,7 +193,6 @@ linters:
       # Types whose fields are optional by design.
       optional-patterns:
         - '.+/internal/run\.ImageConfig'
-        - '.+/internal/scenario\.(Scenario|Workload|Volume)'
         - '.+/internal/vm/libkrun\.Config'
         - '.+/internal/runspec\.Error'
 
@@ -244,10 +234,6 @@ linters:
           - exhaustruct_v5
           - gocognit
           - gosec
-      # Scenario tables repeat workload words such as echo.
-      - path: internal/scenario/scenarios\.go$
-        linters:
-          - goconst
 
 formatters:
   enable:

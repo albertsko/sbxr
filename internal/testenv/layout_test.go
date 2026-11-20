@@ -21,9 +21,6 @@ var targets = map[string]struct{ tag, prefix string }{
 	"_kube_test.go": {tag: "kube", prefix: "TestKube"},
 }
 
-// oldTags are build tags that no file may use anymore.
-var oldTags = []string{"hv", "kind", "sbxrfake"}
-
 // skipDirs are directories without source files of the module.
 var skipDirs = []string{"testdata", "vendor", "bin", "dist"}
 
@@ -100,8 +97,6 @@ func TestCheckFile(t *testing.T) {
 		{name: "vm file on no supported platform", file: "a_vm_test.go", src: "//go:build vm && windows\n\npackage a\n", want: 1},
 		{name: "vm file with an unselected test", file: "a_vm_test.go", src: "//go:build vm\n\npackage a\n\nfunc TestBoot(t *testing.T) {}\nfunc FuzzBoot(f *testing.F) {}\n", want: 2},
 		{name: "kube file with a vm test", file: "a_kube_test.go", src: "//go:build kube\n\npackage a\n\nfunc TestVMBoot(t *testing.T) {}\n", want: 2},
-		{name: "old tag", file: "a_test.go", src: "//go:build hv\n\npackage a\n", want: 1},
-		{name: "old negated tag", file: "a.go", src: "//go:build !sbxrfake\n\npackage a\n", want: 1},
 	}
 
 	for _, tt := range tests {
@@ -127,12 +122,6 @@ func checkFile(name string, src []byte) []string {
 	expr := buildConstraint(f)
 
 	var problems []string
-
-	for _, tag := range tags(expr) {
-		if slices.Contains(oldTags, tag) {
-			problems = append(problems, fmt.Sprintf("%s: uses the old build tag %q", name, tag))
-		}
-	}
 
 	for suffix, target := range targets {
 		if !strings.HasSuffix(name, suffix) {

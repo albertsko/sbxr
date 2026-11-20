@@ -1,4 +1,4 @@
-package scenario
+package e2e
 
 import (
 	"bytes"
@@ -9,30 +9,49 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 )
 
-// Packages of the sbxr binaries that tests build.
-const (
-	ReleasePkg = "github.com/albertsko/sbxr/cmd/sbxr"
-	FakePkg    = "github.com/albertsko/sbxr/internal/testbin/sbxr-fake"
+// buildDir holds the binaries that the tests build. TestMain removes it.
+var buildDir string
+
+var (
+	releaseOnce sync.Once
+	releaseBin  string
+	errRelease  error
 )
 
-// Build builds the sbxr binary in pkg into out with cgo off, like the release.
-// The release build first generates the guest mount helper, which it embeds.
-func Build(ctx context.Context, out, pkg string) error {
-	if pkg == ReleasePkg {
-		gen := exec.CommandContext(ctx, "go", "generate", "github.com/albertsko/sbxr/internal/guestmount")
-		if output, err := gen.CombinedOutput(); err != nil {
-			return fmt.Errorf("generate the mount helper: %w\n%s", err, output)
-		}
+// releaseBinary returns the release build of cmd/sbxr, built once per test process with cgo off.
+// On macOS, it is signed with the hypervisor entitlement, so that it can start VMs.
+func releaseBinary(t *testing.T) string {
+	t.Helper()
+
+	releaseOnce.Do(func() {
+		releaseBin = filepath.Join(buildDir, "sbxr")
+		errRelease = build(context.Background(), releaseBin)
+	})
+
+	if errRelease != nil {
+		t.Fatal(errRelease)
 	}
 
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", out, pkg)
+	return releaseBin
+}
+
+// build generates the guest mount helper, which the release embeds, and builds cmd/sbxr into out.
+func build(ctx context.Context, out string) error {
+	gen := exec.CommandContext(ctx, "go", "generate", "github.com/albertsko/sbxr/internal/guestmount")
+	if output, err := gen.CombinedOutput(); err != nil {
+		return fmt.Errorf("generate the mount helper: %w\n%s", err, output)
+	}
+
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", out, "github.com/albertsko/sbxr/cmd/sbxr")
 
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 
@@ -41,7 +60,46 @@ func Build(ctx context.Context, out, pkg string) error {
 		return fmt.Errorf("build sbxr: %w\n%s", err, output)
 	}
 
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+
+	output, err = exec.CommandContext(ctx, "codesign", "--force", "--sign", "-", "--entitlements", "../../cmd/sbxr/entitlements.plist", out).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("codesign: %w\n%s", err, output)
+	}
+
 	return nil
+}
+
+// result is the outcome of one sbxr process.
+type result struct {
+	stdout, stderr string
+	code           int
+}
+
+// sbxr runs bin with stdout and stderr on pipes, for at most a minute.
+func sbxr(t *testing.T, bin string, environ []string, args ...string) result {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = environ
+
+	var stdout, stderr bytes.Buffer
+
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+
+	err := cmd.Run()
+
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatal(err)
+	}
+
+	return result{stdout: stdout.String(), stderr: stderr.String(), code: cmd.ProcessState.ExitCode()}
 }
 
 // Binary is a target that runs an sbxr binary.
@@ -58,20 +116,6 @@ type Binary struct {
 	Caps []Capability
 }
 
-// Fake returns a target that runs the fake build of sbxr at bin with the scenario images in refs.
-func Fake(t *testing.T, bin string, refs map[string]string) *Binary {
-	t.Helper()
-
-	return &Binary{
-		Path:     bin,
-		CacheDir: filepath.Join(t.TempDir(), "cache"),
-		Images:   refs,
-		Flags:    nil,
-		Env:      nil,
-		Caps:     []Capability{Stdin, TTY, SplitStderr, SignalExit, SpecValidation, ExactConfig, Net, NetOff, Publish, DNS, EgressGuard, Volumes},
-	}
-}
-
 // Capabilities returns the capabilities set for this target.
 func (b *Binary) Capabilities() []Capability { return b.Caps }
 
@@ -80,7 +124,7 @@ func (b *Binary) CheckClean() error { return CheckClean(b.CacheDir) }
 
 // Run runs `sbxr run` with flags for w.
 func (b *Binary) Run(ctx context.Context, w Workload) (Result, error) {
-	cmd := exec.CommandContext(ctx, b.Path, b.args(w)...) //nolint:gosec // Path is the sbxr binary under test.
+	cmd := exec.CommandContext(ctx, b.Path, b.args(w)...)
 	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "SBXR_CACHE_DIR=" + b.CacheDir}, b.Env...)
 	cmd.Stdin = strings.NewReader(w.Stdin)
 

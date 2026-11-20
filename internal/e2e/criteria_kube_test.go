@@ -1,6 +1,6 @@
 //go:build kube
 
-package scenario_test
+package e2e
 
 import (
 	"context"
@@ -26,7 +26,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
-	"github.com/albertsko/sbxr/internal/scenario"
 	"github.com/albertsko/sbxr/internal/testenv"
 )
 
@@ -45,7 +44,7 @@ func TestKubeCriteria(t *testing.T) {
 		testenv.SkipOrFailf(t, "kind with KVM needs Linux")
 	}
 
-	scenario.RequireHypervisor(t)
+	RequireHypervisor(t)
 
 	cluster := os.Getenv("SBXR_KIND_CLUSTER")
 	if cluster == "" {
@@ -61,7 +60,7 @@ func TestKubeCriteria(t *testing.T) {
 	}
 
 	images := kindImages(t, cluster)
-	k := &kind{t: t, Kube: &scenario.Kube{Context: "kind-" + cluster, Node: cluster + "-control-plane", Namespace: "sbxr-test", Images: images}}
+	k := &kind{t: t, Kube: &Kube{Context: "kind-" + cluster, Node: cluster + "-control-plane", Namespace: "sbxr-test", Images: images}}
 	k.image = k.run("", "-n", "sbxr-system", "get", "ds", "sbxr-node", "-o", "jsonpath={.spec.template.spec.containers[0].image}")
 
 	tests := map[string]func(*testing.T, *kind){
@@ -81,8 +80,8 @@ func TestKubeCriteria(t *testing.T) {
 		t.Run("scenarios", func(t *testing.T) {
 			t.Parallel()
 
-			scenario.RunAll(t, func(*testing.T) scenario.Target {
-				return &scenario.Kube{Context: k.Context, Node: k.Node, Namespace: k.Namespace, Images: images}
+			RunAll(t, func(*testing.T) Target {
+				return &Kube{Context: k.Context, Node: k.Node, Namespace: k.Namespace, Images: images}
 			})
 		})
 
@@ -103,7 +102,7 @@ func TestKubeCriteria(t *testing.T) {
 
 // kind wraps the target with test helpers that fail t.
 type kind struct {
-	*scenario.Kube
+	*Kube
 
 	t     *testing.T
 	image string // The installer image.
@@ -321,7 +320,7 @@ func testDeletion(t *testing.T, k *kind) {
 		t.Errorf("deletion took %s with a grace period of 3s", took)
 	}
 
-	err := scenario.NoPodProcesses(t.Context(), k.Node, uid)
+	err := NoPodProcesses(t.Context(), k.Node, uid)
 	if err != nil {
 		t.Error(err)
 	}
@@ -561,18 +560,18 @@ func kindImages(t *testing.T, cluster string) map[string]string {
 		t.Fatal(err)
 	}
 
-	served, stop, err := scenario.ServeImages(t.Context(), base)
+	served, stop, err := ServeImages(t.Context(), base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stop()
 
 	// Nothing listens on port 1, so the pull fails at once.
-	images := map[string]string{scenario.MissingImage: "localhost:1/sbxr/missing:1"}
+	images := map[string]string{MissingImage: "localhost:1/sbxr/missing:1"}
 	dir := t.TempDir()
 
 	for image, ref := range served {
-		if image == scenario.MissingImage {
+		if image == MissingImage {
 			continue
 		}
 

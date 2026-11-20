@@ -1,4 +1,4 @@
-// Package sbxrmain is the startup code that cmd/sbxr and the test-only fake binary share.
+// Package sbxrmain is the startup code of cmd/sbxr.
 package sbxrmain
 
 import (

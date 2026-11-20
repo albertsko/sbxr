@@ -1,4 +1,6 @@
-package scenario
+//go:build kube
+
+package e2e
 
 import (
 	"bytes"
@@ -192,7 +194,7 @@ func NoPodProcesses(ctx context.Context, node, uid string) error {
 
 // Kubectl runs kubectl with the target's context and stdin, and returns stdout.
 func (k *Kube) Kubectl(ctx context.Context, stdin []byte, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "kubectl", append([]string{"--context", k.Context}, args...)...) //nolint:gosec // Test-controlled arguments.
+	cmd := exec.CommandContext(ctx, "kubectl", append([]string{"--context", k.Context}, args...)...)
 	cmd.Stdin = bytes.NewReader(stdin)
 
 	var stderr bytes.Buffer
