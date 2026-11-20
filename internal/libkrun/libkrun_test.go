@@ -170,6 +170,33 @@ func TestEnterRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateMountHelperPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{name: "empty", path: "", wantErr: true},
+		{name: "relative", path: ".sbxr-mount", wantErr: true},
+		{name: "absolute", path: "/.sbxr-mount", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Config{Root: "/root", CPUs: 1, MemoryMiB: 512, Volumes: []Volume{{Tag: "v0", Host: "/data"}}, MountHelper: []byte("helper"), MountHelperPath: tt.path}
+
+			err := cfg.validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validate() with mount helper path %q = %v, want an error: %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func libDirWith(t *testing.T, dir string, names ...string) string {
 	t.Helper()
 
