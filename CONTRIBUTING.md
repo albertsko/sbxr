@@ -55,27 +55,30 @@ x86_64 or arm64 with KVM:
 
 ## Targets and hosts
 
-A test runs against one target: `fake` (no hypervisor), `vm` (a real libkrun VM), or `kube` (Kubernetes in a kind cluster). The host is `darwin` or `linux`.
+The project tests only against real environments and uses no stubs or fakes. A test is a unit test, or it runs against one target: `vm` (a real libkrun VM) or `kube` (Kubernetes in a kind cluster). The host is `darwin` or `linux`.
 
 1. Put host-specific code in `_darwin.go` or `_linux.go` files, or behind a `GOOS` build constraint. Do not invent build tags for hosts.
-2. Write a `fake` test as a plain `_test.go` file without a build tag. `mise run test` runs it everywhere.
+2. Write a unit test as a plain `_test.go` file without a build tag. It needs no hypervisor and no network. `mise run test` runs it everywhere.
 3. Put a `vm` test in `<topic>_vm_test.go` with `//go:build vm`, and name it `TestVM...`. `mise run test:vm` runs only `^TestVM`.
 4. Put a `kube` test in `<topic>_kube_test.go` with `//go:build kube`, and name it `TestKube...`. `mise run test:kube` runs only `^TestKube`.
 5. When the environment of a `vm` or `kube` test is missing, call `testenv.SkipOrFailf`. It skips, or fails when `SBXR_TEST_REQUIRE=1`. `internal/testenv` checks rules 3 and 4.
 
 ## Tests
 
-| Command                | Runs                                                       | Needs                                 |
-| ---------------------- | ---------------------------------------------------------- | ------------------------------------- |
-| `mise run test`        | Unit tests and the scenarios against the fake VM           | Nothing: no hypervisor, no network    |
-| `mise run test:vm`     | The scenarios and the `libkrun` tests against real VMs     | A hypervisor and a signed binary      |
-| `mise run test:kube`   | The scenarios and the Kubernetes tests in a kind cluster   | Linux with KVM, Docker, kind, kubectl |
-| `mise run fuzz [TIME]` | Fuzzing of the config writer against the guest init parser | Nothing. Default duration `1m`        |
+| Command                | Runs                                                                | Needs                                 |
+| ---------------------- | ------------------------------------------------------------------- | ------------------------------------- |
+| `mise run test`        | Unit tests and the host-only CLI tests of the release binary        | Nothing: no hypervisor, no network    |
+| `mise run test:vm`     | The scenarios, the CLI tests, and the `libkrun` tests with real VMs | A hypervisor and a signed binary      |
+| `mise run test:kube`   | The scenarios and the Kubernetes tests in a kind cluster            | Linux with KVM, Docker, kind, kubectl |
+| `mise run fuzz [TIME]` | Fuzzing of the config writer against the guest init parser          | Nothing. Default duration `1m`        |
 
 - `test:vm` and `test:kube` skip with exit 0 when their environment is missing: no hypervisor, or for `test:kube` no Linux. With `SBXR_TEST_REQUIRE=1`, they fail instead. CI sets this variable.
 - `test:vm` and `test:kube` run with `-count=1`, because Go's test cache does not notice changes to the built binary or to `libkrun`.
 - `test:kube` runs [scripts/kind/up.sh](scripts/kind/up.sh), which creates the kind cluster `sbxr` from [scripts/kind/cluster.yaml](scripts/kind/cluster.yaml), or reuses the cluster named by `SBXR_KIND_CLUSTER`. It builds the installer image unless `SBXR_NODE_IMAGE` names one. The first image build compiles `libkrun` and takes several minutes.
 - kind resets the `/dev/kvm` permissions when it creates a cluster. Run `sudo chmod 666 /dev/kvm` after `kind create cluster`.
 - `mise run build` runs `go generate ./internal/guestmount`, which builds the guest mount helper that `-v` needs. A bare `go build` embeds whatever helper is on disk, and without one `-v` fails with exit code 125.
-- Tests run in parallel, and the nightly workflow also shuffles them. Publish tests must bind port 0, and cleanup checks must look only at the test's own run directory and processes.
-- Hosted macOS and Linux arm64 runners have no usable hypervisor, so real-VM tests on those platforms run only on a local machine or a self-hosted runner.
+- `mise run test:vm` passes extra arguments to `go test`, for example `mise run test:vm -v -shuffle=on`.
+- To run the `vm` tests on Linux, install `sbxr` and the AppArmor profile as in [Setup on Linux](#setup-on-linux), then run `SBXR_TEST_REQUIRE=1 SBXR_BIN=/usr/local/bin/sbxr mise run test:vm`.
+- Tests run in parallel, and the nightly workflow also shuffles them, including the `vm` tests on Linux KVM. Publish tests must bind port 0, and cleanup checks must look only at the test's own run directory and processes.
+- Hosted macOS and Linux arm64 runners have no usable hypervisor, so CI runs the `vm` tests only on Linux x64 with KVM.
+- Before each release, run `SBXR_TEST_REQUIRE=1 mise run test:vm` on an Apple silicon Mac. This local run is the macOS release gate.
