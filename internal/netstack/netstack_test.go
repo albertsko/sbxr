@@ -216,7 +216,55 @@ func dialUDP(t *testing.T, g *Guest, addr string) net.Conn {
 	return c
 }
 
-func TestGuestGetsLeaseAndReachesTheHost(t *testing.T) {
+func TestGuestGetsLeaseAndResolvesNames(t *testing.T) {
+	t.Parallel()
+
+	// The address is never dialed, so a documentation address stands for the host.
+	host := netip.MustParseAddr("192.0.2.1")
+	cfg := Config{Hosts: map[string]netip.Addr{testHost: host}}
+
+	// The Go resolver reads the real hosts file. The macOS system resolver would keep a socket open, which the leak check reports.
+	cfg.resolver = &net.Resolver{PreferGo: true}
+	n, g := startNetwork(t, cfg)
+
+	if g.Addr() != n.GuestIP() {
+		t.Errorf("guest address = %v, want %v", g.Addr(), n.GuestIP())
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	// The resolver answers localhost from the hosts file, so no external DNS is needed.
+	got, err := g.LookupHost(ctx, "localhost")
+	if err != nil || !slices.Contains(got, netip.MustParseAddr("127.0.0.1")) {
+		t.Errorf("LookupHost(localhost) = %v, %v, want 127.0.0.1", got, err)
+	}
+
+	got, err = g.LookupHost(ctx, "Example.Test")
+	if err != nil || len(got) != 1 || got[0] != host {
+		t.Errorf("LookupHost = %v, %v, want [%v]", got, err, host)
+	}
+
+	// Other types for a name in Hosts get an empty answer without the host resolver.
+	c := dialUDP(t, g, netip.AddrPortFrom(gatewayIP, 53).String())
+
+	q := new(dns.Msg)
+	q.SetQuestion("example.test.", dns.TypeAAAA)
+
+	conn := &dns.Conn{Conn: c}
+	if err := conn.WriteMsg(q); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	r, err := conn.ReadMsg()
+	if err != nil || r.Rcode != dns.RcodeSuccess || len(r.Answer) != 0 {
+		t.Errorf("AAAA answer = %v, %v, want empty success", r, err)
+	}
+}
+
+func TestGuestReachesTheHost(t *testing.T) {
 	t.Parallel()
 
 	// AllowLAN opens the host's own address, so the network dials real servers there with the real dialer.
@@ -227,47 +275,7 @@ func TestGuestGetsLeaseAndReachesTheHost(t *testing.T) {
 
 	// The Go resolver reads the real hosts file. The macOS system resolver would keep a socket open, which the leak check reports.
 	cfg.resolver = &net.Resolver{PreferGo: true}
-	n, g := startNetwork(t, cfg)
-
-	if g.Addr() != n.GuestIP() {
-		t.Errorf("guest address = %v, want %v", g.Addr(), n.GuestIP())
-	}
-
-	t.Run("dns", func(t *testing.T) {
-		t.Parallel()
-
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-		defer cancel()
-
-		// The resolver answers localhost from the hosts file, so no external DNS is needed.
-		got, err := g.LookupHost(ctx, "localhost")
-		if err != nil || !slices.Contains(got, netip.MustParseAddr("127.0.0.1")) {
-			t.Errorf("LookupHost(localhost) = %v, %v, want 127.0.0.1", got, err)
-		}
-
-		got, err = g.LookupHost(ctx, "Example.Test")
-		if err != nil || len(got) != 1 || got[0] != host {
-			t.Errorf("LookupHost = %v, %v, want [%v]", got, err, host)
-		}
-
-		// Other types for a name in Hosts get an empty answer without the host resolver.
-		c := dialUDP(t, g, netip.AddrPortFrom(gatewayIP, 53).String())
-
-		q := new(dns.Msg)
-		q.SetQuestion("example.test.", dns.TypeAAAA)
-
-		conn := &dns.Conn{Conn: c}
-		if err := conn.WriteMsg(q); err != nil {
-			t.Fatal(err)
-		}
-
-		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-
-		r, err := conn.ReadMsg()
-		if err != nil || r.Rcode != dns.RcodeSuccess || len(r.Answer) != 0 {
-			t.Errorf("AAAA answer = %v, %v, want empty success", r, err)
-		}
-	})
+	_, g := startNetwork(t, cfg)
 
 	t.Run("tcp by name", func(t *testing.T) {
 		t.Parallel()
