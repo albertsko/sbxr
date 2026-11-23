@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Run Go tests"
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+if [[ -n "${CI:-}" ]]; then
+	exec go test -race -shuffle=on ./... "$@"
+fi
+
+exec go test -race ./... "$@"

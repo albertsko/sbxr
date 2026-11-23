@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Validate .goreleaser.yaml"
+set -euo pipefail
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+
+exec goreleaser check

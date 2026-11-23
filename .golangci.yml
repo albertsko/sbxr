@@ -1,0 +1,131 @@
+# Opinionated golangci-lint config. Tested on golangci-lint v2.15.0.
+# Strict on bugs, security, error handling, and idiomatic Go style.
+
+version: "2"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  uniq-by-line: false
+
+linters:
+  default: none
+  enable:
+    # Bugs and correctness.
+    - bidichk
+    - bodyclose
+    - durationcheck
+    - errcheck
+    - errorlint
+    - exhaustive
+    - exhaustruct_v5
+    - fatcontext
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - gocritic
+    - govet
+    - ineffassign
+    - makezero
+    - nilerr
+    - nilnesserr
+    - noctx
+    - nosprintfhostport
+    - reassign
+    - recvcheck
+    - rowserrcheck
+    - sloglint
+    - sqlclosecheck
+    - staticcheck
+    - unused
+
+    # Security.
+    - gosec
+
+    # Tests.
+    - paralleltest
+    - testableexamples
+    - thelper
+    - usetesting
+
+    # Maintainability and idioms.
+    - asciicheck
+    - canonicalheader
+    - dupl
+    - dupword
+    - errname
+    - gocognit
+    - goconst
+    - godoclint
+    - godot
+    - gomoddirectives
+    - goprintffuncname
+    - iface
+    - mirror
+    - misspell
+    - modernize
+    - nakedret
+    - nilnil
+    - nolintlint
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wrapcheck
+    - wsl_v5
+
+  settings:
+    dupl:
+      threshold: 200
+
+    dupword:
+      comments-only: true
+
+    errcheck:
+      check-type-assertions: true
+
+    exhaustruct_v5:
+      allow-empty: true
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+      disabled-checks:
+        - commentedOutCode
+
+    gosec:
+      excludes:
+        - G104 # Use errcheck as the primary unchecked-error checker.
+
+    modernize:
+      disable:
+        - omitzero # golangci-lint v2.15.0 conflicts on alternative JSON-tag fixes.
+
+    nolintlint:
+      require-specific: true
+      require-explanation: true
+
+    revive:
+      enable-default-rules: true
+      rules:
+        - name: datarace
+        - name: defer
+        - name: forbidden-call-in-wg-go
+
+  exclusions:
+    presets:
+      - comments
+      - common-false-positives
+    rules:
+      - path: _test\.go$
+        linters:
+          - dupl
+          - errcheck
+          - exhaustruct_v5
+          - gocognit
+          - gosec
+
+formatters:
+  enable:
+    - goimports
+    - gofumpt
